@@ -1,0 +1,48 @@
+# Phase 1 — Agent Sandbox
+# Run: docker compose up
+# Prerequisites: docker build -t everything-sandbox:latest ./sandbox-supervisor/sandbox-image/
+
+services:
+  sandbox-supervisor:
+    build:
+      context: ./sandbox-supervisor
+      dockerfile: Dockerfile
+    # Supervisor is the ONLY service that holds docker.sock.
+    # sandbox-mcp talks to it over the internal network — never directly to Docker.
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      POOL_SIZE: ${POOL_SIZE:-2}
+      SANDBOX_IMAGE: ${SANDBOX_IMAGE:-everything-sandbox:latest}
+      SUPERVISOR_PORT: ${SUPERVISOR_PORT:-3001}
+    # Bind to 127.0.0.1 on the host; only reachable from within this Compose stack
+    # and from the host machine (for debugging). Not exposed externally.
+    ports:
+      - "127.0.0.1:3001:3001"
+    restart: unless-stopped
+    networks:
+      - sandbox-internal
+
+  sandbox-mcp:
+    build:
+      context: ./sandbox-mcp
+      dockerfile: Dockerfile
+    environment:
+      SUPERVISOR_URL: http://sandbox-supervisor:3001
+      MCP_PORT: ${MCP_PORT:-3002}
+      SANDBOX_TIMEOUT_MS: ${SANDBOX_TIMEOUT_MS:-30000}
+      AUTO_APPROVE_TOOLS: ${AUTO_APPROVE_TOOLS:-}
+      MCP_API_KEY: ${MCP_API_KEY:?MCP_API_KEY is required}
+    ports:
+      - "127.0.0.1:3002:3002"
+    depends_on:
+      - sandbox-supervisor
+    restart: unless-stopped
+    networks:
+      - sandbox-internal
+
+networks:
+  # Isolated network — zero overlap with any other Compose stacks on the host.
+  # On the Pi: ensure this network name doesn't conflict with skarpa-net or obsidian-net.
+  sandbox-internal:
+    driver: bridge
