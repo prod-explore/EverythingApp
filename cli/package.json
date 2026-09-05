@@ -1,0 +1,25 @@
+{
+  "name": "everythingapp-cli",
+  "version": "0.1.0",
+  "description": "Personal BYOK chat CLI for EverythingApp — talks to Claude with MCP tools (sandbox-mcp, obsidian-livesync-mcp) behind a terminal Approval Gate",
+  "main": "dist/index.js",
+  "type": "module",
+  "bin": {
+    "everythingapp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch & node --watch dist/index.js",
+    "test": "npm run build && node --test dist/__tests__/*.test.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.123.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "dotenv": "^17.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}

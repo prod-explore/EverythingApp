@@ -29,9 +29,26 @@ export function claimContainer(): string {
   if (!entry) throw new Error('No available sandbox containers — pool exhausted');
   entry.claimed = true;
   entry.claimedAt = new Date();
-  // Refill in background so the pool is warm for the next caller
-  spawnContainer().catch(err => console.error('[pool] refill error:', err));
+  // NOTE: we deliberately do NOT spawn a replacement here. A claimed entry
+  // stays counted in `pool` until it's released, so eagerly spawning a
+  // "refill" on every claim made the pool grow by one container per
+  // claim/release cycle forever (each release adds the reused container
+  // back on top of the refill that already exists) — an unbounded RAM leak
+  // on a Pi that also has to leave headroom for Skarpa Bytom. Total pool
+  // size is now fixed at POOL_SIZE; concurrent claims beyond that get a
+  // 503 (pool exhausted) until something is released, which is the
+  // correct trade-off given the memory constraint.
   return entry.id;
+}
+
+/** True if this id is a container we actually manage (any state). */
+export function isKnownContainer(containerId: string): boolean {
+  return pool.some(e => e.id === containerId);
+}
+
+/** True if this id is currently claimed — i.e. legitimately in use by a tool call. */
+export function isClaimedContainer(containerId: string): boolean {
+  return pool.some(e => e.id === containerId && e.claimed);
 }
 
 export async function releaseContainer(containerId: string): Promise<void> {

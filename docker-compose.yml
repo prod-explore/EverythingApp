@@ -7,6 +7,11 @@ services:
     build:
       context: ./sandbox-supervisor
       dockerfile: Dockerfile
+      args:
+        # Must match the host's docker.sock group, or `node` inside the
+        # container gets EACCES talking to Docker. Get it with:
+        #   stat -c '%g' /var/run/docker.sock
+        DOCKER_GID: ${DOCKER_GID:-999}
     # Supervisor is the ONLY service that holds docker.sock.
     # sandbox-mcp talks to it over the internal network — never directly to Docker.
     volumes:

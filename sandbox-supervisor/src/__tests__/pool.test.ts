@@ -46,7 +46,7 @@ function makePool(deps: PoolDeps, poolSize: number, image: string) {
     if (!entry) throw new Error('No available sandbox containers — pool exhausted');
     entry.claimed = true;
     entry.claimedAt = new Date();
-    spawnContainer().catch(() => {});
+    // No eager refill here — see pool.ts for why (unbounded growth bug).
     return entry.id;
   }
 

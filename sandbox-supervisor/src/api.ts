@@ -1,5 +1,5 @@
 import express from 'express';
-import { claimContainer, releaseContainer, getPoolStatus } from './pool.js';
+import { claimContainer, releaseContainer, getPoolStatus, isClaimedContainer } from './pool.js';
 import { execInContainer } from './docker.js';
 
 export function createSupervisorApp(): express.Express {
@@ -42,6 +42,15 @@ export function createSupervisorApp(): express.Express {
 
     if (!containerId || !command) {
       res.status(400).json({ error: 'containerId and command are required' });
+      return;
+    }
+
+    // The comment above claimed this was already validated — it wasn't.
+    // Without this check, anything that can reach 127.0.0.1:3001 could run
+    // commands in an arbitrary/unclaimed container id, bypassing the whole
+    // claim/release accounting this supervisor exists to enforce.
+    if (!isClaimedContainer(containerId)) {
+      res.status(404).json({ error: 'Unknown or unclaimed containerId' });
       return;
     }
 

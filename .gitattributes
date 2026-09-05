@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# Never normalize binary-ish files even if a tool mislabels them as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
