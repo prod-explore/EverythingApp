@@ -1,6 +1,7 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
+import { writeJsonAtomic } from './atomic-write.js';
 
 export interface PendingBatch {
   batchId: string;
@@ -30,6 +31,5 @@ export async function savePendingBatches(
   batches: PendingBatch[],
   path: string = batchesPath(),
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(batches, null, 2), 'utf-8');
+  await writeJsonAtomic(path, batches);
 }

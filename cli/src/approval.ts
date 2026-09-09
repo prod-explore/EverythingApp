@@ -19,7 +19,7 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /:\(\)\s*\{\s*:\s*\|\s*:.*\}\s*;\s*:/, // classic shell fork-bomb shape
 ];
 
-function looksDangerous(args: Record<string, unknown>): boolean {
+export function looksDangerous(args: Record<string, unknown>): boolean {
   const text = JSON.stringify(args);
   return DANGEROUS_PATTERNS.some(pattern => pattern.test(text));
 }

@@ -1,7 +1,8 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
+import { writeJsonAtomic } from './atomic-write.js';
 
 const DEFAULT_PATH = join(homedir(), '.everythingapp', 'history.json');
 
@@ -24,8 +25,7 @@ export async function saveHistory(
   messages: Anthropic.MessageParam[],
   path: string = historyPath(),
 ): Promise<void> {
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, JSON.stringify(messages, null, 2), 'utf-8');
+  await writeJsonAtomic(path, messages);
 }
 
 export async function clearHistory(path: string = historyPath()): Promise<void> {
