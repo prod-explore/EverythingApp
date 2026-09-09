@@ -1,0 +1,8 @@
+{
+  "name": "EverythingApp",
+  "short_name": "EverythingApp",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#14151a",
+  "theme_color": "#14151a"
+}

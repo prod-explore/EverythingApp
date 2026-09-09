@@ -46,8 +46,42 @@ services:
     networks:
       - sandbox-internal
 
+  # MVP web/mobile bridge (cli/server.ts) — same tool logic as the CLI, over
+  # HTTP + a static page instead of a terminal. NOT the full §11 PWA spec.
+  # Front this with the existing Nginx+Certbot for HTTPS from a phone —
+  # bound to 127.0.0.1 here, same as the other services.
+  everythingapp-web:
+    build:
+      context: ./cli
+      dockerfile: Dockerfile
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
+      SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}
+      PORT: 3000
+      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox}
+      # Container-to-container URL — NOT localhost, unlike local CLI dev
+      # (see cli/.env.example). Reaches sandbox-mcp over sandbox-internal.
+      MCP_SANDBOX_URL: http://sandbox-mcp:3002/mcp/sse
+      MCP_SANDBOX_API_KEY: ${MCP_API_KEY:-}
+      # Add MCP_OBSIDIAN_URL/_API_KEY (or others) here as needed — it's
+      # already an external HTTPS URL, so it works unchanged from inside
+      # this container.
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      # Conversation/batch history persists across container restarts.
+      - everythingapp_web_data:/home/node/.everythingapp
+    depends_on:
+      - sandbox-mcp
+    restart: unless-stopped
+    networks:
+      - sandbox-internal
+
 networks:
   # Isolated network — zero overlap with any other Compose stacks on the host.
   # On the Pi: ensure this network name doesn't conflict with skarpa-net or obsidian-net.
   sandbox-internal:
     driver: bridge
+
+volumes:
+  everythingapp_web_data:

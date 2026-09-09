@@ -193,14 +193,76 @@ cli/
 │   ├── mcp-client.ts       # one connection to one MCP server (Streamable HTTP)
 │   ├── tool-registry.ts    # aggregates tools across servers, routes calls, approval logic
 │   ├── approval.ts         # ApprovalGate — [y/N/a] terminal prompt, per-tool "always allow"
+│   ├── web-approval.ts     # WebApprovalGate — same rules, async/HTTP instead of blocking readline
 │   ├── anthropic-loop.ts    # the tool_use round-trip loop + prompt caching
-│   ├── history-store.ts    # JSON-file conversation persistence
-│   ├── batch-store.ts      # JSON-file pending-batch tracking
+│   ├── history-store.ts    # JSON-file conversation persistence (atomic writes)
+│   ├── batch-store.ts      # JSON-file pending-batch tracking (atomic writes)
+│   ├── atomic-write.ts     # shared temp-file+rename helper used by both
 │   ├── batch.ts             # /schedule — Anthropic Batches API (submit + check)
 │   ├── usage-tracker.ts    # /usage — per-turn + running session cost estimate
-│   └── index.ts            # REPL entrypoint
+│   ├── index.ts            # REPL entrypoint (terminal)
+│   └── server.ts           # Express entrypoint (web/mobile) — see below
+├── public/
+│   ├── chat.html             # markup only — no inline script/handlers (CSP)
+│   ├── app.js                # all client JS, event-delegated
+│   └── manifest.json         # minimal PWA manifest (add-to-homescreen)
 └── .env.example
 ```
+
+## Web/mobile MVP (`npm run server`)
+
+This is the smallest real bridge from "works in a terminal" to "works on your
+phone" — **not** the full §11 PWA spec (Master Brief). It reuses every piece
+of the CLI's tool logic as-is (`ToolRegistry`, `runTurn`, batch mode, usage
+tracking, the same dangerous-command detection) and only swaps the transport:
+a terminal's blocking `readline` prompt becomes an Express server + one plain
+HTML page, with the Approval Gate turned into an async queue
+(`WebApprovalGate`) that a `POST /api/approve` resolves instead of a
+keystroke.
+
+**Missing on purpose, vs. the full spec:** one flat conversation (same
+`history.json` as the CLI — no sidebar of separate threads, that needs
+Postgres from Phase 3), one shared auth token (not per-account login), no
+push notifications (the page has to be open and polling every 1.5s for
+pending approvals), no custom instructions UI, no settings panel. All of that
+is real Phase 3/4 work — this is the walking skeleton underneath it.
+
+```bash
+cd cli
+cp .env.example .env
+# fill in ANTHROPIC_API_KEY, SERVER_AUTH_TOKEN (openssl rand -hex 32), connectors as usual
+npm install
+npm run build
+npm run server
+# open http://localhost:3000, paste the SERVER_AUTH_TOKEN when prompted
+```
+
+For real phone access: run it via `docker-compose.yml` (`everythingapp-web`
+service, already wired to reach `sandbox-mcp` over the internal network) and
+put it behind the existing Nginx+Certbot for HTTPS — a browser won't let you
+send an `Authorization` header from a non-secure origin on a real phone, so
+plain HTTP only works for local testing on the same machine. Example config:
+[`deploy/nginx-everythingapp.conf.example`](deploy/nginx-everythingapp.conf.example).
+
+**Hardening already in place** (not just a prototype-and-hope MVP):
+- Turns run detached from the request that starts them (`POST /api/message`
+  returns immediately; `GET /api/status` is polled for the result) — a
+  backgrounded/locked phone can't drop a long-held connection mid-turn,
+  because there isn't one.
+- `history.json`/`batches.json` are written atomically (temp file + rename)
+  — a kill mid-write can't corrupt them into "start fresh."
+- Timing-safe comparison of the auth token (`crypto.timingSafeEqual`), not
+  `===`.
+- `helmet()` (CSP, standard security headers), `trust proxy` set for
+  running behind Nginx, no CORS (the API is same-origin only — the browser
+  page IS what's served here).
+- `GET /health` (unauthenticated) + a Dockerfile `HEALTHCHECK` against it.
+- Graceful shutdown on `SIGTERM`/`SIGINT` (what `docker stop`/a redeploy
+  sends) instead of dropping in-flight requests.
+- Pending batches are checked periodically in the background (every 5 min,
+  skipped while a turn is running to avoid both mutating `history` at once)
+  — the CLI only checked on startup/`/batches`, which doesn't fit a
+  long-running server.
 
 ---
 

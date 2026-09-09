@@ -1,0 +1,41 @@
+# Reverse proxy for the EverythingApp web MVP (cli/server.ts).
+#
+# This is the STARTING config — plain HTTP, no certificate paths. Get this
+# in place and reloaded first, then run:
+#
+#   sudo certbot --nginx -d everythingapp.twoja-domena.pl
+#
+# Certbot edits this file in place: it adds `listen 443 ssl;` +
+# `ssl_certificate`/`ssl_certificate_key` lines, and (if you accept the
+# prompt) a second `server` block on port 80 that just 301-redirects to
+# HTTPS. Don't hand-write the SSL block yourself — let certbot do it, so it
+# also wires up the renewal hook correctly.
+#
+# Copy to /etc/nginx/sites-available/everythingapp.conf, symlink into
+# sites-enabled, `nginx -t`, then `systemctl reload nginx` — same as
+# whatever pattern the other services on this host already use.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name everythingapp.twoja-domena.pl;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+
+        # Standard forwarded headers — the app doesn't currently read any
+        # of these itself, but keeping them is normal practice for anything
+        # you might add later (real client IP in logs, etc.), and
+        # `trust_proxy` is already set server-side to expect them.
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # No need for extended proxy_read_timeout/proxy_send_timeout here:
+        # every request the app serves (including POST /api/message)
+        # returns in well under a second — a turn runs detached from the
+        # request that starts it, and the client polls GET /api/status for
+        # the result. Nginx's defaults (60s) are already generous for that.
+    }
+}

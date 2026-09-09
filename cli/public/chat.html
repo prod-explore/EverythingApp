@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#14151a">
+<title>EverythingApp</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: #14151a; color: #e8e8ec;
+    display: flex; flex-direction: column; height: 100dvh;
+  }
+  header {
+    padding: 10px 14px; border-bottom: 1px solid #2a2b33;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 13px; color: #9a9aa5;
+  }
+  #usage { cursor: pointer; }
+  #log { flex: 1; overflow-y: auto; padding: 12px; }
+  .msg { max-width: 85%; margin: 6px 0; padding: 8px 12px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.user { background: #2b5fd9; margin-left: auto; border-bottom-right-radius: 4px; }
+  .msg.assistant { background: #24252c; margin-right: auto; border-bottom-left-radius: 4px; }
+  .msg.tool { background: transparent; color: #7a7a85; font-size: 12px; margin: 4px auto; text-align: center; max-width: 100%; }
+  #approvals { padding: 0 12px; }
+  .approval-card {
+    border: 1px solid #d98c2b; background: #2a2110; border-radius: 10px;
+    padding: 10px; margin: 8px 0;
+  }
+  .approval-card.dangerous { border-color: #d92b2b; background: #2a1010; }
+  .approval-card .label { font-weight: 600; margin-bottom: 4px; }
+  .approval-card .warn { color: #ff6b6b; font-size: 12px; margin-bottom: 6px; }
+  .approval-card pre { font-size: 11px; overflow-x: auto; background: #14151a; padding: 6px; border-radius: 6px; }
+  .approval-card .buttons { display: flex; gap: 6px; margin-top: 6px; }
+  .approval-card button { flex: 1; padding: 8px; border: none; border-radius: 8px; font-size: 14px; }
+  .btn-approve { background: #2b8a3e; color: white; }
+  .btn-always { background: #2b5fd9; color: white; }
+  .btn-deny { background: #444; color: white; }
+  form { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #2a2b33; }
+  textarea {
+    flex: 1; resize: none; border-radius: 10px; border: 1px solid #34353e;
+    background: #1c1d24; color: #e8e8ec; padding: 10px; font-size: 15px; max-height: 120px;
+  }
+  button.send { background: #2b5fd9; color: white; border: none; border-radius: 10px; padding: 0 18px; font-size: 15px; }
+  button.send:disabled { opacity: 0.5; }
+  #login { margin: auto; text-align: center; padding: 20px; }
+  #login input { padding: 10px; border-radius: 8px; border: 1px solid #34353e; background: #1c1d24; color: #e8e8ec; width: 220px; }
+  #login button { padding: 10px 16px; border-radius: 8px; border: none; background: #2b5fd9; color: white; margin-left: 6px; }
+</style>
+</head>
+<body>
+
+<div id="login">
+  <p>Token dostępu:</p>
+  <input id="tokenInput" type="password" placeholder="SERVER_AUTH_TOKEN">
+  <button id="loginBtn">Wejdź</button>
+</div>
+
+<div id="app" style="display:none; flex-direction:column; height:100%;">
+  <header>
+    <span>EverythingApp</span>
+    <span id="usage">—</span>
+  </header>
+  <div id="log"></div>
+  <div id="thinking" style="display:none; padding: 6px 12px; color:#9a9aa5; font-size:13px;">Claude myśli…</div>
+  <div id="approvals"></div>
+  <form id="form">
+    <textarea id="input" placeholder="Napisz wiadomość… ('/schedule ' na początku = batch)" rows="1"></textarea>
+    <button class="send" id="sendBtn" type="submit">Wyślij</button>
+  </form>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
