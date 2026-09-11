@@ -9,31 +9,39 @@ import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate } from './web-approval.js';
 import { runTurn } from './anthropic-loop.js';
-import { loadHistory, saveHistory, clearHistory } from './history-store.js';
-import { loadPendingBatches, savePendingBatches } from './batch-store.js';
 import { submitBatch, checkBatch } from './batch.js';
 import { UsageTracker } from './usage-tracker.js';
+import { SSEManager } from './sse.js';
+import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem } from './gazeta.js';
+import {
+  openDb,
+  runMigrations,
+  createConversation,
+  listConversations,
+  getConversation,
+  updateConversation,
+  deleteConversation,
+  getMessages,
+  appendMessage,
+  clearMessages,
+  getSetting,
+  setSetting,
+  getAllSettings,
+  listGazetaItems,
+  respondToGazetaItem,
+  dismissGazetaItem,
+  createBatchJob,
+  listBatchJobs,
+  resolveBatchJob,
+  getPendingBatchJobs,
+} from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const SYSTEM_PROMPT = `Jesteś osobistym asystentem Mikołaja w EverythingApp — jego self-hosted, BYOK
-systemie AI, używanym teraz przez przeglądarkę (telefon lub desktop) zamiast terminala. Masz
-dostęp do narzędzi wystawionych przez podłączone serwery MCP. Każde wywołanie narzędzia z
-efektem ubocznym przechodzi przez Approval Gate na stronie — jeśli zostanie odrzucone,
-poinformuj o tym użytkownika i zaproponuj alternatywę zamiast ponawiać to samo wywołanie w
-kółko. Odpowiadaj po polsku, konkretnie, bez zbędnego lania wody.`;
+const DEFAULT_SYSTEM_PROMPT = `You are Mikołaj's personal AI assistant in EverythingApp — his self-hosted BYOK AI system accessed via web browser (phone or desktop). You have access to tools exposed by connected MCP servers. Every tool call with a side effect goes through the Approval Gate on the page — if rejected, inform the user and suggest an alternative instead of retrying the same call in a loop. When you need non-urgent input from the user, use the request_human_input tool to queue it in their Gazeta inbox. Be concise and direct.`;
 
-/**
- * Constant-time comparison of the Authorization header against the expected
- * bearer token. A plain `===`/`!==` string compare returns as soon as it
- * finds a mismatched byte, so how long it takes leaks how many leading
- * characters were correct — a real (if slow) attack against a long-lived
- * shared secret sitting on the open internet behind Nginx. timingSafeEqual
- * takes the same time regardless of where the mismatch is; the length check
- * before it is the one unavoidable exception (needed because
- * timingSafeEqual throws on unequal-length buffers), and leaks only the
- * correct token's length, not any of its content.
- */
+const BATCH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
 function isValidAuthHeader(header: string | undefined, expectedToken: string): boolean {
   if (!header) return false;
   const expected = Buffer.from(`Bearer ${expectedToken}`);
@@ -42,110 +50,106 @@ function isValidAuthHeader(header: string | undefined, expectedToken: string): b
   return timingSafeEqual(actual, expected);
 }
 
-const BATCH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
-
-/**
- * Deliberately the MVP bridge, not the full §11 PWA spec: one flat
- * conversation (same history.json as the CLI, not a Postgres-backed sidebar
- * of separate threads), one shared auth token (not per-user accounts), no
- * push notifications for backgrounded approvals/batches — the page has to be
- * open and polling. Everything harder (tool registry, approval semantics,
- * batch mode, usage tracking, prompt caching) already exists and is reused
- * as-is from the CLI; this file only swaps the transport.
- */
 async function main(): Promise<void> {
   const config = loadConfig();
   const authToken = process.env['SERVER_AUTH_TOKEN'];
   if (!authToken) throw new Error('Missing required environment variable: SERVER_AUTH_TOKEN');
 
-  const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
+  // ─── Database ─────────────────────────────────────────────────────────────
+  const db = openDb();
+  runMigrations(db);
 
+  // ─── MCP connections ──────────────────────────────────────────────────────
   const connections = config.mcpServers.map(cfg => new McpConnection(cfg));
   for (const conn of connections) {
     try {
       await conn.connect();
-      console.log(`[mcp] połączono z '${conn.name}'`);
+      console.log(`[mcp] connected to '${conn.name}'`);
     } catch (err) {
-      console.error(`[mcp] nie udało się połączyć z '${conn.name}':`, (err as Error).message);
+      console.error(`[mcp] failed to connect to '${conn.name}':`, (err as Error).message);
     }
   }
 
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
-  console.log(`[tools] załadowano ${registry.toAnthropicTools().length} narzędzi z MCP`);
+  console.log(`[tools] loaded ${registry.toAnthropicTools().length} tools from MCP`);
 
+  // ─── Shared services ──────────────────────────────────────────────────────
   const approvalGate = new WebApprovalGate();
   const usageTracker = new UsageTracker();
-  const serverTools: Anthropic.ToolUnion[] = config.webSearchEnabled
-    ? [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }]
-    : [];
+  const sse = new SSEManager();
+  const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
-  let history: Anthropic.MessageParam[] = await loadHistory();
+  const serverTools: Anthropic.ToolUnion[] = [
+    ...(config.webSearchEnabled
+      ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 }]
+      : []),
+    REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.ToolUnion,
+  ];
 
-  /**
-   * A turn (one user message → Claude's reply, including any tool calls and
-   * the approvals they need) can take anywhere from a second to several
-   * minutes — an approval sitting unanswered while the phone is locked is
-   * normal, not an edge case. POST /api/message used to await the whole
-   * thing and hold the HTTP connection open for all of it; on a phone,
-   * backgrounding the tab commonly suspends or kills that connection, and
-   * the reply is lost even though the server finished the work.
-   *
-   * So the turn now runs detached from the request that started it: POST
-   * /api/message kicks it off and returns immediately, GET /api/status is
-   * polled (same page, same 1.5s interval as pending-approvals) until it
-   * reports done/error. Every request completes in well under a second —
-   * nothing to time out, on the phone or through Nginx in front of it.
-   */
-  type TurnState =
-    | { id: number; status: 'idle' }
-    | { id: number; status: 'running' }
-    | { id: number; status: 'done'; lastCost: number }
-    | { id: number; status: 'error'; error: string };
-  let turnCounter = 0;
-  let turnState: TurnState = { id: 0, status: 'idle' };
+  // ─── Per-conversation turn state ──────────────────────────────────────────
+  type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';
+  interface TurnState { id: number; status: TurnStatus; error?: string }
+  const turnCounters = new Map<string, number>();
+  const turnStates = new Map<string, TurnState>();
+  const abortControllers = new Map<string, AbortController>();
 
-  async function resolvePendingBatches(): Promise<void> {
-    const pending = await loadPendingBatches();
-    if (pending.length === 0) return;
-    const stillPending = [];
-    for (const entry of pending) {
-      let resolution;
-      try {
-        resolution = await checkBatch(anthropic, entry);
-      } catch (err) {
-        console.error(`[batch] błąd sprawdzania ${entry.batchId}:`, (err as Error).message);
-        stillPending.push(entry);
-        continue;
-      }
-      if (!resolution) {
-        stillPending.push(entry);
-        continue;
-      }
-      if (resolution.status === 'succeeded' && resolution.text) {
-        history.push({ role: 'assistant', content: resolution.text });
-        await saveHistory(history);
-      }
-      // Errored/canceled/expired batches are just dropped from the pending
-      // list — surfaced via GET /api/batches while still pending, nothing
-      // further to show once resolved with no text.
-    }
-    await savePendingBatches(stillPending);
+  function getTurnState(convId: string): TurnState {
+    return turnStates.get(convId) ?? { id: 0, status: 'idle' };
   }
 
-  const app = express();
-  app.set('trust proxy', 1); // behind Nginx — req.ip/req.protocol reflect the real client, not the proxy hop
-  app.use(helmet());
-  app.use(express.json());
+  // ─── Background batch checker ─────────────────────────────────────────────
+  async function resolvePendingBatches(skipConvId?: string): Promise<void> {
+    const pending = getPendingBatchJobs(db);
+    if (pending.length === 0) return;
+    for (const job of pending) {
+      if (skipConvId && job.conversationId === skipConvId) continue;
+      try {
+        const resolution = await checkBatch(anthropic, {
+          batchId: job.id,
+          customId: job.customId,
+          submittedAt: job.submittedAt,
+          preview: job.preview,
+        });
+        if (!resolution) continue;
+        resolveBatchJob(db, job.id, resolution.status, resolution.text);
+        if (resolution.status === 'succeeded' && resolution.text) {
+          appendMessage(db, job.conversationId, 'assistant', resolution.text);
+          // Create a gazeta item so user sees the batch result
+          createBatchResultItem(db, { ...job, resultText: resolution.text });
+          sse.emit(job.conversationId, 'batch:resolved', { jobId: job.id, convId: job.conversationId });
+          sse.emitAll('gazeta:new', { type: 'batch_result' });
+        }
+      } catch (err) {
+        console.error(`[batch] error checking ${job.id}:`, (err as Error).message);
+      }
+    }
+  }
 
-  // Health check — deliberately outside /api (no auth): this is for Docker's
-  // HEALTHCHECK and any future uptime monitoring, not for the app itself.
+  // ─── Express setup ────────────────────────────────────────────────────────
+  const app = express();
+  app.set('trust proxy', 1);
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"], // Tailwind needs this
+        imgSrc: ["'self'", 'data:', 'blob:'],
+        connectSrc: ["'self'"],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+      },
+    },
+  }));
+  app.use(express.json({ limit: '10mb' }));
+
+  // ─── Health (no auth) ─────────────────────────────────────────────────────
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok' });
+    const connectorStatus = connections.map(c => ({ name: c.name }));
+    res.json({ status: 'ok', connectors: connectorStatus });
   });
 
-  // Single shared secret — every request needs it. Fine for one user; not
-  // the per-account auth §11 eventually calls for.
+  // ─── Auth middleware ──────────────────────────────────────────────────────
   app.use('/api', (req, res, next) => {
     if (!isValidAuthHeader(req.headers.authorization, authToken)) {
       res.status(401).json({ error: 'unauthorized' });
@@ -154,24 +158,233 @@ async function main(): Promise<void> {
     next();
   });
 
-  app.get('/api/history', (_req, res) => {
-    res.json({ history });
+  // ─── Settings ─────────────────────────────────────────────────────────────
+  app.get('/api/settings', (_req, res) => {
+    res.json({ settings: getAllSettings(db) });
   });
 
-  app.post('/api/clear', async (_req, res) => {
-    if (turnState.status === 'running') {
-      res.status(409).json({ error: 'poczekaj aż bieżąca wiadomość się przetworzy' });
+  app.put('/api/settings', (req, res) => {
+    const { key, value } = req.body ?? {};
+    if (typeof key !== 'string' || typeof value !== 'string') {
+      res.status(400).json({ error: 'expected { key: string, value: string }' });
       return;
     }
-    history = [];
-    await clearHistory();
+    setSetting(db, key, value);
     res.json({ ok: true });
   });
 
-  app.get('/api/usage', (_req, res) => {
-    res.json({ summary: usageTracker.summary() });
+  // ─── Connectors ───────────────────────────────────────────────────────────
+  app.get('/api/connectors', (_req, res) => {
+    const data = connections.map(conn => {
+      const tools = registry.toAnthropicTools().filter(t => t.name.startsWith(`${conn.name}__`));
+      return {
+        name: conn.name,
+        connected: true, // if it's in the list, it connected at startup
+        toolCount: tools.length,
+        tools: tools.map(t => ({ name: t.name, description: t.description })),
+      };
+    });
+    res.json({ connectors: data });
   });
 
+  // ─── Conversations ────────────────────────────────────────────────────────
+  app.get('/api/conversations', (_req, res) => {
+    res.json({ conversations: listConversations(db) });
+  });
+
+  app.post('/api/conversations', (req, res) => {
+    const { title, systemPrompt, model, sandboxEnabled } = req.body ?? {};
+    const { id } = createConversation(db, { title, systemPrompt, model, sandboxEnabled });
+    res.status(201).json({ id });
+  });
+
+  app.get('/api/conversations/:id', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json(conv);
+  });
+
+  app.patch('/api/conversations/:id', (req, res) => {
+    const ok = updateConversation(db, req.params.id, req.body ?? {});
+    if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/conversations/:id', (req, res) => {
+    const ok = deleteConversation(db, req.params.id);
+    if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // ─── Messages ─────────────────────────────────────────────────────────────
+  app.get('/api/conversations/:id/messages', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json({ messages: getMessages(db, req.params.id) });
+  });
+
+  app.delete('/api/conversations/:id/messages', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(req.params.id).status === 'running') {
+      res.status(409).json({ error: 'turn is running — kill it first' });
+      return;
+    }
+    clearMessages(db, req.params.id);
+    res.json({ ok: true });
+  });
+
+  // ─── SSE stream ───────────────────────────────────────────────────────────
+  app.get('/api/conversations/:id/stream', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    sse.addClient(req.params.id, res);
+  });
+
+  // ─── Kill switch ──────────────────────────────────────────────────────────
+  app.post('/api/conversations/:id/kill', (req, res) => {
+    const controller = abortControllers.get(req.params.id);
+    if (!controller) {
+      res.status(409).json({ error: 'no running turn for this conversation' });
+      return;
+    }
+    controller.abort();
+    res.json({ ok: true });
+  });
+
+  // ─── Send message ─────────────────────────────────────────────────────────
+  app.post('/api/conversations/:id/message', (req, res) => {
+    const convId = req.params.id;
+    const { text, batch } = req.body ?? {};
+
+    if (typeof text !== 'string' || !text.trim()) {
+      res.status(400).json({ error: 'expected { text: string }' });
+      return;
+    }
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'a turn is already running in this conversation' });
+      return;
+    }
+
+    // Batch mode — submit to Anthropic Batch API instead
+    if (batch) {
+      const history = getMessages(db, convId);
+      const effectiveModel = conv.model ?? getSetting(db, 'default_model') ?? config.model;
+      const effectiveSystem = conv.systemPrompt ?? getSetting(db, 'global_system_prompt') ?? DEFAULT_SYSTEM_PROMPT;
+      void (async () => {
+        try {
+          const entry = await submitBatch(anthropic, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], text);
+          appendMessage(db, convId, 'user', text);
+          createBatchJob(db, { id: entry.batchId, conversationId: convId, customId: entry.customId, userText: text, preview: entry.preview });
+          res.json({ ok: true, batchId: entry.batchId });
+        } catch (err) {
+          res.status(500).json({ error: (err as Error).message });
+        }
+      })();
+      return;
+    }
+
+    // Live turn — runs detached from the HTTP request
+    const counter = (turnCounters.get(convId) ?? 0) + 1;
+    turnCounters.set(convId, counter);
+    const turnId = counter;
+    const controller = new AbortController();
+    abortControllers.set(convId, controller);
+
+    // Optimistic: store user message immediately
+    appendMessage(db, convId, 'user', text);
+    turnStates.set(convId, { id: turnId, status: 'running' });
+    res.json({ ok: true, turnId });
+
+    sse.emit(convId, 'turn:start', { turnId });
+
+    void (async () => {
+      const history = getMessages(db, convId) as Anthropic.MessageParam[];
+      // Remove the optimistically added user message — runTurn will rebuild it
+      const historyBeforeTurn = history.slice(0, -1);
+      const effectiveModel = conv.model ?? getSetting(db, 'default_model') ?? config.model;
+      const effectiveSystem = conv.systemPrompt ?? getSetting(db, 'global_system_prompt') ?? DEFAULT_SYSTEM_PROMPT;
+
+      try {
+        const updatedHistory = await runTurn(
+          {
+            anthropic,
+            model: effectiveModel,
+            tools: registry,
+            systemPrompt: effectiveSystem,
+            serverTools,
+            signal: controller.signal,
+            confirm: async (label, args) => {
+              const approved = await approvalGate.confirm(label, args);
+              sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
+              return approved;
+            },
+            onAssistantText: text => sse.emit(convId, 'turn:text', { text }),
+            onToolStart: label => sse.emit(convId, 'turn:tool_use', { label }),
+            onToolResult: (toolName, fullOutput, truncatedOutput, isError) => {
+              sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });
+            },
+            onUsage: usage => usageTracker.record(usage),
+          },
+          historyBeforeTurn,
+          text,
+        );
+
+        // Handle virtual tool calls (request_human_input) in the updated history
+        for (const msg of updatedHistory) {
+          if (msg.role !== 'assistant') continue;
+          const blocks = Array.isArray(msg.content) ? msg.content : [];
+          for (const block of blocks) {
+            if (
+              typeof block === 'object' &&
+              block !== null &&
+              'type' in block &&
+              block.type === 'tool_use' &&
+              'name' in block &&
+              block.name === 'request_human_input'
+            ) {
+              const input = (block as { input: { title: string; description: string; choices?: string[] } }).input;
+              handleRequestHumanInput(db, convId, input);
+              sse.emitAll('gazeta:new', { type: 'agent_question' });
+            }
+          }
+        }
+
+        // Persist final history (excluding the optimistic user message we already saved)
+        // We already stored the user message — only store new messages from this turn
+        const newMessages = updatedHistory.slice(historyBeforeTurn.length + 1); // skip the user message
+        for (const msg of newMessages) {
+          appendMessage(db, convId, msg.role, msg.content);
+        }
+
+        // Auto-title after first exchange
+        const conv2 = getConversation(db, convId);
+        if (conv2 && conv2.title === 'New conversation') {
+          updateConversation(db, convId, { title: text.slice(0, 60) });
+        }
+
+        turnStates.set(convId, { id: turnId, status: 'done' });
+        sse.emit(convId, 'turn:done', { turnId, usage: usageTracker.summary() });
+      } catch (err) {
+        const error = (err as Error).message;
+        const aborted = error.includes('kill switch');
+        // Roll back optimistic user message
+        const msgs = getMessages(db, convId);
+        if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
+          clearMessages(db, convId);
+          for (const m of msgs.slice(0, -1)) appendMessage(db, convId, m.role, m.content);
+        }
+        turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error });
+        sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error });
+      } finally {
+        abortControllers.delete(convId);
+      }
+    })();
+  });
+
+  // ─── Approvals ────────────────────────────────────────────────────────────
   app.get('/api/pending-approvals', (_req, res) => {
     res.json({ pending: approvalGate.listPending() });
   });
@@ -183,113 +396,56 @@ async function main(): Promise<void> {
       return;
     }
     const ok = approvalGate.resolve(id, approved, Boolean(alwaysAllow));
-    if (!ok) {
-      res.status(404).json({ error: 'no such pending approval (already resolved?)' });
-      return;
-    }
+    if (!ok) { res.status(404).json({ error: 'no such pending approval' }); return; }
     res.json({ ok: true });
   });
 
-  app.get('/api/batches', async (_req, res) => {
-    // Skip resolving (not just reporting) while a turn is running — both
-    // paths can mutate the shared `history` array, and resolving here too
-    // could interleave with a turn's read-then-overwrite of it. Reporting
-    // the last-known pending list is still safe and immediate either way.
-    if (turnState.status !== 'running') {
-      await resolvePendingBatches();
-    }
-    const pending = await loadPendingBatches();
-    res.json({ pending });
+  // ─── Gazeta ───────────────────────────────────────────────────────────────
+  app.get('/api/gazeta', (req, res) => {
+    const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
+    res.json({ items: listGazetaItems(db, status) });
   });
 
-  app.post('/api/schedule', async (req, res) => {
-    const text = req.body?.text;
-    if (typeof text !== 'string' || !text.trim()) {
-      res.status(400).json({ error: 'expected { text: string }' });
-      return;
-    }
-    try {
-      const entry = await submitBatch(anthropic, config.model, SYSTEM_PROMPT, history, text);
-      history.push({ role: 'user', content: text });
-      await saveHistory(history);
-      const pending = await loadPendingBatches();
-      await savePendingBatches([...pending, entry]);
-      res.json({ ok: true, entry });
-    } catch (err) {
-      res.status(500).json({ error: (err as Error).message });
-    }
+  app.post('/api/gazeta/:id/respond', (req, res) => {
+    const ok = respondToGazetaItem(db, req.params.id, req.body?.response ?? null);
+    if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
+    res.json({ ok: true });
   });
 
-  // Detached: returns as soon as the turn is queued, not when it finishes.
-  // Poll GET /api/status for the outcome. Rejects a second message while one
-  // is still running rather than racing two turns against the same history.
-  app.post('/api/message', (req, res) => {
-    const text = req.body?.text;
-    if (typeof text !== 'string' || !text.trim()) {
-      res.status(400).json({ error: 'expected { text: string }' });
-      return;
-    }
-    if (turnState.status === 'running') {
-      res.status(409).json({ error: 'poprzednia wiadomość jeszcze się przetwarza' });
-      return;
-    }
-
-    turnCounter += 1;
-    const thisTurnId = turnCounter;
-    const historyBeforeTurn = history;
-    // Optimistic: so GET /api/history and /api/status show the sent message
-    // right away, even before the turn finishes — including after a reload.
-    history = [...history, { role: 'user', content: text }];
-    turnState = { id: thisTurnId, status: 'running' };
-    res.json({ ok: true, turnId: thisTurnId });
-
-    (async () => {
-      let lastCost = 0;
-      try {
-        const result = await runTurn(
-          {
-            anthropic,
-            model: config.model,
-            tools: registry,
-            systemPrompt: SYSTEM_PROMPT,
-            serverTools,
-            confirm: (label, args) => approvalGate.confirm(label, args),
-            onUsage: usage => {
-              lastCost = usageTracker.record(usage);
-            },
-          },
-          historyBeforeTurn,
-          text,
-        );
-        history = result;
-        await saveHistory(history);
-        turnState = { id: thisTurnId, status: 'done', lastCost };
-      } catch (err) {
-        // Roll back the optimistic append — a failed turn shouldn't leave a
-        // sent message on screen with no reply and no way to retry it.
-        history = historyBeforeTurn;
-        turnState = { id: thisTurnId, status: 'error', error: (err as Error).message };
-      }
-    })();
+  app.post('/api/gazeta/:id/dismiss', (req, res) => {
+    const ok = dismissGazetaItem(db, req.params.id);
+    if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
+    res.json({ ok: true });
   });
 
-  app.get('/api/status', (_req, res) => {
-    res.json({ ...turnState, history, usage: usageTracker.summary() });
+  // ─── Batch jobs ───────────────────────────────────────────────────────────
+  app.get('/api/batches', (_req, res) => {
+    res.json({ jobs: listBatchJobs(db) });
   });
 
-  app.use(express.static(path.join(__dirname, '..', 'public')));
-  app.get('/', (_req, res) => {
-    res.sendFile(path.join(__dirname, '..', 'public', 'chat.html'));
+  app.get('/api/conversations/:id/batches', (req, res) => {
+    res.json({ jobs: listBatchJobs(db, { conversationId: req.params.id }) });
   });
 
-  // Global error handler — must have all 4 params for Express to recognize
-  // it as one. Catches JSON-parse failures from express.json() and anything
-  // an async route rejects with (Express 5 forwards those automatically),
-  // so every error response is JSON like the rest of the API instead of
-  // Express's default HTML error page. body-parser's JSON-syntax errors
-  // (and any other well-behaved middleware error) carry their own
-  // statusCode — a malformed request body is the client's fault (400), not
-  // ours (500), so that's respected here rather than flattened to 500.
+  // ─── Usage ────────────────────────────────────────────────────────────────
+  app.get('/api/usage', (_req, res) => {
+    res.json({ summary: usageTracker.summary() });
+  });
+
+  // ─── Turn status (legacy polling compat) ──────────────────────────────────
+  app.get('/api/conversations/:id/status', (req, res) => {
+    const state = getTurnState(req.params.id);
+    res.json({ ...state, usage: usageTracker.summary() });
+  });
+
+  // ─── Static frontend ─────────────────────────────────────────────────────
+  const webDistPath = path.join(__dirname, '..', '..', 'web', 'dist');
+  app.use(express.static(webDistPath));
+  app.get('*', (_req, res) => {
+    res.sendFile(path.join(webDistPath, 'index.html'));
+  });
+
+  // ─── Global error handler ─────────────────────────────────────────────────
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('[server] unhandled error:', err);
     if (res.headersSent) return;
@@ -300,38 +456,41 @@ async function main(): Promise<void> {
     res.status(statusCode).json({ error: statusCode === 500 ? 'internal server error' : (err as Error).message });
   });
 
+  // ─── Start server ─────────────────────────────────────────────────────────
   const port = Number(process.env['PORT'] ?? 3000);
   const server = app.listen(port, () => {
-    console.log(`[server] nasłuchuje na porcie ${port}`);
+    console.log(`[server] listening on port ${port}`);
   });
 
-  // Batches can take anywhere from minutes to ~24h to resolve (Anthropic
-  // Batches API), and the server keeps running the whole time — unlike the
-  // CLI, which only checks on startup/`/batches`, there's no "next command"
-  // to hang a check off of. Skipped while a turn is running (see the
-  // GET /api/batches handler above for why).
-  const batchInterval = setInterval(() => {
-    if (turnState.status === 'running') return;
-    resolvePendingBatches().catch(err => {
-      console.error('[batch] okresowe sprawdzanie nie powiodło się:', (err as Error).message);
-    });
-  }, BATCH_CHECK_INTERVAL_MS);
-  batchInterval.unref(); // don't let this timer alone keep the process alive
+  const keepaliveInterval = sse.startKeepalive();
 
-  // Docker sends SIGTERM on `docker stop`/a redeploy — without handling it,
-  // Node kills every in-flight request immediately, which for a running
-  // turn means losing whatever tool call or approval it was in the middle
-  // of. This gives it a clean chance to finish first.
+  // ─── Background batch checking ────────────────────────────────────────────
+  const batchInterval = setInterval(() => {
+    const runningConvIds = [...turnStates.entries()]
+      .filter(([, s]) => s.status === 'running')
+      .map(([id]) => id);
+    // Skip conversations with running turns to avoid concurrent history mutation
+    for (const convId of runningConvIds) {
+      resolvePendingBatches(convId).catch(err => {
+        console.error('[batch] background check failed:', (err as Error).message);
+      });
+    }
+  }, BATCH_CHECK_INTERVAL_MS);
+  batchInterval.unref();
+
+  // ─── Graceful shutdown ────────────────────────────────────────────────────
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
-      console.log(`[server] otrzymano ${signal}, zamykam...`);
+      console.log(`[server] received ${signal}, shutting down...`);
       clearInterval(batchInterval);
+      clearInterval(keepaliveInterval);
       server.close(async () => {
         await Promise.all(connections.map(c => c.close()));
+        db.close();
         process.exit(0);
       });
       setTimeout(() => {
-        console.error('[server] zamknięcie trwało zbyt długo, wymuszam wyjście');
+        console.error('[server] shutdown timeout, forcing exit');
         process.exit(1);
       }, 10_000).unref();
     });
@@ -343,15 +502,10 @@ main().catch(err => {
   process.exit(1);
 });
 
-// Without these, an error thrown outside Express's own request handling
-// (e.g. deep in an MCP connection's background stream handling) crashes the
-// process with whatever Node prints by default — on a headless Pi, with
-// `restart: unless-stopped` bringing it straight back up, that can mean a
-// silent crash-loop with nothing useful in `docker logs` to say why.
 process.on('unhandledRejection', reason => {
   console.error('[server] unhandled promise rejection:', reason);
 });
 process.on('uncaughtException', err => {
   console.error('[server] uncaught exception:', err);
-  process.exit(1); // Node's own guidance: state is untrustworthy after this — let restart:unless-stopped bring up a clean process rather than keep running one.
+  process.exit(1);
 });

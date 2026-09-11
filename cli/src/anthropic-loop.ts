@@ -1,5 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolRegistry } from './tool-registry.js';
+import { truncateToolOutput } from './output-truncator.js';
 
 /** Minimal slice of the Anthropic SDK client this module needs — lets tests inject a fake. */
 export interface AnthropicLike {
@@ -18,24 +19,26 @@ export interface ConversationDeps {
   serverTools?: Anthropic.ToolUnion[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
   confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean>;
-  /** Called for every text block the model produces, in order (streamed to the terminal). */
+  /** Called for every text block the model produces, in order. */
   onAssistantText?: (text: string) => void;
-  /** Called right before a tool actually executes (after approval, if needed) — for terminal feedback. */
+  /** Called right before a tool actually executes (after approval). */
   onToolStart?: (toolLabel: string) => void;
-  /** Called once per API response with that response's usage — §12 pt.1: BYOK means Mikołaj pays per token directly. */
+  /** Called once per API response with that response's usage. */
   onUsage?: (usage: Anthropic.Usage) => void;
+  /** Called after each tool call with the full (un-truncated) output — for UI display. */
+  onToolResult?: (toolName: string, fullOutput: string, truncatedOutput: string, isError: boolean) => void;
+  /** AbortSignal — set by the kill switch (POST /api/conversations/:id/kill). */
+  signal?: AbortSignal;
+  /** Max tool output length in characters before truncating for the model context. Default 30 000. */
+  maxToolOutputLength?: number;
 }
 
-const DENIED_MESSAGE = 'Odrzucone przez użytkownika (approval gate) — nie wykonano.';
+const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
 
 /**
  * System prompt + tool definitions are identical on every single request in
- * a session — the textbook case for prompt caching (Master Brief §8: "system
- * prompt + narzędzia + dokumenty przed treścią dynamiczną"). Marking the last
- * block in each with cache_control caches everything up to and including it,
- * so this alone covers both. Anthropic requires >=1024 tokens (Sonnet) for a
- * cache breakpoint to actually take — under that it's a harmless no-op, not
- * an error, so there's no reason to special-case a short system prompt.
+ * a session — the textbook case for prompt caching. Marking the last block
+ * in each with cache_control caches everything up to and including it.
  */
 export function cacheableSystem(systemPrompt: string): Anthropic.TextBlockParam[] {
   return [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
@@ -67,6 +70,9 @@ export async function runTurn(
   ];
 
   for (;;) {
+    // Kill switch check before each API call
+    if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
+
     const response = await deps.anthropic.messages.create({
       model: deps.model,
       max_tokens: deps.maxTokens ?? 4096,
@@ -94,6 +100,9 @@ export async function runTurn(
 
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const use of toolUses) {
+      // Kill switch check before each tool execution
+      if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
+
       const label = deps.tools.describe(use.name);
       const args = (use.input ?? {}) as Record<string, unknown>;
 
@@ -111,10 +120,15 @@ export async function runTurn(
 
       deps.onToolStart?.(label);
       const result = await deps.tools.call(use.name, args);
+
+      // Truncate long tool outputs for the model; keep full output for UI
+      const { truncated, wasTruncated } = truncateToolOutput(result.text, deps.maxToolOutputLength);
+      deps.onToolResult?.(use.name, result.text, truncated, result.isError);
+
       toolResults.push({
         type: 'tool_result',
         tool_use_id: use.id,
-        content: result.text,
+        content: wasTruncated ? truncated : result.text,
         is_error: result.isError,
       });
     }
