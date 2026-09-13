@@ -1,7 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
 import { cacheableSystem } from './anthropic-loop.js';
-import type { PendingBatch } from './batch-store.js';
+
+export interface PendingBatch {
+  batchId: string;
+  customId: string;
+  submittedAt: string;
+  /** First ~80 chars of the user's message, just so a status list is human-readable. */
+  preview: string;
+}
 
 /** Minimal slice of the Anthropic SDK's batches API — lets tests inject a fake. */
 export interface AnthropicBatchLike {

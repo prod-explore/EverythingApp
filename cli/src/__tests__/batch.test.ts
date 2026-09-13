@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type Anthropic from '@anthropic-ai/sdk';
-import { submitBatch, checkBatch, type AnthropicBatchLike } from '../batch.js';
-import type { PendingBatch } from '../batch-store.js';
+import { submitBatch, checkBatch, type AnthropicBatchLike, type PendingBatch } from '../batch.js';
 
 function fakeBatchClient(opts: {
   batchId?: string;

@@ -4,12 +4,12 @@ import { timingSafeEqual } from 'node:crypto';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate } from './web-approval.js';
-import { runTurn } from './anthropic-loop.js';
-import { submitBatch, checkBatch } from './batch.js';
+import { runTurn, type AnthropicLike } from './anthropic-loop.js';
+import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
 import { UsageTracker } from './usage-tracker.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem } from './gazeta.js';
@@ -70,6 +70,64 @@ async function main(): Promise<void> {
     }
   }
 
+  const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
+
+  const { app, stop } = await buildApp({ db, connections, anthropic, authToken, config });
+
+  // ─── Start server ─────────────────────────────────────────────────────────
+  const port = Number(process.env['PORT'] ?? 3000);
+  const server = app.listen(port, () => {
+    console.log(`[server] listening on port ${port}`);
+  });
+
+  // ─── Graceful shutdown ────────────────────────────────────────────────────
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+    process.on(signal, () => {
+      console.log(`[server] received ${signal}, shutting down...`);
+      stop();
+      server.close(async () => {
+        await Promise.all(connections.map(c => c.close()));
+        db.close();
+        process.exit(0);
+      });
+      setTimeout(() => {
+        console.error('[server] shutdown timeout, forcing exit');
+        process.exit(1);
+      }, 10_000).unref();
+    });
+  }
+}
+
+/**
+ * Assembles the Express app: tool registry, shared services (approval gate,
+ * usage tracker, SSE manager), every /api route, static frontend serving,
+ * and the background batch-check + SSE-keepalive intervals.
+ *
+ * Split out from main() so integration tests can build a real app against a
+ * fake Anthropic client (AnthropicLike & AnthropicBatchLike) and an
+ * in-memory db, with zero MCP connections and no live API key. main() still
+ * owns app.listen() and process-level concerns (real MCP connect(), graceful
+ * shutdown, SIGTERM/SIGINT) — a test can listen on an ephemeral port itself,
+ * or hit the returned app directly.
+ */
+export interface BuildAppOptions {
+  db: ReturnType<typeof openDb>;
+  connections: McpConnection[];
+  anthropic: AnthropicLike & AnthropicBatchLike;
+  authToken: string;
+  config: Pick<Config, 'model' | 'autoApproveTools' | 'webSearchEnabled'>;
+}
+
+export interface BuiltApp {
+  app: express.Express;
+  sse: SSEManager;
+  /** Clears the background batch-check and SSE-keepalive intervals. Does not close the db or MCP connections — the caller owns those. */
+  stop: () => void;
+}
+
+export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
+  const { db, connections, anthropic, authToken, config } = opts;
+
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
   console.log(`[tools] loaded ${registry.toAnthropicTools().length} tools from MCP`);
@@ -78,7 +136,6 @@ async function main(): Promise<void> {
   const approvalGate = new WebApprovalGate();
   const usageTracker = new UsageTracker();
   const sse = new SSEManager();
-  const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
 
   const serverTools: Anthropic.ToolUnion[] = [
     ...(config.webSearchEnabled
@@ -472,15 +529,9 @@ async function main(): Promise<void> {
     res.status(statusCode).json({ error: statusCode === 500 ? 'internal server error' : (err as Error).message });
   });
 
-  // ─── Start server ─────────────────────────────────────────────────────────
-  const port = Number(process.env['PORT'] ?? 3000);
-  const server = app.listen(port, () => {
-    console.log(`[server] listening on port ${port}`);
-  });
-
+  // ─── Background jobs ──────────────────────────────────────────────────────
   const keepaliveInterval = sse.startKeepalive();
 
-  // ─── Background batch checking ────────────────────────────────────────────
   const batchInterval = setInterval(() => {
     const runningConvIds = [...turnStates.entries()]
       .filter(([, s]) => s.status === 'running')
@@ -494,34 +545,32 @@ async function main(): Promise<void> {
   }, BATCH_CHECK_INTERVAL_MS);
   batchInterval.unref();
 
-  // ─── Graceful shutdown ────────────────────────────────────────────────────
-  for (const signal of ['SIGTERM', 'SIGINT'] as const) {
-    process.on(signal, () => {
-      console.log(`[server] received ${signal}, shutting down...`);
-      clearInterval(batchInterval);
-      clearInterval(keepaliveInterval);
-      server.close(async () => {
-        await Promise.all(connections.map(c => c.close()));
-        db.close();
-        process.exit(0);
-      });
-      setTimeout(() => {
-        console.error('[server] shutdown timeout, forcing exit');
-        process.exit(1);
-      }, 10_000).unref();
-    });
+  function stop(): void {
+    clearInterval(batchInterval);
+    clearInterval(keepaliveInterval);
   }
+
+  return { app, sse, stop };
 }
 
-main().catch(err => {
-  console.error('[server] fatal error:', err);
-  process.exit(1);
-});
+// Only actually boot the server (and install process-level handlers) when
+// this file is run directly (`node dist/server.js`) — not when it's
+// imported purely for `buildApp()`, e.g. by integration tests, which must
+// not have the side effect of reading real env vars, opening the real db,
+// or listening on a real port.
+const isMainModule = process.argv[1] !== undefined && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]);
 
-process.on('unhandledRejection', reason => {
-  console.error('[server] unhandled promise rejection:', reason);
-});
-process.on('uncaughtException', err => {
-  console.error('[server] uncaught exception:', err);
-  process.exit(1);
-});
+if (isMainModule) {
+  main().catch(err => {
+    console.error('[server] fatal error:', err);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', reason => {
+    console.error('[server] unhandled promise rejection:', reason);
+  });
+  process.on('uncaughtException', err => {
+    console.error('[server] uncaught exception:', err);
+    process.exit(1);
+  });
+}

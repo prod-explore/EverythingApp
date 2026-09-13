@@ -1,5 +1,28 @@
 import { randomUUID } from 'node:crypto';
-import { looksDangerous } from './approval.js';
+
+/**
+ * Patterns that look potentially irreversible/destructive — §12 pt.5 of the
+ * Master Brief. This is a UI hint, not a security boundary (the real
+ * boundary is that the call needs a human "y" at all, per §7 pt.3 —
+ * enforcement lives outside the model, not in string matching that a
+ * determined prompt injection could word around). Deliberately simple and
+ * a bit over-eager: false positives just mean an extra warning banner on a
+ * safe command, false negatives mean no warning on a genuinely risky one —
+ * the asymmetry favors warning too often.
+ */
+const DANGEROUS_PATTERNS: RegExp[] = [
+  /\brm\s+(-\w*r\w*f\w*|-\w*f\w*r\w*)\b/i, // rm -rf, -fr, -Rf, etc.
+  /\bgit\s+push\b.*(--force|-f\b)/i,
+  /\bgit\s+reset\s+--hard\b/i,
+  /\bDROP\s+(TABLE|DATABASE)\b/i,
+  /\bTRUNCATE\s+TABLE\b/i,
+  /:\(\)\s*\{\s*:\s*\|\s*:.*\}\s*;\s*:/, // classic shell fork-bomb shape
+];
+
+export function looksDangerous(args: Record<string, unknown>): boolean {
+  const text = JSON.stringify(args);
+  return DANGEROUS_PATTERNS.some(pattern => pattern.test(text));
+}
 
 export interface PendingApproval {
   id: string;
@@ -11,11 +34,10 @@ export interface PendingApproval {
 }
 
 /**
- * Same contract as ApprovalGate (terminal), but confirm() can't block on
- * readline over HTTP — instead it parks a Promise until a separate
- * POST /api/approve resolves it. A tool call with a side effect still never
- * runs without an explicit yes from a human; the human just answers from a
- * web page instead of a terminal.
+ * confirm() can't block on readline over HTTP — instead it parks a Promise
+ * until a separate POST /api/approve resolves it. A tool call with a side
+ * effect never runs without an explicit yes from a human, answered from a
+ * web page.
  *
  * One instance is shared across every conversation (turns run per
  * conversation and can overlap — see server.ts's per-id turnStates/
@@ -23,9 +45,10 @@ export interface PendingApproval {
  * a client looking at conversation A has no way to tell a pending approval
  * belongs to conversation B's turn instead, and could approve the wrong one.
  *
- * Same "always allow" + dangerous-call override as the terminal gate — see
- * approval.ts for the reasoning. Deliberately reuses looksDangerous() rather
- * than a second copy of the pattern list.
+ * "Always allow" is scoped per tool, and a call that looks dangerous always
+ * re-queues even for an already-"always allowed" tool — approving one never
+ * grants future always-allow, since that was granted for routine use, not a
+ * specific unseen `--force` push.
  */
 export class WebApprovalGate {
   private readonly alwaysAllowed = new Set<string>();
