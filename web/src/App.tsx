@@ -14,6 +14,12 @@ import { useSSE } from './hooks/useSSE';
 
 export default function App() {
   const [authed, setAuthed] = useState(() => getToken() !== null);
+
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
+  return <MainApp />;
+}
+
+function MainApp() {
   const {
     conversations,
     selectedId,
@@ -72,7 +78,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKey);
   }, [createConversation]);
 
-  if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
   if (loading || !selectedId) {
     return <div className="flex h-full items-center justify-center text-fg-tertiary">Loading…</div>;
   }
