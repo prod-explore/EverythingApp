@@ -52,8 +52,11 @@ services:
   # bound to 127.0.0.1 here, same as the other services.
   everythingapp-web:
     build:
-      context: ./cli
-      dockerfile: Dockerfile
+      # Root, not ./cli: the Dockerfile needs to COPY both cli/dist and the
+      # sibling web/dist (React frontend build output), and Docker can't
+      # reach outside its build context.
+      context: .
+      dockerfile: cli/Dockerfile
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
       SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}

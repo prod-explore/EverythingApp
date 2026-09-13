@@ -150,6 +150,24 @@ async function main(): Promise<void> {
   });
 
   // ─── Auth middleware ──────────────────────────────────────────────────────
+  // The SSE stream route is registered ABOVE this middleware with its own
+  // auth check (see below) — EventSource, the browser API SSE uses, cannot
+  // set custom headers, so that one route also has to accept the token as a
+  // query param. Every other /api route only ever accepts the header.
+  app.get('/api/conversations/:id/stream', (req, res) => {
+    const queryToken = typeof req.query['token'] === 'string' ? req.query['token'] : undefined;
+    const authorized =
+      isValidAuthHeader(req.headers.authorization, authToken) ||
+      (queryToken !== undefined && isValidAuthHeader(`Bearer ${queryToken}`, authToken));
+    if (!authorized) {
+      res.status(401).json({ error: 'unauthorized' });
+      return;
+    }
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    sse.addClient(req.params.id, res);
+  });
+
   app.use('/api', (req, res, next) => {
     if (!isValidAuthHeader(req.headers.authorization, authToken)) {
       res.status(401).json({ error: 'unauthorized' });
@@ -234,13 +252,6 @@ async function main(): Promise<void> {
     res.json({ ok: true });
   });
 
-  // ─── SSE stream ───────────────────────────────────────────────────────────
-  app.get('/api/conversations/:id/stream', (req, res) => {
-    const conv = getConversation(db, req.params.id);
-    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    sse.addClient(req.params.id, res);
-  });
-
   // ─── Kill switch ──────────────────────────────────────────────────────────
   app.post('/api/conversations/:id/kill', (req, res) => {
     const controller = abortControllers.get(req.params.id);
@@ -317,7 +328,7 @@ async function main(): Promise<void> {
             serverTools,
             signal: controller.signal,
             confirm: async (label, args) => {
-              const approved = await approvalGate.confirm(label, args);
+              const approved = await approvalGate.confirm(convId, label, args);
               sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
               return approved;
             },
@@ -441,7 +452,12 @@ async function main(): Promise<void> {
   // ─── Static frontend ─────────────────────────────────────────────────────
   const webDistPath = path.join(__dirname, '..', '..', 'web', 'dist');
   app.use(express.static(webDistPath));
-  app.get('*', (_req, res) => {
+  // Express 5 (path-to-regexp v7+) rejects a bare '*' — it's ambiguous
+  // now. This app is a single-page app, so the SPA fallback needs a
+  // pattern that matches literally everything not already handled above
+  // (every /api/* route, static assets from webDistPath); '/*splat' is
+  // the current syntax for that.
+  app.get('/*splat', (_req, res) => {
     res.sendFile(path.join(webDistPath, 'index.html'));
   });
 

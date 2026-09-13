@@ -1,122 +1,111 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useState } from 'react';
+import { getToken, getTurnStatus } from './api';
+import { ApprovalBanner } from './components/approval/ApprovalBanner';
+import { ChatView } from './components/chat/ChatView';
+import { ConversationSearch } from './components/ConversationSearch';
+import { GazetaView } from './components/gazeta/GazetaView';
+import { Header } from './components/layout/Header';
+import { Layout } from './components/layout/Layout';
+import { Login } from './components/Login';
+import { SettingsModal } from './components/settings/SettingsModal';
+import { useConversations } from './hooks/useConversations';
+import { useGazeta } from './hooks/useGazeta';
+import { useSSE } from './hooks/useSSE';
 
-function App() {
-  const [count, setCount] = useState(0)
+export default function App() {
+  const [authed, setAuthed] = useState(() => getToken() !== null);
+  const {
+    conversations,
+    selectedId,
+    setSelectedId,
+    loading,
+    createConversation,
+    renameConversation,
+    deleteConversation,
+  } = useConversations();
+  const { items: gazetaItems, refresh: refreshGazeta } = useGazeta();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [gazetaOpen, setGazetaOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [usage, setUsage] = useState('—');
+
+  const selected = conversations.find(c => c.id === selectedId) ?? null;
+
+  // A second SSE connection to whichever conversation is open, purely to
+  // hear server.ts's emitAll() broadcasts (gazeta:new, etc.) — ChatView
+  // opens its own connection to the same stream for turn events, which
+  // this doesn't touch. Two connections to one stream is a bit redundant,
+  // but far simpler than lifting SSE state into a shared context for one
+  // side-channel.
+  useSSE(selectedId, event => {
+    if (event === 'gazeta:new') refreshGazeta();
+  });
+
+  useEffect(() => {
+    if (!selectedId) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      getTurnStatus(selectedId)
+        .then(s => !cancelled && setUsage(s.usage))
+        .catch(() => {});
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [selectedId]);
+
+  // Keyboard shortcuts: Ctrl/Cmd+N for a new conversation, Ctrl/Cmd+K to search them.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        e.preventDefault();
+        createConversation();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        setSearchOpen(true);
+      }
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [createConversation]);
+
+  if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
+  if (loading || !selectedId) {
+    return <div className="flex h-full items-center justify-center text-fg-tertiary">Loading…</div>;
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <Layout
+      conversations={conversations}
+      selectedId={selectedId}
+      sidebarOpen={sidebarOpen}
+      onSelect={id => {
+        setSelectedId(id);
+        setSidebarOpen(false);
+      }}
+      onCreate={() => createConversation()}
+      onRename={renameConversation}
+      onDelete={deleteConversation}
+      onOpenGazeta={() => setGazetaOpen(true)}
+      onOpenSettings={() => setSettingsOpen(true)}
+      gazetaCount={gazetaItems.length}
+    >
+      <Header title={selected?.title ?? ''} usage={usage} onToggleSidebar={() => setSidebarOpen(o => !o)} />
+      <div className="relative flex-1 overflow-hidden">
+        <ChatView conversationId={selectedId} />
+        <ApprovalBanner conversationId={selectedId} />
+      </div>
 
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+      {gazetaOpen && (
+        <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} />
+      )}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {searchOpen && (
+        <ConversationSearch conversations={conversations} onSelect={setSelectedId} onClose={() => setSearchOpen(false)} />
+      )}
+    </Layout>
+  );
 }
-
-export default App

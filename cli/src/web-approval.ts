@@ -3,6 +3,7 @@ import { looksDangerous } from './approval.js';
 
 export interface PendingApproval {
   id: string;
+  conversationId: string;
   toolLabel: string;
   args: Record<string, unknown>;
   dangerous: boolean;
@@ -16,6 +17,12 @@ export interface PendingApproval {
  * runs without an explicit yes from a human; the human just answers from a
  * web page instead of a terminal.
  *
+ * One instance is shared across every conversation (turns run per
+ * conversation and can overlap — see server.ts's per-id turnStates/
+ * abortControllers), so every entry carries `conversationId`: without it,
+ * a client looking at conversation A has no way to tell a pending approval
+ * belongs to conversation B's turn instead, and could approve the wrong one.
+ *
  * Same "always allow" + dangerous-call override as the terminal gate — see
  * approval.ts for the reasoning. Deliberately reuses looksDangerous() rather
  * than a second copy of the pattern list.
@@ -24,12 +31,12 @@ export class WebApprovalGate {
   private readonly alwaysAllowed = new Set<string>();
   private readonly pending = new Map<string, { entry: PendingApproval; resolve: (approved: boolean) => void }>();
 
-  async confirm(toolLabel: string, args: Record<string, unknown>): Promise<boolean> {
+  async confirm(conversationId: string, toolLabel: string, args: Record<string, unknown>): Promise<boolean> {
     const dangerous = looksDangerous(args);
     if (this.alwaysAllowed.has(toolLabel) && !dangerous) return true;
 
     const id = randomUUID();
-    const entry: PendingApproval = { id, toolLabel, args, dangerous, createdAt: new Date().toISOString() };
+    const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString() };
 
     return new Promise<boolean>(resolve => {
       this.pending.set(id, {
