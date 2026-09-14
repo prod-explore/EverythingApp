@@ -36,6 +36,37 @@ export interface ConversationDeps {
 const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
 
 /**
+ * db.ts round-trips messages through JSON.stringify/parse with no schema
+ * enforcement, and every caller hands the result to us as `Anthropic.
+ * MessageParam[]` via a bare type cast — not an actual guarantee about
+ * what's in there. Strip anything Anthropic's API doesn't define before it
+ * ever reaches `messages.create`/`batches.create`, so a stray field (e.g. a
+ * frontend-only `id` that leaked into a stored message) gets dropped here
+ * instead of surfacing as an opaque 400 from the API mid-turn.
+ */
+export function sanitizeHistory(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  return history.map(msg => ({
+    role: msg.role,
+    content: typeof msg.content === 'string' ? msg.content : msg.content.map(sanitizeBlock),
+  }));
+}
+
+function sanitizeBlock(block: Anthropic.ContentBlockParam): Anthropic.ContentBlockParam {
+  switch (block.type) {
+    case 'text':
+      return { type: 'text', text: block.text };
+    case 'tool_use':
+      return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+    case 'tool_result':
+      return { type: 'tool_result', tool_use_id: block.tool_use_id, content: block.content, is_error: block.is_error };
+    default:
+      // Unhandled block type (e.g. image) — pass through as-is rather than
+      // silently dropping content this app doesn't otherwise deal with.
+      return block;
+  }
+}
+
+/**
  * System prompt + tool definitions are identical on every single request in
  * a session — the textbook case for prompt caching. Marking the last block
  * in each with cache_control caches everything up to and including it.
@@ -63,7 +94,7 @@ export async function runTurn(
   history: Anthropic.MessageParam[],
   userText: string,
 ): Promise<Anthropic.MessageParam[]> {
-  const messages: Anthropic.MessageParam[] = [...history, { role: 'user', content: userText }];
+  const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userText }];
   const toolDefs: Anthropic.ToolUnion[] = [
     ...(deps.tools.toAnthropicTools() as Anthropic.Tool[]),
     ...(deps.serverTools ?? []),

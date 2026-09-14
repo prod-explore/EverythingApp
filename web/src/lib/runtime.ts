@@ -48,7 +48,7 @@ export function useEverythingAppRuntime(conversationId: string | null) {
       // Optimistic: show the user's own message immediately rather than
       // waiting on the round trip to the backend and the turn:start SSE
       // event — on a slow connection that gap is visible and looks broken.
-      setPersisted(prev => [...prev, { role: 'user', content: [{ type: 'text', text }] }]);
+      setPersisted(prev => [...prev, { id: `opt-${Date.now()}`, role: 'user', content: [{ type: 'text', text }] }]);
 
       try {
         await sendMessage(conversationId, text);

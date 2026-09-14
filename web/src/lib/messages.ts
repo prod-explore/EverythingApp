@@ -30,7 +30,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
         .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
         .map(b => b.text)
         .join('');
-      result.push({ role: 'user', content: [{ type: 'text', text }] });
+      result.push({ id: `msg-${i}`, role: 'user', content: [{ type: 'text', text }] });
       continue;
     }
 
@@ -71,7 +71,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
         });
       }
     }
-    result.push({ role: 'assistant', content: parts });
+    result.push({ id: `msg-${i}`, role: 'assistant', content: parts });
   }
 
   return result;
@@ -103,5 +103,5 @@ export function liveTurnToMessage(parts: LivePart[]): ThreadMessageLike | null {
       isError: part.call.result?.isError,
     };
   });
-  return { role: 'assistant', content, status: { type: 'running' } };
+  return { id: 'live-turn', role: 'assistant', content, status: { type: 'running' } };
 }

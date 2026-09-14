@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
-import { cacheableSystem } from './anthropic-loop.js';
+import { cacheableSystem, sanitizeHistory } from './anthropic-loop.js';
 
 export interface PendingBatch {
   batchId: string;
@@ -47,7 +47,7 @@ export async function submitBatch(
   userText: string,
 ): Promise<PendingBatch> {
   const customId = randomUUID();
-  const messages: Anthropic.MessageParam[] = [...history, { role: 'user', content: userText }];
+  const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userText }];
 
   const batch = await anthropic.messages.batches.create({
     requests: [

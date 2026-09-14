@@ -339,8 +339,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     // Batch mode — submit to Anthropic Batch API instead
     if (batch) {
       const history = getMessages(db, convId);
-      const effectiveModel = conv.model ?? getSetting(db, 'default_model') ?? config.model;
-      const effectiveSystem = conv.systemPrompt ?? getSetting(db, 'global_system_prompt') ?? DEFAULT_SYSTEM_PROMPT;
+      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      // `||` not `??`: an empty-string setting (e.g. global_system_prompt
+      // saved as "" from the Settings UI) must fall through to the default
+      // too — `??` only catches null/undefined, and Anthropic's API rejects
+      // a system text block with cache_control on empty text.
+      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
       void (async () => {
         try {
           const entry = await submitBatch(anthropic, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], text);
@@ -372,8 +376,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       const history = getMessages(db, convId) as Anthropic.MessageParam[];
       // Remove the optimistically added user message — runTurn will rebuild it
       const historyBeforeTurn = history.slice(0, -1);
-      const effectiveModel = conv.model ?? getSetting(db, 'default_model') ?? config.model;
-      const effectiveSystem = conv.systemPrompt ?? getSetting(db, 'global_system_prompt') ?? DEFAULT_SYSTEM_PROMPT;
+      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
 
       try {
         const updatedHistory = await runTurn(
@@ -438,12 +442,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       } catch (err) {
         const error = (err as Error).message;
         const aborted = error.includes('kill switch');
-        // Roll back optimistic user message
-        const msgs = getMessages(db, convId);
-        if (msgs.length > 0 && msgs[msgs.length - 1].role === 'user') {
-          clearMessages(db, convId);
-          for (const m of msgs.slice(0, -1)) appendMessage(db, convId, m.role, m.content);
-        }
+        // Deliberately NOT rolling back the user's message here (it was
+        // already persisted at line 365, before this async block even
+        // started) — whatever failed, the user did type it, and silently
+        // discarding it on any error (a transient network blip, a tool
+        // failure, anything) is a worse outcome than leaving it visible
+        // with no assistant reply. The turn:error/aborted event below is
+        // what tells the UI this turn didn't complete.
         turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error });
         sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error });
       } finally {

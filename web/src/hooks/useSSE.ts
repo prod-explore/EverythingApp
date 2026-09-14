@@ -32,6 +32,7 @@ export interface LiveTurnState {
 const INITIAL_STATE: LiveTurnState = { running: false, parts: [], finishedCount: 0 };
 
 type Action =
+  | { type: 'clear' }
   | { type: 'start' }
   | { type: 'text'; text: string }
   | { type: 'tool_use'; label: string }
@@ -40,6 +41,8 @@ type Action =
 
 function reducer(state: LiveTurnState, action: Action): LiveTurnState {
   switch (action.type) {
+    case 'clear':
+      return { running: false, parts: [], finishedCount: state.finishedCount };
     case 'start':
       return { running: true, parts: [], finishedCount: state.finishedCount };
     case 'text':
@@ -62,7 +65,13 @@ function reducer(state: LiveTurnState, action: Action): LiveTurnState {
       return { ...state, parts };
     }
     case 'finish':
-      return { running: false, parts: state.parts, error: action.error, finishedCount: state.finishedCount + 1 };
+      // Clear parts, not just running — liveTurnToMessage() renders whatever
+      // is in `parts` regardless of `running`, and the refetch triggered by
+      // finishedCount changing (see lib/runtime.ts) brings in the same
+      // content as a persisted message right after this. Leaving parts
+      // populated here duplicated every just-finished turn on screen until
+      // the next conversation switch cleared it.
+      return { running: false, parts: [], error: action.error, finishedCount: state.finishedCount + 1 };
   }
 }
 
@@ -91,14 +100,12 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
 
   useEffect(() => {
     if (!conversationId) return;
-    dispatch({ type: 'start' });
+    dispatch({ type: 'clear' });
     // ^ reset live state immediately on conversation switch — stale parts
     // from the previous conversation must never bleed into this one, even
     // for the instant before the new EventSource's first message arrives.
-    // If nothing is actually running here, the next 'finish' event (or lack
-    // of one) just leaves an empty running:true until the caller's own
-    // GET /api/conversations/:id/status confirms idle — handled by
-    // lib/runtime.ts, not this hook.
+    // We use 'clear' instead of 'start' so that 'running' defaults to false,
+    // and is only set to true when the server actually emits 'turn:start'.
 
     const token = getToken();
     // EventSource can't set custom headers, so the token travels as a query
