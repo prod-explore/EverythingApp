@@ -91,6 +91,28 @@ export function runMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_batch_conv ON batch_jobs(conversation_id);
     CREATE INDEX IF NOT EXISTS idx_batch_status ON batch_jobs(status);
+
+    -- Phase 2: Custom Skills system
+    -- allowed_tools is a JSON array of tool name strings (informational; not
+    -- a hard filter on the tool registry — just surfaced in the UI so the user
+    -- knows what a skill was designed to use).
+    CREATE TABLE IF NOT EXISTS skills (
+      id            TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name          TEXT NOT NULL,
+      description   TEXT NOT NULL DEFAULT '',
+      prompt        TEXT NOT NULL DEFAULT '',
+      allowed_tools TEXT NOT NULL DEFAULT '[]',
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Many-to-many: a conversation can have multiple skills attached,
+    -- and a skill can be reused across conversations.
+    CREATE TABLE IF NOT EXISTS conversation_skills (
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      skill_id        TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+      PRIMARY KEY (conversation_id, skill_id)
+    );
   `);
 
   // Seed default settings
@@ -457,4 +479,103 @@ export function resolveBatchJob(db: Database.Database, id: string, status: strin
 
 export function getPendingBatchJobs(db: Database.Database): BatchJob[] {
   return listBatchJobs(db, { status: 'pending' });
+}
+
+// ─── Skills ───────────────────────────────────────────────────────────────────
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  allowedTools: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+function rowToSkill(r: Record<string, unknown>): Skill {
+  return {
+    id: r['id'] as string,
+    name: r['name'] as string,
+    description: r['description'] as string,
+    prompt: r['prompt'] as string,
+    allowedTools: JSON.parse(r['allowed_tools'] as string) as string[],
+    createdAt: r['created_at'] as string,
+    updatedAt: r['updated_at'] as string,
+  };
+}
+
+export function listSkills(db: Database.Database): Skill[] {
+  return (db.prepare(`SELECT * FROM skills ORDER BY created_at ASC`).all() as Record<string, unknown>[]).map(rowToSkill);
+}
+
+export function getSkill(db: Database.Database, id: string): Skill | null {
+  const row = db.prepare(`SELECT * FROM skills WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  return row ? rowToSkill(row) : null;
+}
+
+export function createSkill(
+  db: Database.Database,
+  opts: { name: string; description?: string; prompt?: string; allowedTools?: string[] },
+): Skill {
+  const row = db
+    .prepare(
+      `INSERT INTO skills (name, description, prompt, allowed_tools)
+       VALUES (?, ?, ?, ?) RETURNING *`,
+    )
+    .get(
+      opts.name,
+      opts.description ?? '',
+      opts.prompt ?? '',
+      JSON.stringify(opts.allowedTools ?? []),
+    ) as Record<string, unknown>;
+  return rowToSkill(row);
+}
+
+export function updateSkill(
+  db: Database.Database,
+  id: string,
+  patch: { name?: string; description?: string; prompt?: string; allowedTools?: string[] },
+): boolean {
+  const sets: string[] = [`updated_at = datetime('now')`];
+  const values: unknown[] = [];
+  if (patch.name !== undefined) { sets.push('name = ?'); values.push(patch.name); }
+  if (patch.description !== undefined) { sets.push('description = ?'); values.push(patch.description); }
+  if (patch.prompt !== undefined) { sets.push('prompt = ?'); values.push(patch.prompt); }
+  if (patch.allowedTools !== undefined) { sets.push('allowed_tools = ?'); values.push(JSON.stringify(patch.allowedTools)); }
+  if (sets.length === 1) return false;
+  values.push(id);
+  const result = db.prepare(`UPDATE skills SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return result.changes > 0;
+}
+
+export function deleteSkill(db: Database.Database, id: string): boolean {
+  const result = db.prepare(`DELETE FROM skills WHERE id = ?`).run(id);
+  return result.changes > 0;
+}
+
+export function getConversationSkills(db: Database.Database, conversationId: string): Skill[] {
+  const rows = db
+    .prepare(
+      `SELECT s.* FROM skills s
+       JOIN conversation_skills cs ON cs.skill_id = s.id
+       WHERE cs.conversation_id = ?
+       ORDER BY s.created_at ASC`,
+    )
+    .all(conversationId) as Record<string, unknown>[];
+  return rows.map(rowToSkill);
+}
+
+export function attachSkill(db: Database.Database, conversationId: string, skillId: string): boolean {
+  try {
+    db.prepare(`INSERT OR IGNORE INTO conversation_skills (conversation_id, skill_id) VALUES (?, ?)`).run(conversationId, skillId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function detachSkill(db: Database.Database, conversationId: string, skillId: string): boolean {
+  const result = db.prepare(`DELETE FROM conversation_skills WHERE conversation_id = ? AND skill_id = ?`).run(conversationId, skillId);
+  return result.changes > 0;
 }

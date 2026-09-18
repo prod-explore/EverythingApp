@@ -86,3 +86,20 @@ export interface TurnState {
   status: TurnStatus;
   error?: string;
 }
+
+/**
+ * How broadly a single approval grants future auto-approval — mirrors
+ * web-approval.ts's ApprovalScope on the backend.
+ */
+export type ApprovalScope = 'once' | 'chat' | 'always';
+
+/** A user-defined reusable prompt bundle — Phase 2. */
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+  allowedTools: string[];
+  createdAt: string;
+  updatedAt: string;
+}

@@ -1,82 +1,81 @@
-import { useEffect, useState } from 'react';
-import { getConnectors } from '../../api';
-import { useSettings } from '../../hooks/useSettings';
-import { MODELS } from '../../lib/models';
-import type { ConnectorInfo } from '../../types';
-import { Badge } from '../shared/Badge';
+import { useState } from 'react';
+import { clearToken } from '../../api';
 import { Modal } from '../shared/Modal';
+import { AppearanceTab } from './tabs/AppearanceTab';
+import { ConnectorsTab } from './tabs/ConnectorsTab';
+import { ModelsTab } from './tabs/ModelsTab';
+import { SkillsTab } from './tabs/SkillsTab';
 
-export function SettingsModal({ onClose }: { onClose: () => void }) {
-  const { settings, loading, set } = useSettings();
-  const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
+type Tab = 'models' | 'connectors' | 'skills' | 'appearance' | 'account';
 
-  useEffect(() => {
-    getConnectors().then(({ connectors }) => setConnectors(connectors));
-  }, []);
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'models', label: 'Models' },
+  { id: 'connectors', label: 'Connectors' },
+  { id: 'skills', label: 'Skills' },
+  { id: 'appearance', label: 'Appearance' },
+  { id: 'account', label: 'Account' },
+];
 
-  if (loading) {
-    return (
-      <Modal title="Settings" onClose={onClose}>
-        <p className="text-sm text-fg-tertiary">Loading…</p>
-      </Modal>
-    );
-  }
+export function SettingsModal({
+  onClose,
+  conversationId,
+}: {
+  onClose: () => void;
+  /** When provided, the Skills tab shows attach/detach controls for this conversation. */
+  conversationId?: string;
+}) {
+  const [activeTab, setActiveTab] = useState<Tab>('models');
 
   return (
     <Modal title="Settings" onClose={onClose} wide>
-      <div className="space-y-6">
-        <div>
-          <label className="mb-2 block text-xs font-medium text-fg-secondary">Default model</label>
-          <select
-            value={settings['default_model'] ?? MODELS[0]}
-            onChange={e => set('default_model', e.target.value)}
-            className="w-full rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none"
+      {/* Tab bar */}
+      <div className="mb-6 flex gap-1 border-b border-border">
+        {TABS.map(t => (
+          <button
+            key={t.id}
+            onClick={() => setActiveTab(t.id)}
+            className={`px-3 py-2 text-sm font-medium transition-colors ${
+              activeTab === t.id
+                ? 'border-b-2 border-fg text-fg'
+                : 'text-fg-tertiary hover:text-fg-secondary'
+            }`}
           >
-            {MODELS.map(m => (
-              <option key={m} value={m}>
-                {m}
-              </option>
-            ))}
-          </select>
-        </div>
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-        <div>
-          <label className="mb-2 block text-xs font-medium text-fg-secondary">Global system prompt</label>
-          <textarea
-            rows={4}
-            defaultValue={settings['global_system_prompt'] ?? ''}
-            onBlur={e => set('global_system_prompt', e.target.value)}
-            placeholder="Applies to any conversation that doesn't override it."
-            className="w-full resize-none rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-tertiary"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-xs font-medium text-fg-secondary">Custom instructions</label>
-          <textarea
-            rows={3}
-            defaultValue={settings['custom_instructions'] ?? ''}
-            onBlur={e => set('custom_instructions', e.target.value)}
-            placeholder="Short standing preferences (tone, format, things to always/never do)."
-            className="w-full resize-none rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-tertiary"
-          />
-        </div>
-
-        <div>
-          <label className="mb-2 block text-xs font-medium text-fg-secondary">Connectors</label>
-          <div className="space-y-2">
-            {connectors.length === 0 && <p className="text-sm text-fg-tertiary">No MCP connectors configured.</p>}
-            {connectors.map(c => (
-              <div key={c.name} className="flex items-center justify-between rounded-button border border-border px-3 py-2">
-                <span className="font-mono text-sm text-fg">{c.name}</span>
-                <Badge tone={c.connected ? 'success' : 'danger'}>
-                  {c.connected ? `${c.toolCount} tools` : 'disconnected'}
-                </Badge>
-              </div>
-            ))}
-          </div>
-        </div>
+      {/* Tab content */}
+      <div className="min-h-[220px]">
+        {activeTab === 'models' && <ModelsTab />}
+        {activeTab === 'connectors' && <ConnectorsTab />}
+        {activeTab === 'skills' && <SkillsTab conversationId={conversationId} />}
+        {activeTab === 'appearance' && <AppearanceTab />}
+        {activeTab === 'account' && <AccountTab />}
       </div>
     </Modal>
+  );
+}
+
+function AccountTab() {
+  return (
+    <div className="space-y-4">
+      <div className="rounded-button border border-border px-4 py-3">
+        <p className="text-xs text-fg-tertiary mb-1">Authentication</p>
+        <p className="text-sm text-fg">Single shared token (SERVER_AUTH_TOKEN).</p>
+      </div>
+      <button
+        onClick={() => {
+          clearToken();
+          window.location.reload();
+        }}
+        className="w-full rounded-button border border-danger/40 px-4 py-2 text-sm font-medium text-danger hover:bg-danger/10 transition-colors"
+      >
+        Log out
+      </button>
+      <p className="text-xs text-fg-tertiary">
+        Logging out clears the token from this browser. The server keeps running.
+      </p>
+    </div>
   );
 }

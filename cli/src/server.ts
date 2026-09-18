@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
-import { WebApprovalGate } from './web-approval.js';
+import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type AnthropicLike } from './anthropic-loop.js';
 import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
 import { UsageTracker } from './usage-tracker.js';
@@ -39,6 +39,14 @@ import {
   listBatchJobs,
   resolveBatchJob,
   getPendingBatchJobs,
+  listSkills,
+  getSkill,
+  createSkill,
+  updateSkill,
+  deleteSkill,
+  getConversationSkills,
+  attachSkill,
+  detachSkill,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -392,7 +400,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       // saved as "" from the Settings UI) must fall through to the default
       // too — `??` only catches null/undefined, and Anthropic's API rejects
       // a system text block with cache_control on empty text.
-      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+      let effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+
+      // Inject prompts from Skills attached to this conversation (Phase 2).
+      // Each non-empty skill prompt is appended after a separator so the model
+      // can distinguish skill instructions from the base system prompt.
+      const attachedSkills = getConversationSkills(db, convId);
+      const skillPrompts = attachedSkills.map(s => s.prompt).filter(Boolean);
+      if (skillPrompts.length > 0) {
+        effectiveSystem += '\n\n---\n\n' + skillPrompts.join('\n\n---\n\n');
+      }
 
       try {
         const updatedHistory = await runTurn(
@@ -652,13 +669,64 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.post('/api/approve', (req, res) => {
-    const { id, approved, alwaysAllow } = req.body ?? {};
+    const { id, approved, scope } = req.body ?? {};
     if (typeof id !== 'string' || typeof approved !== 'boolean') {
-      res.status(400).json({ error: 'expected { id: string, approved: boolean, alwaysAllow?: boolean }' });
+      res.status(400).json({ error: 'expected { id: string, approved: boolean, scope?: "once"|"chat"|"always" }' });
       return;
     }
-    const ok = approvalGate.resolve(id, approved, Boolean(alwaysAllow));
+    // Validate scope, fall back to 'once' for anything unrecognised or missing.
+    const validScopes: ApprovalScope[] = ['once', 'chat', 'always'];
+    const resolvedScope: ApprovalScope = validScopes.includes(scope) ? scope as ApprovalScope : 'once';
+    const ok = approvalGate.resolve(id, approved, resolvedScope);
     if (!ok) { res.status(404).json({ error: 'no such pending approval' }); return; }
+    res.json({ ok: true });
+  });
+
+  // ─── Skills ───────────────────────────────────────────────────────────────
+  app.get('/api/skills', (_req, res) => {
+    res.json({ skills: listSkills(db) });
+  });
+
+  app.post('/api/skills', (req, res) => {
+    const { name, description, prompt, allowedTools } = req.body ?? {};
+    if (typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'expected { name: string, description?, prompt?, allowedTools?: string[] }' });
+      return;
+    }
+    const skill = createSkill(db, { name: name.trim(), description, prompt, allowedTools });
+    res.status(201).json({ skill });
+  });
+
+  app.patch('/api/skills/:id', (req, res) => {
+    const { name, description, prompt, allowedTools } = req.body ?? {};
+    const ok = updateSkill(db, req.params.id, { name, description, prompt, allowedTools });
+    if (!ok) { res.status(404).json({ error: 'skill not found or no fields to update' }); return; }
+    res.json({ ok: true, skill: getSkill(db, req.params.id) });
+  });
+
+  app.delete('/api/skills/:id', (req, res) => {
+    const ok = deleteSkill(db, req.params.id);
+    if (!ok) { res.status(404).json({ error: 'skill not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/conversations/:id/skills', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json({ skills: getConversationSkills(db, req.params.id) });
+  });
+
+  app.post('/api/conversations/:id/skills/:skillId', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (!getSkill(db, req.params.skillId)) { res.status(404).json({ error: 'skill not found' }); return; }
+    attachSkill(db, req.params.id, req.params.skillId);
+    res.status(201).json({ ok: true });
+  });
+
+  app.delete('/api/conversations/:id/skills/:skillId', (req, res) => {
+    const ok = detachSkill(db, req.params.id, req.params.skillId);
+    if (!ok) { res.status(404).json({ error: 'skill not attached to this conversation' }); return; }
     res.json({ ok: true });
   });
 

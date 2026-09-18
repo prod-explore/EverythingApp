@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { approve as apiApprove, getPendingApprovals } from '../api';
-import type { PendingApproval } from '../types';
+import type { ApprovalScope, PendingApproval } from '../types';
 
 const POLL_MS = 2000;
 
@@ -15,7 +15,7 @@ const POLL_MS = 2000;
  */
 export function useApprovals(conversationId: string | null): {
   pending: PendingApproval[];
-  respond: (id: string, approved: boolean, alwaysAllow?: boolean) => Promise<void>;
+  respond: (id: string, approved: boolean, scope?: ApprovalScope) => Promise<void>;
 } {
   const [pending, setPending] = useState<PendingApproval[]>([]);
 
@@ -43,13 +43,13 @@ export function useApprovals(conversationId: string | null): {
     };
   }, [conversationId]);
 
-  const respond = async (id: string, approved: boolean, alwaysAllow?: boolean) => {
+  const respond = async (id: string, approved: boolean, scope?: ApprovalScope) => {
     // Optimistic removal — resolving is fire-and-forget from the UI's
     // perspective; the SSE `approval:resolved` event (if listened to) or the
     // next poll would confirm it either way, so there's nothing to gain by
     // waiting on this request before updating the list.
     setPending(prev => prev.filter(p => p.id !== id));
-    await apiApprove(id, approved, alwaysAllow);
+    await apiApprove(id, approved, scope);
   };
 
   return { pending, respond };

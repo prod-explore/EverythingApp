@@ -1,4 +1,4 @@
-import { LogOut, Menu } from 'lucide-react';
+import { LogOut, Menu, Terminal } from 'lucide-react';
 import { clearToken } from '../../api';
 import { MODELS } from '../../lib/models';
 
@@ -6,14 +6,19 @@ export function Header({
   title,
   usage,
   model,
+  sandboxEnabled,
   onModelChange,
+  onSandboxToggle,
   onToggleSidebar,
 }: {
   title: string;
   usage: string;
   /** null until the full conversation loads, or when there's no conversation selected yet. */
   model: string | null;
+  /** undefined = loading/no conversation; otherwise reflects conversation.sandboxEnabled */
+  sandboxEnabled: boolean | undefined;
   onModelChange: (model: string) => void;
+  onSandboxToggle: (enabled: boolean) => void;
   onToggleSidebar: () => void;
 }) {
   return (
@@ -22,6 +27,23 @@ export function Header({
         <Menu size={20} />
       </button>
       <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{title}</h1>
+
+      {/* Sandbox toggle */}
+      {sandboxEnabled !== undefined && (
+        <button
+          onClick={() => onSandboxToggle(!sandboxEnabled)}
+          title={sandboxEnabled ? 'Sandbox enabled — click to disable' : 'Sandbox disabled — click to enable'}
+          aria-label={sandboxEnabled ? 'Disable sandbox' : 'Enable sandbox'}
+          className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors ${
+            sandboxEnabled
+              ? 'border border-fg/30 text-fg hover:border-fg/60'
+              : 'border border-border text-fg-tertiary hover:text-fg-secondary'
+          }`}
+        >
+          <Terminal size={12} />
+          {sandboxEnabled ? 'Sandbox on' : 'Sandbox off'}
+        </button>
+      )}
 
       {model !== null && (
         <select
@@ -36,9 +58,7 @@ export function Header({
               swapping the selection to the first option in the list. */}
           {!MODELS.includes(model) && <option value={model}>{model}</option>}
           {MODELS.map(m => (
-            <option key={m} value={m}>
-              {m}
-            </option>
+            <option key={m} value={m}>{m}</option>
           ))}
         </select>
       )}

@@ -63,6 +63,12 @@ function MainApp() {
     });
   }
 
+  function handleSandboxToggle(enabled: boolean) {
+    if (!selectedId) return;
+    setFullConv(prev => (prev ? { ...prev, sandboxEnabled: enabled } : prev));
+    void updateConversation(selectedId, { sandboxEnabled: enabled }).catch(() => {});
+  }
+
   // A second SSE connection to whichever conversation is open, purely to
   // hear server.ts's emitAll() broadcasts (gazeta:new, etc.) — ChatView
   // opens its own connection to the same stream for turn events, which
@@ -156,7 +162,9 @@ function MainApp() {
         title={selected?.title ?? ''}
         usage={usage}
         model={fullConv?.model ?? null}
+        sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
+        onSandboxToggle={handleSandboxToggle}
         onToggleSidebar={() => setSidebarOpen(o => !o)}
       />
       <div className="relative flex-1 overflow-hidden">
@@ -167,7 +175,7 @@ function MainApp() {
       {gazetaOpen && (
         <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} />
       )}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} conversationId={selectedId ?? undefined} />}
       {searchOpen && (
         <ConversationSearch conversations={conversations} onSelect={setSelectedId} onClose={() => setSearchOpen(false)} />
       )}

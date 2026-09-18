@@ -1,4 +1,5 @@
 import type {
+  ApprovalScope,
   BatchJob,
   ConnectorInfo,
   Conversation,
@@ -7,6 +8,7 @@ import type {
   OutgoingAttachment,
   PendingApproval,
   RawMessage,
+  Skill,
   TurnState,
 } from './types';
 
@@ -166,8 +168,8 @@ export function getPendingApprovals(): Promise<{ pending: PendingApproval[] }> {
   return request('/api/pending-approvals');
 }
 
-export function approve(id: string, approved: boolean, alwaysAllow?: boolean): Promise<{ ok: true }> {
-  return request('/api/approve', { method: 'POST', body: JSON.stringify({ id, approved, alwaysAllow }) });
+export function approve(id: string, approved: boolean, scope?: ApprovalScope): Promise<{ ok: true }> {
+  return request('/api/approve', { method: 'POST', body: JSON.stringify({ id, approved, scope: scope ?? 'once' }) });
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────
@@ -184,6 +186,44 @@ export function putSetting(key: string, value: string): Promise<{ ok: true }> {
 
 export function getConnectors(): Promise<{ connectors: ConnectorInfo[] }> {
   return request('/api/connectors');
+}
+
+// ─── Skills ───────────────────────────────────────────────────────────────
+
+export function listSkills(): Promise<{ skills: Skill[] }> {
+  return request('/api/skills');
+}
+
+export function createSkill(opts: {
+  name: string;
+  description?: string;
+  prompt?: string;
+  allowedTools?: string[];
+}): Promise<{ skill: Skill }> {
+  return request('/api/skills', { method: 'POST', body: JSON.stringify(opts) });
+}
+
+export function updateSkill(
+  id: string,
+  patch: { name?: string; description?: string; prompt?: string; allowedTools?: string[] },
+): Promise<{ ok: true; skill: Skill }> {
+  return request(`/api/skills/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export function deleteSkill(id: string): Promise<{ ok: true }> {
+  return request(`/api/skills/${id}`, { method: 'DELETE' });
+}
+
+export function getConversationSkills(conversationId: string): Promise<{ skills: Skill[] }> {
+  return request(`/api/conversations/${conversationId}/skills`);
+}
+
+export function attachSkill(conversationId: string, skillId: string): Promise<{ ok: true }> {
+  return request(`/api/conversations/${conversationId}/skills/${skillId}`, { method: 'POST' });
+}
+
+export function detachSkill(conversationId: string, skillId: string): Promise<{ ok: true }> {
+  return request(`/api/conversations/${conversationId}/skills/${skillId}`, { method: 'DELETE' });
 }
 
 // ─── Gazeta ───────────────────────────────────────────────────────────────
