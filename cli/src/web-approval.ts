@@ -92,6 +92,21 @@ export class WebApprovalGate {
     });
   }
 
+  /**
+   * Pre-grants chat-scoped approval for a tool on behalf of an attached Skill.
+   * Called at turn start for each tool in each skill's allowedTools list.
+   * Equivalent to the user having clicked "Approve for this chat" for that tool.
+   * Dangerous calls still re-queue regardless (looksDangerous() is checked in confirm()).
+   */
+  grantChatScope(conversationId: string, toolLabel: string): void {
+    let chatSet = this.chatAllowed.get(conversationId);
+    if (!chatSet) {
+      chatSet = new Set();
+      this.chatAllowed.set(conversationId, chatSet);
+    }
+    chatSet.add(toolLabel);
+  }
+
   listPending(): PendingApproval[] {
     return [...this.pending.values()].map(p => p.entry);
   }

@@ -411,6 +411,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         effectiveSystem += '\n\n---\n\n' + skillPrompts.join('\n\n---\n\n');
       }
 
+      // Auto-approve tools declared by attached skills for this chat
+      attachedSkills.forEach(skill => {
+        skill.allowedTools.forEach(tool => {
+          approvalGate.grantChatScope(convId, tool);
+        });
+      });
+
       try {
         const updatedHistory = await runTurn(
           {
