@@ -26,11 +26,17 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
     }
 
     if (msg.role === 'user') {
-      const text = blocks
-        .filter((b): b is Extract<ContentBlock, { type: 'text' }> => b.type === 'text')
-        .map(b => b.text)
-        .join('');
-      result.push({ id: `msg-${i}`, role: 'user', content: [{ type: 'text', text }] });
+      // Real DB row id (not array index) — edit/regenerate need this to
+      // tell server.ts which message to branch from. See lib/runtime.ts.
+      const id = String(msg.id);
+      const parts: ThreadMessageLike['content'] = blocks
+        .filter((b): b is Extract<ContentBlock, { type: 'text' } | { type: 'image' }> => b.type === 'text' || b.type === 'image')
+        .map(b =>
+          b.type === 'text'
+            ? { type: 'text' as const, text: b.text }
+            : { type: 'image' as const, image: `data:${b.source.media_type};base64,${b.source.data}` },
+        );
+      result.push({ id, role: 'user', content: parts.length > 0 ? parts : [{ type: 'text', text: '' }] });
       continue;
     }
 
@@ -71,7 +77,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
         });
       }
     }
-    result.push({ id: `msg-${i}`, role: 'assistant', content: parts });
+    result.push({ id: String(msg.id), role: 'assistant', content: parts });
   }
 
   return result;

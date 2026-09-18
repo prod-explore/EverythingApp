@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react';
 import { getConnectors } from '../../api';
 import { useSettings } from '../../hooks/useSettings';
+import { MODELS } from '../../lib/models';
 import type { ConnectorInfo } from '../../types';
 import { Badge } from '../shared/Badge';
 import { Modal } from '../shared/Modal';
-
-const MODELS = ['claude-sonnet-4-6', 'claude-opus-5', 'claude-haiku-4-5-20251001'];
 
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const { settings, loading, set } = useSettings();

@@ -22,11 +22,20 @@ export interface Conversation {
 export type ContentBlock =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
-  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
+  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
 
 export interface RawMessage {
+  id: number;
   role: string; // 'user' | 'assistant' — kept loose because db.ts's MessageParam type is loose
   content: string | ContentBlock[];
+}
+
+/** What the composer sends up for an image attachment — see api.ts's sendMessage(). */
+export interface OutgoingAttachment {
+  mediaType: string;
+  /** Base64, no `data:...;base64,` prefix. */
+  data: string;
 }
 
 export interface GazetaItem {

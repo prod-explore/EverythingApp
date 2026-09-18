@@ -22,8 +22,13 @@ import {
   updateConversation,
   deleteConversation,
   getMessages,
+  getAllMessagesFull,
   appendMessage,
   clearMessages,
+  deleteMessagesFrom,
+  deactivateMessagesFrom,
+  getLastActiveMessage,
+  findRegenerationAnchor,
   getSetting,
   setSetting,
   getAllSettings,
@@ -48,6 +53,43 @@ function isValidAuthHeader(header: string | undefined, expectedToken: string): b
   const actual = Buffer.from(header);
   if (actual.length !== expected.length) return false;
   return timingSafeEqual(actual, expected);
+}
+
+const SUPPORTED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'] as const;
+type SupportedImageType = (typeof SUPPORTED_IMAGE_TYPES)[number];
+/** Base64 text length, not decoded byte size — ~8MB of base64 is ~6MB of actual image data. */
+const MAX_ATTACHMENT_BASE64_LENGTH = 8_000_000;
+
+/**
+ * Builds the content to send to Anthropic (and to persist) from a composer
+ * submission: plain text, or text + inline image attachments. Returns null
+ * when there's nothing usable to send (Phase 1 — images only; other file
+ * types are a follow-up, see the Full Build Roadmap in the vault).
+ */
+function buildMessageContent(rawContent: unknown, rawAttachments: unknown): Anthropic.MessageParam['content'] | null {
+  const text = typeof rawContent === 'string' ? rawContent : '';
+  const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
+
+  const imageBlocks: Anthropic.ImageBlockParam[] = [];
+  for (const a of attachments) {
+    if (typeof a !== 'object' || a === null) continue;
+    const mediaType = (a as Record<string, unknown>)['mediaType'];
+    const data = (a as Record<string, unknown>)['data'];
+    if (typeof mediaType !== 'string' || typeof data !== 'string') continue;
+    if (!(SUPPORTED_IMAGE_TYPES as readonly string[]).includes(mediaType)) continue;
+    if (data.length > MAX_ATTACHMENT_BASE64_LENGTH) continue;
+    imageBlocks.push({
+      type: 'image',
+      source: { type: 'base64', media_type: mediaType as SupportedImageType, data },
+    });
+  }
+
+  if (imageBlocks.length === 0) {
+    return text.trim() ? text : null;
+  }
+  const blocks: Anthropic.ContentBlockParam[] = [...imageBlocks];
+  if (text.trim()) blocks.push({ type: 'text', text });
+  return blocks;
 }
 
 async function main(): Promise<void> {
@@ -320,63 +362,36 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     res.json({ ok: true });
   });
 
-  // ─── Send message ─────────────────────────────────────────────────────────
-  app.post('/api/conversations/:id/message', (req, res) => {
-    const convId = req.params.id;
-    const { text, batch } = req.body ?? {};
-
-    if (typeof text !== 'string' || !text.trim()) {
-      res.status(400).json({ error: 'expected { text: string }' });
-      return;
-    }
-    const conv = getConversation(db, convId);
-    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
-      res.status(409).json({ error: 'a turn is already running in this conversation' });
-      return;
-    }
-
-    // Batch mode — submit to Anthropic Batch API instead
-    if (batch) {
-      const history = getMessages(db, convId);
-      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
-      // `||` not `??`: an empty-string setting (e.g. global_system_prompt
-      // saved as "" from the Settings UI) must fall through to the default
-      // too — `??` only catches null/undefined, and Anthropic's API rejects
-      // a system text block with cache_control on empty text.
-      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
-      void (async () => {
-        try {
-          const entry = await submitBatch(anthropic, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], text);
-          appendMessage(db, convId, 'user', text);
-          createBatchJob(db, { id: entry.batchId, conversationId: convId, customId: entry.customId, userText: text, preview: entry.preview });
-          res.json({ ok: true, batchId: entry.batchId });
-        } catch (err) {
-          res.status(500).json({ error: (err as Error).message });
-        }
-      })();
-      return;
-    }
-
-    // Live turn — runs detached from the HTTP request
+  // ─── Turn execution (shared by /message, /edit, /regenerate, /retry) ──────
+  /**
+   * Runs one live turn to completion and persists everything it produces,
+   * chained via parent_id off `userMessageId` (the user-facing message the
+   * caller has *already* stored — this function never stores that one
+   * itself, only what comes after it). Every caller below differs only in
+   * how it arrives at historyBeforeTurn/content/userMessageId, not in how
+   * the turn itself runs, hence the extraction.
+   */
+  function kickoffLiveTurn(
+    convId: string,
+    conv: NonNullable<ReturnType<typeof getConversation>>,
+    historyBeforeTurn: Anthropic.MessageParam[],
+    content: Anthropic.MessageParam['content'],
+    userMessageId: number,
+  ): number {
     const counter = (turnCounters.get(convId) ?? 0) + 1;
     turnCounters.set(convId, counter);
     const turnId = counter;
     const controller = new AbortController();
     abortControllers.set(convId, controller);
-
-    // Optimistic: store user message immediately
-    appendMessage(db, convId, 'user', text);
     turnStates.set(convId, { id: turnId, status: 'running' });
-    res.json({ ok: true, turnId });
-
     sse.emit(convId, 'turn:start', { turnId });
 
     void (async () => {
-      const history = getMessages(db, convId) as Anthropic.MessageParam[];
-      // Remove the optimistically added user message — runTurn will rebuild it
-      const historyBeforeTurn = history.slice(0, -1);
       const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      // `||` not `??`: an empty-string setting (e.g. global_system_prompt
+      // saved as "" from the Settings UI) must fall through to the default
+      // too — `??` only catches null/undefined, and Anthropic's API rejects
+      // a system text block with cache_control on empty text.
       const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
 
       try {
@@ -401,7 +416,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             onUsage: usage => usageTracker.record(usage),
           },
           historyBeforeTurn,
-          text,
+          content,
         );
 
         // Handle virtual tool calls (request_human_input) in the updated history
@@ -424,17 +439,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           }
         }
 
-        // Persist final history (excluding the optimistic user message we already saved)
-        // We already stored the user message — only store new messages from this turn
-        const newMessages = updatedHistory.slice(historyBeforeTurn.length + 1); // skip the user message
+        // Persist everything the turn produced AFTER the user message the
+        // caller already stored, chaining each new row's parent_id off the
+        // previous one so the whole turn (including tool-loop plumbing)
+        // hangs off userMessageId as one branch.
+        const newMessages = updatedHistory.slice(historyBeforeTurn.length + 1);
+        let previousId = userMessageId;
         for (const msg of newMessages) {
-          appendMessage(db, convId, msg.role, msg.content);
+          previousId = appendMessage(db, convId, msg.role, msg.content, previousId);
         }
 
         // Auto-title after first exchange
         const conv2 = getConversation(db, convId);
         if (conv2 && conv2.title === 'New conversation') {
-          updateConversation(db, convId, { title: text.slice(0, 60) });
+          const titleSource = typeof content === 'string' ? content : '(attachment)';
+          updateConversation(db, convId, { title: titleSource.slice(0, 60) });
         }
 
         turnStates.set(convId, { id: turnId, status: 'done' });
@@ -443,18 +462,188 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         const error = (err as Error).message;
         const aborted = error.includes('kill switch');
         // Deliberately NOT rolling back the user's message here (it was
-        // already persisted at line 365, before this async block even
-        // started) — whatever failed, the user did type it, and silently
-        // discarding it on any error (a transient network blip, a tool
-        // failure, anything) is a worse outcome than leaving it visible
-        // with no assistant reply. The turn:error/aborted event below is
-        // what tells the UI this turn didn't complete.
+        // already persisted before this async block even started) —
+        // whatever failed, the user did type it, and silently discarding
+        // it on any error (a transient network blip, a tool failure,
+        // anything) is a worse outcome than leaving it visible with no
+        // assistant reply. The turn:error/aborted event below is what
+        // tells the UI this turn didn't complete. (See retry, below, for
+        // how this state gets resolved.)
         turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error });
         sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error });
       } finally {
         abortControllers.delete(convId);
       }
     })();
+
+    return turnId;
+  }
+
+  /**
+   * Shared by /regenerate and /retry: finds the nearest user message at or
+   * before `fromId` (null = search from the end), retires it and everything
+   * after, and re-sends its exact original content as a fresh branch.
+   */
+  function regenerateFrom(
+    convId: string,
+    conv: NonNullable<ReturnType<typeof getConversation>>,
+    fromId: number | null,
+  ): { ok: true; turnId: number } | { ok: false; status: number; error: string } {
+    const anchor = findRegenerationAnchor(db, convId, fromId);
+    if (!anchor) return { ok: false, status: 404, error: 'no prior user message found to regenerate from' };
+
+    deactivateMessagesFrom(db, convId, anchor.id);
+    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const resendContent = anchor.content as Anthropic.MessageParam['content'];
+    const userMessageId = appendMessage(db, convId, 'user', resendContent, anchor.parentId);
+    const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, resendContent, userMessageId);
+    return { ok: true, turnId };
+  }
+
+  // ─── Send message ─────────────────────────────────────────────────────────
+  app.post('/api/conversations/:id/message', (req, res) => {
+    const convId = req.params.id;
+    const { content: rawContent, text, batch, attachments } = req.body ?? {};
+    const content = buildMessageContent(rawContent ?? text, attachments);
+
+    if (content === null) {
+      res.status(400).json({ error: 'expected { content: string, attachments?: Array<{ mediaType, data }> }' });
+      return;
+    }
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'a turn is already running in this conversation' });
+      return;
+    }
+
+    // Batch mode — submit to Anthropic Batch API instead
+    if (batch) {
+      if (typeof content !== 'string') {
+        res.status(400).json({ error: 'attachments are not supported in batch mode yet' });
+        return;
+      }
+      const history = getMessages(db, convId);
+      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+      void (async () => {
+        try {
+          const entry = await submitBatch(anthropic, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], content);
+          appendMessage(db, convId, 'user', content);
+          createBatchJob(db, { id: entry.batchId, conversationId: convId, customId: entry.customId, userText: content, preview: entry.preview });
+          res.json({ ok: true, batchId: entry.batchId });
+        } catch (err) {
+          res.status(500).json({ error: (err as Error).message });
+        }
+      })();
+      return;
+    }
+
+    // Live turn — runs detached from the HTTP request. historyBeforeTurn is
+    // read BEFORE the optimistic append below, so it never includes the
+    // message we're about to store.
+    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const userMessageId = appendMessage(db, convId, 'user', content);
+    const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
+    res.json({ ok: true, turnId });
+  });
+
+  // ─── Edit / regenerate / retry ─────────────────────────────────────────────
+  // Together these are Phase 1's message-branching feature: editing a user
+  // message or regenerating/retrying an assistant reply never destroys the
+  // old branch (see db.ts's is_active) — it retires it and starts a new one.
+  // There's no UI to browse retired branches yet (see the Full Build
+  // Roadmap in the vault, Phase 1 follow-up), but the data is there for it.
+  app.post('/api/conversations/:id/edit', (req, res) => {
+    const convId = req.params.id;
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'a turn is already running in this conversation' });
+      return;
+    }
+    const { parentId, content } = req.body ?? {};
+    if (typeof content !== 'string' || !content.trim()) {
+      res.status(400).json({ error: 'expected { content: string, parentId: number | null }' });
+      return;
+    }
+    const afterId = parentId === null || parentId === undefined ? null : Number(parentId);
+    if (afterId !== null && !Number.isInteger(afterId)) {
+      res.status(400).json({ error: 'parentId must be an integer or null' });
+      return;
+    }
+    const activeBefore = getMessages(db, convId);
+    if (afterId !== null && !activeBefore.some(m => m.id === afterId)) {
+      res.status(400).json({ error: 'parentId does not refer to a message in this conversation' });
+      return;
+    }
+
+    deactivateMessagesFrom(db, convId, afterId !== null ? afterId + 1 : 0);
+    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const userMessageId = appendMessage(db, convId, 'user', content, afterId);
+    const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
+    res.json({ ok: true, turnId });
+  });
+
+  app.post('/api/conversations/:id/regenerate', (req, res) => {
+    const convId = req.params.id;
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'a turn is already running in this conversation' });
+      return;
+    }
+    const { parentId } = req.body ?? {};
+    const fromId = parentId === null || parentId === undefined ? null : Number(parentId);
+    if (fromId !== null && !Number.isInteger(fromId)) {
+      res.status(400).json({ error: 'parentId must be an integer or null' });
+      return;
+    }
+    const result = regenerateFrom(convId, conv, fromId);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ ok: true, turnId: result.turnId });
+  });
+
+  app.post('/api/conversations/:id/retry', (req, res) => {
+    const convId = req.params.id;
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'a turn is already running in this conversation' });
+      return;
+    }
+    const last = getLastActiveMessage(db, convId);
+    if (!last) { res.status(404).json({ error: 'conversation has no messages yet' }); return; }
+    const result = regenerateFrom(convId, conv, last.id);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
+    res.json({ ok: true, turnId: result.turnId });
+  });
+
+  // Hard delete of a single message and everything after it — distinct from
+  // DELETE /messages above, which wipes the whole conversation. An explicit
+  // user delete is a real removal, unlike edit/regenerate's soft retire.
+  app.delete('/api/conversations/:id/messages/:messageId', (req, res) => {
+    const convId = req.params.id;
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') {
+      res.status(409).json({ error: 'turn is running — kill it first' });
+      return;
+    }
+    const messageId = Number(req.params.messageId);
+    if (!Number.isInteger(messageId)) { res.status(400).json({ error: 'invalid message id' }); return; }
+    const ok = deleteMessagesFrom(db, convId, messageId);
+    if (!ok) { res.status(404).json({ error: 'message not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  // Full message history including retired branches — not used by the chat
+  // UI yet (which only ever renders the active branch via GET .../messages),
+  // but exposed now for the branch-history UI planned as a Phase 1 follow-up.
+  app.get('/api/conversations/:id/messages/full', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json({ messages: getAllMessagesFull(db, req.params.id) });
   });
 
   // ─── Approvals ────────────────────────────────────────────────────────────

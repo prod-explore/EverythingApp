@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { getToken, getTurnStatus } from './api';
+import { getConversation, getToken, getTurnStatus, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
@@ -11,6 +11,7 @@ import { SettingsModal } from './components/settings/SettingsModal';
 import { useConversations } from './hooks/useConversations';
 import { useGazeta } from './hooks/useGazeta';
 import { useSSE } from './hooks/useSSE';
+import type { Conversation } from './types';
 
 export default function App() {
   const [authed, setAuthed] = useState(() => getToken() !== null);
@@ -35,8 +36,32 @@ function MainApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [usage, setUsage] = useState('—');
+  const [fullConv, setFullConv] = useState<Conversation | null>(null);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
+
+  // Header's model switch needs the full Conversation (model isn't part of
+  // the summary list useConversations() returns) — refetched on every
+  // conversation switch, and kept in sync locally when the user changes it
+  // so the dropdown doesn't visually snap back while the PATCH is in flight.
+  useEffect(() => {
+    if (!selectedId) { setFullConv(null); return; }
+    let cancelled = false;
+    getConversation(selectedId)
+      .then(c => !cancelled && setFullConv(c))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
+
+  function handleModelChange(model: string) {
+    if (!selectedId) return;
+    setFullConv(prev => (prev ? { ...prev, model } : prev));
+    void updateConversation(selectedId, { model }).catch(() => {
+      // Best-effort — worst case the next turn uses the previous model, not worth a visible error for this.
+    });
+  }
 
   // A second SSE connection to whichever conversation is open, purely to
   // hear server.ts's emitAll() broadcasts (gazeta:new, etc.) — ChatView
@@ -62,21 +87,50 @@ function MainApp() {
     };
   }, [selectedId]);
 
-  // Keyboard shortcuts: Ctrl/Cmd+N for a new conversation, Ctrl/Cmd+K to search them.
+  // Keyboard shortcuts. Ctrl/Cmd+N/K/,/B are global; Escape closes whatever's
+  // open (search > settings > gazeta > mobile sidebar, innermost first); "/"
+  // focuses the composer but only when nothing else already has focus, so it
+  // doesn't hijack typing inside the search box or a textarea mid-edit.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === 'n') {
         e.preventDefault();
         createConversation();
+        return;
       }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+      if (mod && e.key === 'k') {
         e.preventDefault();
         setSearchOpen(true);
+        return;
+      }
+      if (mod && e.key === ',') {
+        e.preventDefault();
+        setSettingsOpen(true);
+        return;
+      }
+      if (mod && e.key === 'b') {
+        e.preventDefault();
+        setSidebarOpen(o => !o);
+        return;
+      }
+      if (e.key === 'Escape') {
+        if (searchOpen) setSearchOpen(false);
+        else if (settingsOpen) setSettingsOpen(false);
+        else if (gazetaOpen) setGazetaOpen(false);
+        else if (sidebarOpen) setSidebarOpen(false);
+        return;
+      }
+      if (e.key === '/' && !mod) {
+        const tag = document.activeElement?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || searchOpen || settingsOpen || gazetaOpen) return;
+        e.preventDefault();
+        document.getElementById('composer-input')?.focus();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createConversation]);
+  }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen]);
 
   if (loading || !selectedId) {
     return <div className="flex h-full items-center justify-center text-fg-tertiary">Loading…</div>;
@@ -98,7 +152,13 @@ function MainApp() {
       onOpenSettings={() => setSettingsOpen(true)}
       gazetaCount={gazetaItems.length}
     >
-      <Header title={selected?.title ?? ''} usage={usage} onToggleSidebar={() => setSidebarOpen(o => !o)} />
+      <Header
+        title={selected?.title ?? ''}
+        usage={usage}
+        model={fullConv?.model ?? null}
+        onModelChange={handleModelChange}
+        onToggleSidebar={() => setSidebarOpen(o => !o)}
+      />
       <div className="relative flex-1 overflow-hidden">
         <ChatView conversationId={selectedId} />
         <ApprovalBanner conversationId={selectedId} />

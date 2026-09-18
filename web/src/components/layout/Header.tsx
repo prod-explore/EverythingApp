@@ -1,12 +1,19 @@
-import { Menu } from 'lucide-react';
+import { LogOut, Menu } from 'lucide-react';
+import { clearToken } from '../../api';
+import { MODELS } from '../../lib/models';
 
 export function Header({
   title,
   usage,
+  model,
+  onModelChange,
   onToggleSidebar,
 }: {
   title: string;
   usage: string;
+  /** null until the full conversation loads, or when there's no conversation selected yet. */
+  model: string | null;
+  onModelChange: (model: string) => void;
   onToggleSidebar: () => void;
 }) {
   return (
@@ -15,7 +22,40 @@ export function Header({
         <Menu size={20} />
       </button>
       <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{title}</h1>
+
+      {model !== null && (
+        <select
+          value={model}
+          onChange={e => onModelChange(e.target.value)}
+          title="Model for this conversation"
+          className="shrink-0 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover"
+        >
+          {/* The conversation's current model might not be one of the
+              picker's usual options (an older/retired model still on an
+              existing conversation) — show it anyway rather than silently
+              swapping the selection to the first option in the list. */}
+          {!MODELS.includes(model) && <option value={model}>{model}</option>}
+          {MODELS.map(m => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      )}
+
       <span className="shrink-0 text-xs text-fg-tertiary">{usage}</span>
+
+      <button
+        onClick={() => {
+          clearToken();
+          window.location.reload();
+        }}
+        title="Log out"
+        aria-label="Log out"
+        className="shrink-0 text-fg-tertiary hover:text-fg-secondary"
+      >
+        <LogOut size={16} />
+      </button>
     </header>
   );
 }

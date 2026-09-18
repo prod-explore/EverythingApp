@@ -4,6 +4,7 @@ import type {
   Conversation,
   ConversationSummary,
   GazetaItem,
+  OutgoingAttachment,
   PendingApproval,
   RawMessage,
   TurnState,
@@ -102,20 +103,57 @@ export function clearMessages(conversationId: string): Promise<{ ok: true }> {
   return request(`/api/conversations/${conversationId}/messages`, { method: 'DELETE' });
 }
 
-/** batch=true submits via the Batches API instead of running live — see implementation_plan.md §2.2. */
+/** batch=true submits via the Batches API instead of running live — see implementation_plan.md §2.2. Attachments are images only in Phase 1 and are ignored in batch mode by the server. */
 export function sendMessage(
   conversationId: string,
-  text: string,
+  content: string,
   batch?: boolean,
+  attachments?: OutgoingAttachment[],
 ): Promise<{ ok: true; turnId?: number; batchId?: string }> {
   return request(`/api/conversations/${conversationId}/message`, {
     method: 'POST',
-    body: JSON.stringify({ text, batch }),
+    body: JSON.stringify({ content, batch, attachments }),
   });
 }
 
 export function killTurn(conversationId: string): Promise<{ ok: true }> {
   return request(`/api/conversations/${conversationId}/kill`, { method: 'POST' });
+}
+
+/**
+ * Edit/regenerate/retry — Phase 1's message branching. `parentId` is the id
+ * of the message immediately before the one being replaced (null for the
+ * very first message); server.ts figures out the rest. See lib/runtime.ts
+ * for how assistant-ui's onEdit/onReload map onto these.
+ */
+export function editMessage(
+  conversationId: string,
+  parentId: number | null,
+  content: string,
+): Promise<{ ok: true; turnId: number }> {
+  return request(`/api/conversations/${conversationId}/edit`, {
+    method: 'POST',
+    body: JSON.stringify({ parentId, content }),
+  });
+}
+
+export function regenerateMessage(
+  conversationId: string,
+  parentId: number | null,
+): Promise<{ ok: true; turnId: number }> {
+  return request(`/api/conversations/${conversationId}/regenerate`, {
+    method: 'POST',
+    body: JSON.stringify({ parentId }),
+  });
+}
+
+export function retryLastMessage(conversationId: string): Promise<{ ok: true; turnId: number }> {
+  return request(`/api/conversations/${conversationId}/retry`, { method: 'POST' });
+}
+
+/** Hard delete of one message and everything after it — distinct from clearMessages() above. */
+export function deleteMessageFrom(conversationId: string, messageId: number): Promise<{ ok: true }> {
+  return request(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'DELETE' });
 }
 
 export function getTurnStatus(conversationId: string): Promise<TurnState & { usage: string }> {

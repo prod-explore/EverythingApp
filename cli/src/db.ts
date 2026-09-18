@@ -17,6 +17,11 @@ export function openDb(path: string = dbPath()): Database.Database {
   return db;
 }
 
+function columnExists(db: Database.Database, table: string, column: string): boolean {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return cols.some(c => c.name === column);
+}
+
 export function runMigrations(db: Database.Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS conversations (
@@ -37,6 +42,22 @@ export function runMigrations(db: Database.Database): void {
       created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, id);
+  `);
+
+  // Message branching (edit/regenerate — Phase 1 of the Full Build Roadmap):
+  // `parent_id` links a message to whichever message it branches off of;
+  // `is_active` marks which branch is currently the visible one.
+  // ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, so this is
+  // guarded manually — safe to run on both a fresh db (columns already
+  // exist from CREATE TABLE below) and an existing pre-branching db.
+  if (!columnExists(db, 'messages', 'parent_id')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN parent_id INTEGER`);
+  }
+  if (!columnExists(db, 'messages', 'is_active')) {
+    db.exec(`ALTER TABLE messages ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_messages_active ON messages(conversation_id, is_active, id);
 
     CREATE TABLE IF NOT EXISTS settings (
       key   TEXT PRIMARY KEY,
@@ -176,15 +197,47 @@ export function deleteConversation(db: Database.Database, id: string): boolean {
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 export interface MessageParam {
+  /** Present from getMessages(); a bare type-cast to Anthropic.MessageParam[] elsewhere in
+   * the codebase ignores it, and sanitizeHistory() in anthropic-loop.ts strips it before any
+   * request actually reaches the API. */
+  id?: number;
   role: string;
   content: unknown;
 }
 
+export interface FullMessageRow {
+  id: number;
+  role: string;
+  content: unknown;
+  parentId: number | null;
+  isActive: boolean;
+  createdAt: string;
+}
+
+/** Only the currently-active branch, in order — what every turn (live, batch, regenerate) is built from. */
 export function getMessages(db: Database.Database, conversationId: string): MessageParam[] {
   const rows = db
-    .prepare(`SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id ASC`)
-    .all(conversationId) as Array<{ role: string; content: string }>;
-  return rows.map(r => ({ role: r.role, content: JSON.parse(r.content) }));
+    .prepare(`SELECT id, role, content FROM messages WHERE conversation_id = ? AND is_active = 1 ORDER BY id ASC`)
+    .all(conversationId) as Array<{ id: number; role: string; content: string }>;
+  return rows.map(r => ({ id: r.id, role: r.role, content: JSON.parse(r.content) }));
+}
+
+/** Every message including inactive branches — for history/debugging, not for building a turn. */
+export function getAllMessagesFull(db: Database.Database, conversationId: string): FullMessageRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, role, content, parent_id as parentId, is_active as isActive, created_at as createdAt
+       FROM messages WHERE conversation_id = ? ORDER BY id ASC`,
+    )
+    .all(conversationId) as Array<{ id: number; role: string; content: string; parentId: number | null; isActive: number; createdAt: string }>;
+  return rows.map(r => ({
+    id: r.id,
+    role: r.role,
+    content: JSON.parse(r.content),
+    parentId: r.parentId,
+    isActive: Boolean(r.isActive),
+    createdAt: r.createdAt,
+  }));
 }
 
 export function appendMessage(
@@ -192,10 +245,11 @@ export function appendMessage(
   conversationId: string,
   role: string,
   content: unknown,
+  parentId: number | null = null,
 ): number {
   const result = db
-    .prepare(`INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)`)
-    .run(conversationId, role, JSON.stringify(content));
+    .prepare(`INSERT INTO messages (conversation_id, role, content, parent_id) VALUES (?, ?, ?, ?)`)
+    .run(conversationId, role, JSON.stringify(content), parentId);
   // Touch updated_at on the conversation
   db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(conversationId);
   return result.lastInsertRowid as number;
@@ -204,6 +258,70 @@ export function appendMessage(
 export function clearMessages(db: Database.Database, conversationId: string): void {
   db.prepare(`DELETE FROM messages WHERE conversation_id = ?`).run(conversationId);
   db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(conversationId);
+}
+
+/**
+ * Hard-deletes a message and everything after it (across every branch, not
+ * just the active one) — an explicit user "delete" is a real removal, not a
+ * new branch. Distinct from clearMessages(), which wipes an entire
+ * conversation.
+ */
+export function deleteMessagesFrom(db: Database.Database, conversationId: string, fromMessageId: number): boolean {
+  const result = db
+    .prepare(`DELETE FROM messages WHERE conversation_id = ? AND id >= ?`)
+    .run(conversationId, fromMessageId);
+  db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(conversationId);
+  return result.changes > 0;
+}
+
+/**
+ * Soft-deletes: marks a message and everything currently active after it as
+ * inactive, without deleting rows — used by edit/regenerate to retire the
+ * old branch while keeping it around for potential future branch-history UI.
+ */
+export function deactivateMessagesFrom(db: Database.Database, conversationId: string, fromMessageId: number): void {
+  db.prepare(`UPDATE messages SET is_active = 0 WHERE conversation_id = ? AND id >= ? AND is_active = 1`).run(
+    conversationId,
+    fromMessageId,
+  );
+}
+
+export function getLastActiveMessage(
+  db: Database.Database,
+  conversationId: string,
+): { id: number; role: string; content: unknown; parentId: number | null } | null {
+  const row = db
+    .prepare(
+      `SELECT id, role, content, parent_id as parentId FROM messages
+       WHERE conversation_id = ? AND is_active = 1 ORDER BY id DESC LIMIT 1`,
+    )
+    .get(conversationId) as { id: number; role: string; content: string; parentId: number | null } | undefined;
+  if (!row) return null;
+  return { id: row.id, role: row.role, content: JSON.parse(row.content), parentId: row.parentId };
+}
+
+/**
+ * Walks backward from (and including) `fromId` through the active branch to
+ * find the nearest user message — the "anchor" a regenerate/retry re-sends.
+ * Needed because a single logical turn can span several raw rows (one per
+ * tool-loop round trip per anthropic-loop.ts), so "the message right before
+ * this one" isn't necessarily the user turn that started it — pass null for
+ * fromId to search from the end of the conversation (used by retry).
+ */
+export function findRegenerationAnchor(
+  db: Database.Database,
+  conversationId: string,
+  fromId: number | null,
+): { id: number; content: unknown; parentId: number | null } | null {
+  const row = db
+    .prepare(
+      `SELECT id, content, parent_id as parentId FROM messages
+       WHERE conversation_id = ? AND is_active = 1 AND role = 'user' AND (? IS NULL OR id <= ?)
+       ORDER BY id DESC LIMIT 1`,
+    )
+    .get(conversationId, fromId, fromId) as { id: number; content: string; parentId: number | null } | undefined;
+  if (!row) return null;
+  return { id: row.id, content: JSON.parse(row.content), parentId: row.parentId };
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

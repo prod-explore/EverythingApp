@@ -6,7 +6,7 @@ import { Composer } from './Composer';
 import { AssistantBubble, UserBubble } from './MessageBubble';
 
 export function ChatView({ conversationId }: { conversationId: string }) {
-  const runtime = useEverythingAppRuntime(conversationId);
+  const { runtime, error, retry } = useEverythingAppRuntime(conversationId);
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
@@ -16,12 +16,10 @@ export function ChatView({ conversationId }: { conversationId: string }) {
             <EmptyState icon={MessageSquare} message="Say something to get started." />
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages>
-            {({ message }) =>
-              message.role === 'user' ? <UserBubble key={message.id} /> : <AssistantBubble key={message.id} />
-            }
+            {({ message }) => (message.role === 'user' ? <UserBubble key={message.id} /> : <AssistantBubble key={message.id} />)}
           </ThreadPrimitive.Messages>
         </ThreadPrimitive.Viewport>
-        <Composer conversationId={conversationId} />
+        <Composer conversationId={conversationId} error={error} onRetry={retry} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );

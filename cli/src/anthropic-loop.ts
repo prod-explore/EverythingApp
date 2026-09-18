@@ -92,9 +92,9 @@ function cacheableTools(tools: Anthropic.ToolUnion[]): Anthropic.ToolUnion[] {
 export async function runTurn(
   deps: ConversationDeps,
   history: Anthropic.MessageParam[],
-  userText: string,
+  userContent: Anthropic.MessageParam['content'],
 ): Promise<Anthropic.MessageParam[]> {
-  const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userText }];
+  const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userContent }];
   const toolDefs: Anthropic.ToolUnion[] = [
     ...(deps.tools.toAnthropicTools() as Anthropic.Tool[]),
     ...(deps.serverTools ?? []),

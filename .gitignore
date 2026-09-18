@@ -21,3 +21,4 @@ Thumbs.db
 npm-debug.log*
 google api.txt
 anthropic.txt
+.playwright-mcp/
