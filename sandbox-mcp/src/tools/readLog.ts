@@ -2,7 +2,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ok, fail, ToolContext } from './types.js';
 
-export function registerReadLog(server: McpServer, { config, supervisor }: ToolContext): void {
+export function registerReadLog(server: McpServer, { supervisor }: ToolContext): void {
   server.tool(
     'read_log',
     'Read the append-only action log from the sandbox. ' +
@@ -17,17 +17,23 @@ export function registerReadLog(server: McpServer, { config, supervisor }: ToolC
         .max(500)
         .optional()
         .describe('Number of most recent log lines to return. Defaults to 50, max 500.'),
+      // Injected by the orchestrator — not intended for the model to supply.
+      _conversation_id: z
+        .string()
+        .optional()
+        .describe('Internal: conversation ID for workspace isolation. Set by the orchestrator.'),
     },
-    async ({ lines = 50 }) => {
-      let containerId: string | null = null;
+    async ({ lines = 50, _conversation_id }) => {
+      const convId = _conversation_id ?? 'default';
+
       try {
-        const claimed = await supervisor.claim();
-        containerId = claimed.containerId;
+        const claimed = await supervisor.claim(convId);
 
         const result = await supervisor.exec(
-          containerId,
+          claimed.containerId,
           `tail -n ${lines} /var/log/sandbox-actions.log`,
           5_000,
+          convId,
         );
 
         const content = result.stdout.trim();
@@ -35,12 +41,6 @@ export function registerReadLog(server: McpServer, { config, supervisor }: ToolC
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
         return fail(`read_log error: ${message}`);
-      } finally {
-        if (containerId !== null) {
-          supervisor.release(containerId).catch(err =>
-            console.error('[read_log] release error:', err),
-          );
-        }
       }
     },
   );

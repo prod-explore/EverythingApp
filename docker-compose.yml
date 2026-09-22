@@ -1,6 +1,13 @@
-# Phase 1 — Agent Sandbox
+# EverythingApp — Docker Compose
+# Phase 4: Sandbox Hardening, Playwright, GitHub Connector, n8n Pipelines
+#
 # Run: docker compose up
-# Prerequisites: docker build -t everything-sandbox:latest ./sandbox-supervisor/sandbox-image/
+# Prerequisites:
+#   1. docker build -t everything-sandbox:latest ./sandbox-supervisor/sandbox-image/
+#   2. Copy .env.example → .env and fill in all required values
+#   3. For GitHub: set GITHUB_PAT in .env
+#   4. For n8n: set N8N_USER, N8N_PASSWORD, N8N_RESEND_API_KEY in .env
+#   5. For Playwright: set PLAYWRIGHT_MCP_API_KEY in .env
 
 services:
   sandbox-supervisor:
@@ -13,15 +20,15 @@ services:
         #   stat -c '%g' /var/run/docker.sock
         DOCKER_GID: ${DOCKER_GID:-999}
     # Supervisor is the ONLY service that holds docker.sock.
-    # sandbox-mcp talks to it over the internal network — never directly to Docker.
+    # sandbox-mcp and playwright-mcp talk to it over the internal network.
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       POOL_SIZE: ${POOL_SIZE:-2}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-everything-sandbox:latest}
       SUPERVISOR_PORT: ${SUPERVISOR_PORT:-3001}
-    # Bind to 127.0.0.1 on the host; only reachable from within this Compose stack
-    # and from the host machine (for debugging). Not exposed externally.
+      SANDBOX_IDLE_TIMEOUT_MS: ${SANDBOX_IDLE_TIMEOUT_MS:-1800000}   # 30 min
+      SANDBOX_WATCHDOG_INTERVAL_MS: ${SANDBOX_WATCHDOG_INTERVAL_MS:-120000} # 2 min
     ports:
       - "127.0.0.1:3001:3001"
     restart: unless-stopped
@@ -46,45 +53,127 @@ services:
     networks:
       - sandbox-internal
 
-  # MVP web/mobile bridge (cli/server.ts) — same tool logic as the CLI, over
-  # HTTP + a static page instead of a terminal. NOT the full §11 PWA spec.
-  # Front this with the existing Nginx+Certbot for HTTPS from a phone —
-  # bound to 127.0.0.1 here, same as the other services.
-  everythingapp-web:
+  # Playwright browser tool — controlled web browsing with dual-LLM quarantine.
+  # Raw page content NEVER reaches the agent: it's filtered through the local
+  # quarantine model (QUARANTINE_MODEL_URL) before being returned.
+  # Network: outbound HTTP(S) allowed. No docker.sock. No sandbox access.
+  playwright-mcp:
     build:
-      # Root, not ./cli: the Dockerfile needs to COPY both cli/dist and the
-      # sibling web/dist (React frontend build output), and Docker can't
-      # reach outside its build context.
-      context: .
-      dockerfile: cli/Dockerfile
+      context: ./playwright-mcp
+      dockerfile: Dockerfile
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}
-      SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}
-      PORT: 3000
-      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox}
-      # Container-to-container URL — NOT localhost, unlike local CLI dev
-      # (see cli/.env.example). Reaches sandbox-mcp over sandbox-internal.
-      MCP_SANDBOX_URL: http://sandbox-mcp:3002/mcp/sse
-      MCP_SANDBOX_API_KEY: ${MCP_API_KEY:-}
-      # Add MCP_OBSIDIAN_URL/_API_KEY (or others) here as needed — it's
-      # already an external HTTPS URL, so it works unchanged from inside
-      # this container.
+      MCP_PORT: 3003
+      MCP_API_KEY: ${PLAYWRIGHT_MCP_API_KEY:?PLAYWRIGHT_MCP_API_KEY is required}
+      # URL of your local OpenAI-compatible API for quarantine extraction.
+      # host.docker.internal resolves to the Docker host — use the IP of
+      # the machine running LM Studio / Ollama if on the same LAN.
+      QUARANTINE_MODEL_URL: ${QUARANTINE_MODEL_URL:-http://host.docker.internal:11434/v1}
+      QUARANTINE_MODEL: ${QUARANTINE_MODEL:-llama-3.1-8b-instruct}
+      QUARANTINE_MAX_INPUT_CHARS: ${QUARANTINE_MAX_INPUT_CHARS:-80000}
+      NAV_TIMEOUT_MS: ${NAV_TIMEOUT_MS:-30000}
     ports:
-      - "127.0.0.1:3000:3000"
-    volumes:
-      # Conversation/batch history persists across container restarts.
-      - everythingapp_web_data:/home/node/.everythingapp
-    depends_on:
-      - sandbox-mcp
+      - "127.0.0.1:3003:3003"
+    restart: unless-stopped
+    # Playwright gets outbound internet access (it's a browser, it needs it).
+    # It is NOT connected to the bash sandbox container — network isolation
+    # prevents the model from using browse_url as a proxy to reach internal services.
+    # On the Pi, the docker bridge gives outbound access by default.
+    networks:
+      - sandbox-internal
+
+  # GitHub connector — official github-mcp-server.
+  # Token (PAT) is held here, never in the bash sandbox, never visible to the model.
+  # The model uses GitHub tools (read, create PR, push via push_files) through
+  # this connector. git push is removed from the sandbox tool whitelist.
+  github-mcp:
+    image: ghcr.io/github/github-mcp-server:latest
+    environment:
+      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PAT:?GITHUB_PAT is required for GitHub connector}
+      # Toolset: "all" exposes all tools. Narrow with comma-separated tool names
+      # if you want to limit surface area.
+      # GITHUB_TOOLSETS: repos,files,pull_requests,issues,code_security
+    ports:
+      - "127.0.0.1:3004:3004"
     restart: unless-stopped
     networks:
       - sandbox-internal
 
+  # Core EverythingApp web server
+  everythingapp-web:
+    build:
+      context: .
+      dockerfile: cli/Dockerfile
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}  # optional legacy fallback
+      KEY_VAULT_SECRET: ${KEY_VAULT_SECRET:?KEY_VAULT_SECRET is required}
+      SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}
+      PORT: 3000
+      # Connectors: add playwright and github when services are deployed.
+      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,obsidian,playwright,github}
+      MCP_SANDBOX_URL: http://sandbox-mcp:3002/mcp/sse
+      MCP_SANDBOX_API_KEY: ${MCP_API_KEY:-}
+      MCP_PLAYWRIGHT_URL: http://playwright-mcp:3003/mcp/sse
+      MCP_PLAYWRIGHT_API_KEY: ${PLAYWRIGHT_MCP_API_KEY:-}
+      # github-mcp-server uses its own auth (PAT via env above),
+      # so no separate API key needed for the connector URL.
+      MCP_GITHUB_URL: http://github-mcp:3004/mcp
+      MCP_GITHUB_API_KEY: ${GITHUB_PAT:-}
+      # n8n connector (once workflows are deployed)
+      # MCP_N8N_URL: http://n8n:5678/mcp/your-trigger-path
+      # MCP_N8N_API_KEY: ${N8N_MCP_API_KEY:-}
+      MCP_OBSIDIAN_URL: ${MCP_OBSIDIAN_URL:-}
+      MCP_OBSIDIAN_API_KEY: ${MCP_OBSIDIAN_API_KEY:-}
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - everythingapp_web_data:/home/node/.everythingapp
+    depends_on:
+      - sandbox-mcp
+      - playwright-mcp
+      - github-mcp
+    restart: unless-stopped
+    networks:
+      - sandbox-internal
+
+  # n8n pipeline orchestrator — self-hosted, ISOLATED network.
+  # CRITICAL: n8n is on n8n-net, NOT sandbox-internal.
+  # Only its MCP endpoint is reachable from the app via the shared n8n-net attachment.
+  # n8n never has access to the sandbox containers or the supervisor.
+  # Uses its OWN Resend account/domain — NEVER share with Skarpa Bytom (§0).
+  n8n:
+    image: n8nio/n8n:latest
+    environment:
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: ${N8N_USER:?N8N_USER is required}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:?N8N_PASSWORD is required}
+      N8N_SECURE_COOKIE: "false"        # Pi sits behind Nginx TLS
+      N8N_MCP_ACCESS_ENABLED: "true"   # MCP Server Trigger (n8n ≥ 2.20.0)
+      N8N_PORT: 5678
+      # SEPARATE Resend key for n8n — not the Skarpa Bytom key.
+      RESEND_API_KEY: ${N8N_RESEND_API_KEY:-}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
+    ports:
+      - "127.0.0.1:5678:5678"
+    volumes:
+      - n8n_data:/home/node/.n8n
+    restart: unless-stopped
+    # n8n is on BOTH networks: n8n-net (its own isolated network) and
+    # sandbox-internal (only so the app can reach its MCP endpoint).
+    # It still cannot reach the sandbox containers or supervisor.
+    networks:
+      - n8n-net
+      - sandbox-internal
+
 networks:
-  # Isolated network — zero overlap with any other Compose stacks on the host.
-  # On the Pi: ensure this network name doesn't conflict with skarpa-net or obsidian-net.
+  # Sandbox stack — zero overlap with Skarpa Bytom or any other Compose stack.
   sandbox-internal:
+    driver: bridge
+
+  # n8n's own isolated network — pipeline internal communication.
+  n8n-net:
     driver: bridge
 
 volumes:
   everythingapp_web_data:
+  n8n_data:

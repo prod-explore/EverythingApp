@@ -1,0 +1,90 @@
+{
+  "name": "Tracking Confession",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "tracking-confession",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "mcp-trigger",
+      "name": "MCP Server Trigger",
+      "type": "n8n-nodes-base.mcpTrigger",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the tracking data passed by the agent.\n// Expected input: { confession: string, date?: string, tags?: string[] }\nconst input = $input.first().json;\nconst confession = input.confession ?? '(no content provided)';\nconst date = input.date ?? new Date().toISOString().split('T')[0];\nconst tags = Array.isArray(input.tags) ? input.tags : [];\n\n// Format as an Obsidian note in markdown\nconst tagLine = tags.length > 0 ? `\\ntags: [${tags.map(t => `'${t}'`).join(', ')}]` : '';\nconst noteContent = `---\ndate: ${date}\ntype: tracking-confession${tagLine}\ncreated_by: EverythingApp Agent\n---\n\n# Tracking Confession — ${date}\n\n${confession}\n`;\n\nreturn [{ json: { noteContent, date, fileName: `Tracking Confession ${date}.md` } }];"
+      },
+      "id": "format-note",
+      "name": "Format Vault Note",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{$env.OBSIDIAN_MCP_URL}}/api/vault/00-Inbox/notes/{{ encodeURIComponent($json.fileName) }}",
+        "authentication": "headerAuth",
+        "method": "PUT",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OBSIDIAN_MCP_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "text/markdown"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "text/markdown",
+        "body": "={{ $json.noteContent }}",
+        "options": {}
+      },
+      "id": "write-vault",
+      "name": "Write to Vault",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [700, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"message\": \"Tracking confession saved to Vault: {{ $('Format Vault Note').item.json.fileName }}\" }"
+      },
+      "id": "respond",
+      "name": "Respond to MCP",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [920, 300]
+    }
+  ],
+  "connections": {
+    "MCP Server Trigger": {
+      "main": [[{ "node": "Format Vault Note", "type": "main", "index": 0 }]]
+    },
+    "Format Vault Note": {
+      "main": [[{ "node": "Write to Vault", "type": "main", "index": 0 }]]
+    },
+    "Write to Vault": {
+      "main": [[{ "node": "Respond to MCP", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "phase4-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "everythingapp"
+  },
+  "notes": "Phase 4 — Tracking Confession pipeline.\n\nFormats agent input as a dated Obsidian note and writes it to 00-Inbox/notes/ via the obsidian-livesync-mcp REST API.\n\nSetup:\n1. Import this workflow in n8n.\n2. Set OBSIDIAN_MCP_URL and OBSIDIAN_MCP_API_KEY environment variables in n8n\n   (same values as MCP_OBSIDIAN_URL / MCP_OBSIDIAN_API_KEY in the app's .env).\n3. Activate the workflow.\n4. The MCP trigger path is 'tracking-confession'.\n\nAgent call example:\n  Tool: n8n__tracking_confession\n  Args: {\n    \"confession\": \"Today I spent 3 hours on YouTube instead of coding.\",\n    \"date\": \"2026-09-22\",\n    \"tags\": [\"tracking\", \"distraction\"]\n  }"
+}

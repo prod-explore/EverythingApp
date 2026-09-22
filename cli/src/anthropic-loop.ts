@@ -43,9 +43,28 @@ export interface ConversationDeps {
   signal?: AbortSignal;
   /** Max tool output length in characters before truncating for the model context. Default 30 000. */
   maxToolOutputLength?: number;
+  /**
+   * Current conversation ID — injected into sandbox tool args as `_conversation_id`
+   * so the sandbox-supervisor can maintain sticky per-conversation container leases.
+   * The model never needs to supply this; the orchestrator sets it.
+   */
+  conversationId?: string;
 }
 
 const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
+
+/**
+ * Sandbox-specific tools that need _conversation_id injected so the
+ * supervisor's sticky lease mechanism works. Matches by the real tool name
+ * portion (after the `__` separator that ToolRegistry uses for namespacing).
+ */
+const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log']);
+
+function isSandboxTool(exposedName: string): boolean {
+  const parts = exposedName.split('__');
+  const realName = parts[parts.length - 1];
+  return SANDBOX_TOOL_NAMES.has(realName ?? '');
+}
 
 /**
  * db.ts round-trips messages through JSON.stringify/parse with no schema
@@ -166,7 +185,14 @@ export async function runTurn(
       }
 
       deps.onToolStart?.(label);
-      const result = await deps.tools.call(use.name, args);
+      // Inject _conversation_id for sandbox tools so the supervisor can
+      // maintain sticky per-conversation container leases. The model never
+      // provides this — the orchestrator owns it.
+      const enrichedArgs =
+        deps.conversationId && isSandboxTool(use.name)
+          ? { ...args, _conversation_id: deps.conversationId }
+          : args;
+      const result = await deps.tools.call(use.name, enrichedArgs);
 
       // Truncate long tool outputs for the model; keep full output for UI
       const { truncated, wasTruncated } = truncateToolOutput(result.text, deps.maxToolOutputLength);

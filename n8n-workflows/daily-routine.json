@@ -1,0 +1,81 @@
+{
+  "name": "Daily Routine",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "daily-routine",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "mcp-trigger",
+      "name": "MCP Server Trigger",
+      "type": "n8n-nodes-base.mcpTrigger",
+      "typeVersion": 1,
+      "position": [260, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract the context passed by the agent.\n// The agent calls this tool with: { summary: string, date: string }\nconst input = $input.first().json;\nconst summary = input.summary ?? '(no summary provided)';\nconst date = input.date ?? new Date().toISOString().split('T')[0];\nreturn [{ json: { summary, date } }];"
+      },
+      "id": "parse-input",
+      "name": "Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{$env.N8N_FROM_EMAIL}}",
+        "toEmail": "={{$env.N8N_TO_EMAIL}}",
+        "subject": "=Daily Routine – {{ $json.date }}",
+        "emailFormat": "html",
+        "message": "=<html><body><h2>Your Daily Routine – {{ $json.date }}</h2>\n<p>{{ $json.summary }}</p>\n<hr/><p style=\"color:#999;font-size:12px\">Sent by EverythingApp • n8n pipeline</p></body></html>",
+        "options": {}
+      },
+      "id": "send-email",
+      "name": "Send via Resend",
+      "type": "n8n-nodes-base.resend",
+      "typeVersion": 1,
+      "position": [700, 300],
+      "credentials": {
+        "resendApi": {
+          "id": "resend-n8n",
+          "name": "Resend (n8n — separate from Skarpa)"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={ \"ok\": true, \"message\": \"Daily routine email sent for {{ $('Parse Input').item.json.date }}\" }"
+      },
+      "id": "respond",
+      "name": "Respond to MCP",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [920, 300]
+    }
+  ],
+  "connections": {
+    "MCP Server Trigger": {
+      "main": [[{ "node": "Parse Input", "type": "main", "index": 0 }]]
+    },
+    "Parse Input": {
+      "main": [[{ "node": "Send via Resend", "type": "main", "index": 0 }]]
+    },
+    "Send via Resend": {
+      "main": [[{ "node": "Respond to MCP", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "phase4-v1",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "everythingapp"
+  },
+  "notes": "Phase 4 — Daily Routine pipeline.\n\nSetup:\n1. Import this workflow in n8n.\n2. Set N8N_FROM_EMAIL and N8N_TO_EMAIL environment variables in n8n.\n3. Create a Resend credential in n8n with the N8N_RESEND_API_KEY (from .env).\n   IMPORTANT: use a SEPARATE Resend domain from Skarpa Bytom.\n4. Activate the workflow.\n5. The MCP trigger path is 'daily-routine' — the full URL will be:\n   http://n8n:5678/mcp/daily-routine (internal Docker URL)\n6. Add to everythingapp-web env:\n   MCP_N8N_URL=http://n8n:5678\n   MCP_N8N_API_KEY=(the n8n webhook auth header value)\n\nAgent call example:\n  Tool: n8n__daily_routine\n  Args: { \"summary\": \"Today I finished Phase 4 of EverythingApp.\", \"date\": \"2026-09-22\" }"
+}

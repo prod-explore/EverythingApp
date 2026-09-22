@@ -456,6 +456,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             systemPrompt: effectiveSystem,
             serverTools,
             signal: controller.signal,
+            conversationId: convId,
             confirm: async (label, args) => {
               const approved = await approvalGate.confirm(convId, label, args);
               sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
