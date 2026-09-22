@@ -10,8 +10,9 @@ import { Login } from './components/Login';
 import { SettingsModal } from './components/settings/SettingsModal';
 import { useConversations } from './hooks/useConversations';
 import { useGazeta } from './hooks/useGazeta';
+import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
-import type { Conversation } from './types';
+import type { Conversation, SpendWarning } from './types';
 
 export default function App() {
   const [authed, setAuthed] = useState(() => getToken() !== null);
@@ -35,6 +36,8 @@ function MainApp() {
   const [gazetaOpen, setGazetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const { models } = useModels();
+  const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
   const [usage, setUsage] = useState('—');
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
 
@@ -75,8 +78,9 @@ function MainApp() {
   // this doesn't touch. Two connections to one stream is a bit redundant,
   // but far simpler than lifting SSE state into a shared context for one
   // side-channel.
-  useSSE(selectedId, event => {
+  useSSE(selectedId, (event, data) => {
     if (event === 'gazeta:new') refreshGazeta();
+    if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
   });
 
   useEffect(() => {
@@ -162,11 +166,20 @@ function MainApp() {
         title={selected?.title ?? ''}
         usage={usage}
         model={fullConv?.model ?? null}
+        models={models}
         sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
         onSandboxToggle={handleSandboxToggle}
         onToggleSidebar={() => setSidebarOpen(o => !o)}
       />
+      {spendWarning && (
+        <div className="flex items-center justify-between gap-3 border-b border-danger/40 px-4 py-2 text-xs text-danger">
+          <span>
+            {spendWarning.provider} spend this month is ${spendWarning.monthSpendUsd.toFixed(2)} — past your ${spendWarning.thresholdUsd.toFixed(2)} warning threshold.
+          </span>
+          <button onClick={() => setSpendWarning(null)} className="shrink-0 underline">Dismiss</button>
+        </div>
+      )}
       <div className="relative flex-1 overflow-hidden">
         <ChatView conversationId={selectedId} />
         <ApprovalBanner conversationId={selectedId} />

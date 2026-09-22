@@ -103,3 +103,62 @@ export interface Skill {
   createdAt: string;
   updatedAt: string;
 }
+
+// ─── Phase 3: providers, models, usage ───────────────────────────────────
+
+export type ProviderId = 'anthropic' | 'gemini' | 'deepseek';
+
+export interface ProviderInfo {
+  id: ProviderId;
+  label: string;
+  configured: boolean;
+  source: 'vault' | 'env' | null;
+  last4: string | null;
+  needsReentry: boolean;
+  keyHint: string;
+  warnUsdMonthly: number | null;
+}
+
+export interface ProvidersResponse {
+  vaultEnabled: boolean;
+  vaultDisabledReason: string | null;
+  providers: ProviderInfo[];
+}
+
+export interface ModelOption {
+  id: string;
+  provider: ProviderId;
+  label: string;
+  available: boolean;
+  pricingKnown: boolean;
+  supportsImages: boolean;
+  supportsBatch: boolean;
+}
+
+export type UsageRange = 'today' | '7d' | '30d' | 'month' | 'all';
+
+export interface UsageTotals {
+  costUsd: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  calls: number;
+  unpricedCalls: number;
+}
+
+export interface UsageReport {
+  range: UsageRange;
+  totals: UsageTotals;
+  byProvider: Array<UsageTotals & { provider: string }>;
+  byModel: Array<UsageTotals & { provider: string; model: string }>;
+  byConversation: Array<UsageTotals & { conversationId: string | null; title: string | null }>;
+  byDay: Array<{ day: string; costUsd: number; calls: number; tokens: number }>;
+  monthToDate: Array<{ provider: string; costUsd: number; warnUsd: number | null }>;
+}
+
+export interface SpendWarning {
+  provider: ProviderId;
+  monthSpendUsd: number;
+  thresholdUsd: number;
+}

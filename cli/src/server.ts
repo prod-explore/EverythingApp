@@ -8,9 +8,11 @@ import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
-import { runTurn, type AnthropicLike } from './anthropic-loop.js';
+import { runTurn, type LlmClient } from './anthropic-loop.js';
 import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
-import { UsageTracker } from './usage-tracker.js';
+import { UsageLedger, type UsageRange } from './usage-ledger.js';
+import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
+import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem } from './gazeta.js';
 import {
@@ -47,6 +49,8 @@ import {
   getConversationSkills,
   attachSkill,
   detachSkill,
+  setProviderWarnLimit,
+  getProviderLimit,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -120,9 +124,15 @@ async function main(): Promise<void> {
     }
   }
 
-  const anthropic = new Anthropic({ apiKey: config.anthropicApiKey });
+  // Keys come from the encrypted vault (Settings → Models); ANTHROPIC_API_KEY in
+  // the environment is only a fallback. A missing key is not a startup error
+  // any more — the turn that needs it fails with a message saying so.
+  const router = new ProviderRouter({ db });
+  if (!router.vault.enabled) {
+    console.warn(`[vault] ${router.vault.disabledReason} — saving API keys from the UI is disabled until it is set.`);
+  }
 
-  const { app, stop } = await buildApp({ db, connections, anthropic, authToken, config });
+  const { app, stop } = await buildApp({ db, connections, router, authToken, config });
 
   // ─── Start server ─────────────────────────────────────────────────────────
   const port = Number(process.env['PORT'] ?? 3000);
@@ -154,7 +164,7 @@ async function main(): Promise<void> {
  * and the background batch-check + SSE-keepalive intervals.
  *
  * Split out from main() so integration tests can build a real app against a
- * fake Anthropic client (AnthropicLike & AnthropicBatchLike) and an
+ * fake Anthropic client (LlmClient & AnthropicBatchLike) and an
  * in-memory db, with zero MCP connections and no live API key. main() still
  * owns app.listen() and process-level concerns (real MCP connect(), graceful
  * shutdown, SIGTERM/SIGINT) — a test can listen on an ephemeral port itself,
@@ -163,7 +173,10 @@ async function main(): Promise<void> {
 export interface BuildAppOptions {
   db: ReturnType<typeof openDb>;
   connections: McpConnection[];
-  anthropic: AnthropicLike & AnthropicBatchLike;
+  /** Provider resolution + key vault. Omit in tests to get a router whose Anthropic client is `anthropic`. */
+  router?: ProviderRouter;
+  /** Test double for the Anthropic client — only used when `router` is omitted. */
+  anthropic?: LlmClient & AnthropicBatchLike;
   authToken: string;
   config: Pick<Config, 'model' | 'autoApproveTools' | 'webSearchEnabled'>;
 }
@@ -176,7 +189,8 @@ export interface BuiltApp {
 }
 
 export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
-  const { db, connections, anthropic, authToken, config } = opts;
+  const { db, connections, authToken, config } = opts;
+  const router = opts.router ?? new ProviderRouter({ db, anthropicOverride: opts.anthropic });
 
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
@@ -184,15 +198,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   // ─── Shared services ──────────────────────────────────────────────────────
   const approvalGate = new WebApprovalGate();
-  const usageTracker = new UsageTracker();
+  const ledger = new UsageLedger(db);
   const sse = new SSEManager();
 
-  const serverTools: Anthropic.ToolUnion[] = [
-    ...(config.webSearchEnabled
-      ? [{ type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 }]
-      : []),
-    REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.ToolUnion,
-  ];
+  // web_search is executed on Anthropic's side, so it only exists for Anthropic
+  // models. request_human_input is an ordinary custom tool and works anywhere.
+  const webSearchTool: Anthropic.ToolUnion = { type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 };
+  const humanInputTool = REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.ToolUnion;
 
   // ─── Per-conversation turn state ──────────────────────────────────────────
   type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';
@@ -212,7 +224,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     for (const job of pending) {
       if (skipConvId && job.conversationId === skipConvId) continue;
       try {
-        const resolution = await checkBatch(anthropic, {
+        const anthropicClient = router.anthropic();
+        if (!anthropicClient) continue; // key removed since submission — leave the job pending rather than dropping it
+        const resolution = await checkBatch(anthropicClient, {
           batchId: job.id,
           customId: job.customId,
           submittedAt: job.submittedAt,
@@ -220,6 +234,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         });
         if (!resolution) continue;
         resolveBatchJob(db, job.id, resolution.status, resolution.text);
+        if (resolution.usage) {
+          ledger.record({
+            conversationId: job.conversationId,
+            provider: 'anthropic',
+            model: resolution.model ?? getSetting(db, 'default_model') ?? config.model,
+            usage: resolution.usage,
+            batch: true,
+          });
+        }
         if (resolution.status === 'succeeded' && resolution.text) {
           appendMessage(db, job.conversationId, 'assistant', resolution.text);
           // Create a gazeta item so user sees the batch result
@@ -419,10 +442,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       });
 
       try {
+        // Inside the try on purpose: a missing/undecryptable key must surface as an
+        // ordinary turn:error the UI already knows how to show, not a crash.
+        const { provider, info, client } = router.clientFor(effectiveModel);
+        const serverTools = info.supportsWebSearch && config.webSearchEnabled ? [webSearchTool, humanInputTool] : [humanInputTool];
+
         const updatedHistory = await runTurn(
           {
-            anthropic,
+            anthropic: client,
             model: effectiveModel,
+            maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
             tools: registry,
             systemPrompt: effectiveSystem,
             serverTools,
@@ -437,7 +466,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             onToolResult: (toolName, fullOutput, truncatedOutput, isError) => {
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });
             },
-            onUsage: usage => usageTracker.record(usage),
+            onUsage: usage => {
+              const { warning } = ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
+              if (warning) sse.emitAll('usage:warning', warning);
+            },
           },
           historyBeforeTurn,
           content,
@@ -481,9 +513,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         }
 
         turnStates.set(convId, { id: turnId, status: 'done' });
-        sse.emit(convId, 'turn:done', { turnId, usage: usageTracker.summary() });
+        sse.emit(convId, 'turn:done', { turnId, usage: ledger.headline() });
       } catch (err) {
-        const error = (err as Error).message;
+        const error = router.redact((err as Error).message);
         const aborted = error.includes('kill switch');
         // Deliberately NOT rolling back the user's message here (it was
         // already persisted before this async block even started) —
@@ -550,14 +582,29 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       const history = getMessages(db, convId);
       const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
       const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+
+      let batchClient: ReturnType<typeof router.anthropic>;
+      try {
+        const resolved = router.clientFor(effectiveModel);
+        if (!resolved.info.supportsBatch) {
+          res.status(400).json({ error: `Batch mode is only available for Anthropic models (this conversation uses ${effectiveModel}).` });
+          return;
+        }
+        batchClient = router.anthropic();
+      } catch (err) {
+        res.status(err instanceof ProviderNotConfiguredError ? 400 : 500).json({ error: (err as Error).message });
+        return;
+      }
+      if (!batchClient) { res.status(400).json({ error: 'No Anthropic API key configured — add one in Settings → Models.' }); return; }
+      const client = batchClient;
       void (async () => {
         try {
-          const entry = await submitBatch(anthropic, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], content);
+          const entry = await submitBatch(client, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], content);
           appendMessage(db, convId, 'user', content);
           createBatchJob(db, { id: entry.batchId, conversationId: convId, customId: entry.customId, userText: content, preview: entry.preview });
           res.json({ ok: true, batchId: entry.batchId });
         } catch (err) {
-          res.status(500).json({ error: (err as Error).message });
+          res.status(500).json({ error: router.redact((err as Error).message) });
         }
       })();
       return;
@@ -766,13 +813,92 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   // ─── Usage ────────────────────────────────────────────────────────────────
   app.get('/api/usage', (_req, res) => {
-    res.json({ summary: usageTracker.summary() });
+    res.json({ summary: ledger.headline() });
+  });
+
+  const USAGE_RANGES: readonly UsageRange[] = ['today', '7d', '30d', 'month', 'all'];
+  app.get('/api/usage/report', (req, res) => {
+    const range = (typeof req.query['range'] === 'string' ? req.query['range'] : '30d') as UsageRange;
+    if (!USAGE_RANGES.includes(range)) {
+      res.status(400).json({ error: `range must be one of ${USAGE_RANGES.join(', ')}` });
+      return;
+    }
+    // tzOffset: minutes east of UTC (Poland in summer = 120), so "today" and daily buckets follow the viewer's clock.
+    const tzOffset = Number(req.query['tzOffset'] ?? 0);
+    res.json(ledger.report(range, tzOffset));
+  });
+
+  // ─── Providers & key vault ────────────────────────────────────────────────
+  // Keys are write-only over this API: they go in via PUT and never come back
+  // out — only presence, source and the last four characters are ever returned.
+  function providerIdOr404(raw: string, res: express.Response): ReturnType<typeof asProviderId> {
+    const id = asProviderId(raw);
+    if (!id) res.status(404).json({ error: `unknown provider '${raw}'` });
+    return id;
+  }
+  function asProviderId(raw: string) {
+    return isProviderId(raw) ? raw : null;
+  }
+
+  app.get('/api/providers', (_req, res) => {
+    res.json({
+      vaultEnabled: router.vault.enabled,
+      vaultDisabledReason: router.vault.disabledReason,
+      providers: router.status().map(p => ({ ...p, warnUsdMonthly: getProviderLimit(db, p.id).warnUsdMonthly })),
+    });
+  });
+
+  app.get('/api/models', (_req, res) => {
+    res.json({ models: router.models().filter(m => !m.hidden).map(({ pricing, ...m }) => ({ ...m, pricingKnown: pricing !== null })) });
+  });
+
+  app.put('/api/providers/:id/key', async (req, res) => {
+    const id = providerIdOr404(req.params.id, res);
+    if (!id) return;
+    const key = req.body?.key;
+    if (typeof key !== 'string' || key.trim().length < 8 || key.length > 512 || /\s/.test(key.trim())) {
+      res.status(400).json({ error: 'expected { key: string } — a single token with no whitespace' });
+      return;
+    }
+    if (!router.vault.enabled) {
+      res.status(503).json({ error: router.vault.disabledReason });
+      return;
+    }
+    router.saveKey(id, key.trim());
+    // Verify right away so a typo is caught now, not on the next chat turn. The key stays saved either way —
+    // a provider outage shouldn't make the user lose what they just typed.
+    const test = req.body?.verify === false ? null : await router.test(id);
+    res.json({ ok: true, verified: test ? test.ok : null, verifyError: test && !test.ok ? test.error : null });
+  });
+
+  app.delete('/api/providers/:id/key', (req, res) => {
+    const id = providerIdOr404(req.params.id, res);
+    if (!id) return;
+    res.json({ ok: router.removeKey(id) });
+  });
+
+  app.post('/api/providers/:id/test', async (req, res) => {
+    const id = providerIdOr404(req.params.id, res);
+    if (!id) return;
+    res.json(await router.test(id));
+  });
+
+  app.put('/api/providers/:id/limits', (req, res) => {
+    const id = providerIdOr404(req.params.id, res);
+    if (!id) return;
+    const v = req.body?.warnUsdMonthly;
+    if (v !== null && !(typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1_000_000)) {
+      res.status(400).json({ error: 'expected { warnUsdMonthly: number > 0 | null }' });
+      return;
+    }
+    setProviderWarnLimit(db, id, v);
+    res.json({ ok: true });
   });
 
   // ─── Turn status (legacy polling compat) ──────────────────────────────────
   app.get('/api/conversations/:id/status', (req, res) => {
     const state = getTurnState(req.params.id);
-    res.json({ ...state, usage: usageTracker.summary() });
+    res.json({ ...state, usage: ledger.headline() });
   });
 
   // ─── Static frontend ─────────────────────────────────────────────────────

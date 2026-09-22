@@ -5,11 +5,13 @@ import { AppearanceTab } from './tabs/AppearanceTab';
 import { ConnectorsTab } from './tabs/ConnectorsTab';
 import { ModelsTab } from './tabs/ModelsTab';
 import { SkillsTab } from './tabs/SkillsTab';
+import { UsageTab } from './tabs/UsageTab';
 
-type Tab = 'models' | 'connectors' | 'skills' | 'appearance' | 'account';
+type Tab = 'models' | 'usage' | 'connectors' | 'skills' | 'appearance' | 'account';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Models' },
+  { id: 'usage', label: 'Usage' },
   { id: 'connectors', label: 'Connectors' },
   { id: 'skills', label: 'Skills' },
   { id: 'appearance', label: 'Appearance' },
@@ -48,6 +50,7 @@ export function SettingsModal({
       {/* Tab content */}
       <div className="min-h-[220px]">
         {activeTab === 'models' && <ModelsTab />}
+        {activeTab === 'usage' && <UsageTab />}
         {activeTab === 'connectors' && <ConnectorsTab />}
         {activeTab === 'skills' && <SkillsTab conversationId={conversationId} />}
         {activeTab === 'appearance' && <AppearanceTab />}

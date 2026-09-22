@@ -37,7 +37,15 @@ export function loadRates(env: NodeJS.ProcessEnv = process.env): PricingRates {
   };
 }
 
-function costOf(usage: Anthropic.Usage, rates: PricingRates): number {
+export function costOf(
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    cache_creation_input_tokens?: number | null;
+    cache_read_input_tokens?: number | null;
+  },
+  rates: PricingRates,
+): number {
   return (
     (usage.input_tokens / 1_000_000) * rates.inputPerMTok +
     (usage.output_tokens / 1_000_000) * rates.outputPerMTok +

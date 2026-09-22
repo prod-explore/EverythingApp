@@ -26,6 +26,10 @@ export interface BatchResolution {
   status: 'succeeded' | 'errored' | 'canceled' | 'expired';
   /** Assistant's reply text, only set when status is 'succeeded'. */
   text?: string;
+  /** Token usage of the batched call, only set when status is 'succeeded' — feeds the spend ledger (billed at the batch discount). */
+  usage?: Anthropic.Usage;
+  /** Model that actually answered, as reported by the API. */
+  model?: string;
   errorDetail?: string;
 }
 
@@ -90,7 +94,7 @@ export async function checkBatch(
         .filter((b): b is Anthropic.TextBlock => b.type === 'text')
         .map(b => b.text)
         .join('\n');
-      return { entry, status: 'succeeded', text };
+      return { entry, status: 'succeeded', text, usage: result.result.message.usage, model: result.result.message.model };
     }
     if (result.result.type === 'errored') {
       return { entry, status: 'errored', errorDetail: result.result.error.error.message };

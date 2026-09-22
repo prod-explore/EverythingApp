@@ -75,7 +75,7 @@ function reducer(state: LiveTurnState, action: Action): LiveTurnState {
   }
 }
 
-export type SideEvent = 'gazeta:new' | 'batch:resolved' | 'approval:resolved';
+export type SideEvent = 'gazeta:new' | 'batch:resolved' | 'approval:resolved' | 'usage:warning';
 
 /**
  * Subscribes to a conversation's SSE stream. Reconnects automatically on
@@ -149,7 +149,7 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
         dispatch({ type: 'finish', error: data.error });
       });
 
-      for (const evt of ['gazeta:new', 'batch:resolved', 'approval:resolved'] as const) {
+      for (const evt of ['gazeta:new', 'batch:resolved', 'approval:resolved', 'usage:warning'] as const) {
         source.addEventListener(evt, e => {
           const data = JSON.parse((e as MessageEvent).data ?? '{}');
           onSideEventRef.current?.(evt, data);

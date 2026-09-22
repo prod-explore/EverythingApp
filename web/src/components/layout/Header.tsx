@@ -1,11 +1,13 @@
 import { LogOut, Menu, Terminal } from 'lucide-react';
 import { clearToken } from '../../api';
-import { MODELS } from '../../lib/models';
+import { ModelOptions } from '../shared/ModelOptions';
+import type { ModelOption } from '../../types';
 
 export function Header({
   title,
   usage,
   model,
+  models,
   sandboxEnabled,
   onModelChange,
   onSandboxToggle,
@@ -15,6 +17,7 @@ export function Header({
   usage: string;
   /** null until the full conversation loads, or when there's no conversation selected yet. */
   model: string | null;
+  models: ModelOption[];
   /** undefined = loading/no conversation; otherwise reflects conversation.sandboxEnabled */
   sandboxEnabled: boolean | undefined;
   onModelChange: (model: string) => void;
@@ -52,14 +55,7 @@ export function Header({
           title="Model for this conversation"
           className="shrink-0 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover"
         >
-          {/* The conversation's current model might not be one of the
-              picker's usual options (an older/retired model still on an
-              existing conversation) — show it anyway rather than silently
-              swapping the selection to the first option in the list. */}
-          {!MODELS.includes(model) && <option value={model}>{model}</option>}
-          {MODELS.map(m => (
-            <option key={m} value={m}>{m}</option>
-          ))}
+          <ModelOptions models={models} current={model} />
         </select>
       )}
 

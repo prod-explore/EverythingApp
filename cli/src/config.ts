@@ -9,19 +9,14 @@ export interface McpServerConfig {
 }
 
 export interface Config {
-  anthropicApiKey: string;
+  /** Optional since Phase 3: keys normally live in the encrypted vault (Settings → Models). This env var is only a fallback. */
+  anthropicApiKey?: string;
   model: string;
   /** Tool names that never require interactive approval — everything else does. Default-deny by design (see README). */
   autoApproveTools: string[];
   /** If true, the Anthropic-hosted web_search tool is added alongside whatever MCP connectors are configured. */
   webSearchEnabled: boolean;
   mcpServers: McpServerConfig[];
-}
-
-function required(name: string): string {
-  const value = process.env[name];
-  if (!value) throw new Error(`Missing required environment variable: ${name}`);
-  return value;
 }
 
 /**
@@ -76,7 +71,7 @@ export function loadConfig(): Config {
   }
 
   return {
-    anthropicApiKey: required('ANTHROPIC_API_KEY'),
+    anthropicApiKey: process.env['ANTHROPIC_API_KEY'] || undefined,
     model: process.env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-5',
     autoApproveTools: loadAutoApproveTools(),
     webSearchEnabled: process.env['WEB_SEARCH_ENABLED'] !== 'false',

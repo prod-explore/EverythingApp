@@ -113,6 +113,58 @@ export function runMigrations(db: Database.Database): void {
       skill_id        TEXT NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
       PRIMARY KEY (conversation_id, skill_id)
     );
+
+    -- Phase 3: BYOK key vault. Only ciphertext ever lands here — see
+    -- providers/key-vault.ts (AES-256-GCM, key derived from KEY_VAULT_SECRET
+    -- which lives in the environment, never in this database).
+    CREATE TABLE IF NOT EXISTS provider_keys (
+      provider   TEXT PRIMARY KEY,
+      salt       TEXT NOT NULL,
+      iv         TEXT NOT NULL,
+      tag        TEXT NOT NULL,
+      ciphertext TEXT NOT NULL,
+      last4      TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Per-provider soft spend cap (a warning, not a hard stop). Separate from
+    -- provider_keys so an env-supplied key can have a threshold too.
+    CREATE TABLE IF NOT EXISTS provider_limits (
+      provider         TEXT PRIMARY KEY,
+      warn_usd_monthly REAL,
+      warned_period    TEXT
+    );
+
+    -- Phase 3: one row per billed API response. Not FK'd to conversations on
+    -- purpose: deleting a chat must not rewrite spend history.
+    CREATE TABLE IF NOT EXISTS usage_log (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts              TEXT NOT NULL,
+      conversation_id TEXT,
+      provider        TEXT NOT NULL,
+      model           TEXT NOT NULL,
+      input_tokens    INTEGER NOT NULL DEFAULT 0,
+      output_tokens   INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
+      cost_usd        REAL NOT NULL DEFAULT 0,
+      pricing_known   INTEGER NOT NULL DEFAULT 1,
+      batch           INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts);
+    CREATE INDEX IF NOT EXISTS idx_usage_conv ON usage_log(conversation_id);
+
+    -- Phase 3: provider-specific state that has no home in the Anthropic-shaped
+    -- message format (Gemini 3 thought signatures, DeepSeek reasoning_content),
+    -- keyed by tool call id. Lets history stay in one canonical format while
+    -- each adapter can still replay what its provider insists on getting back.
+    CREATE TABLE IF NOT EXISTS tool_call_meta (
+      tool_call_id TEXT PRIMARY KEY,
+      provider     TEXT NOT NULL,
+      meta         TEXT NOT NULL,
+      created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+    );
   `);
 
   // Seed default settings
@@ -578,4 +630,84 @@ export function attachSkill(db: Database.Database, conversationId: string, skill
 export function detachSkill(db: Database.Database, conversationId: string, skillId: string): boolean {
   const result = db.prepare(`DELETE FROM conversation_skills WHERE conversation_id = ? AND skill_id = ?`).run(conversationId, skillId);
   return result.changes > 0;
+}
+
+// ─── Phase 3: provider keys / limits / usage / tool-call meta ────────────────
+
+export interface ProviderKeyRow {
+  provider: string;
+  salt: string;
+  iv: string;
+  tag: string;
+  ciphertext: string;
+  last4: string;
+  updatedAt: string;
+}
+
+export function getProviderKeyRow(db: Database.Database, provider: string): ProviderKeyRow | null {
+  const row = db
+    .prepare(`SELECT provider, salt, iv, tag, ciphertext, last4, updated_at AS updatedAt FROM provider_keys WHERE provider = ?`)
+    .get(provider) as ProviderKeyRow | undefined;
+  return row ?? null;
+}
+
+export function upsertProviderKeyRow(
+  db: Database.Database,
+  row: Omit<ProviderKeyRow, 'updatedAt'>,
+): void {
+  db.prepare(
+    `INSERT INTO provider_keys (provider, salt, iv, tag, ciphertext, last4)
+     VALUES (@provider, @salt, @iv, @tag, @ciphertext, @last4)
+     ON CONFLICT(provider) DO UPDATE SET
+       salt = excluded.salt, iv = excluded.iv, tag = excluded.tag,
+       ciphertext = excluded.ciphertext, last4 = excluded.last4,
+       updated_at = datetime('now')`,
+  ).run(row);
+}
+
+export function deleteProviderKeyRow(db: Database.Database, provider: string): boolean {
+  return db.prepare(`DELETE FROM provider_keys WHERE provider = ?`).run(provider).changes > 0;
+}
+
+export interface ProviderLimit {
+  warnUsdMonthly: number | null;
+  warnedPeriod: string | null;
+}
+
+export function getProviderLimit(db: Database.Database, provider: string): ProviderLimit {
+  const row = db
+    .prepare(`SELECT warn_usd_monthly AS warnUsdMonthly, warned_period AS warnedPeriod FROM provider_limits WHERE provider = ?`)
+    .get(provider) as ProviderLimit | undefined;
+  return row ?? { warnUsdMonthly: null, warnedPeriod: null };
+}
+
+export function setProviderWarnLimit(db: Database.Database, provider: string, warnUsdMonthly: number | null): void {
+  // Changing the threshold re-arms the warning for the current month.
+  db.prepare(
+    `INSERT INTO provider_limits (provider, warn_usd_monthly, warned_period) VALUES (?, ?, NULL)
+     ON CONFLICT(provider) DO UPDATE SET warn_usd_monthly = excluded.warn_usd_monthly, warned_period = NULL`,
+  ).run(provider, warnUsdMonthly);
+}
+
+export function markProviderWarned(db: Database.Database, provider: string, period: string): void {
+  db.prepare(`UPDATE provider_limits SET warned_period = ? WHERE provider = ?`).run(period, provider);
+}
+
+export function setToolCallMeta(db: Database.Database, toolCallId: string, provider: string, meta: Record<string, unknown>): void {
+  db.prepare(
+    `INSERT INTO tool_call_meta (tool_call_id, provider, meta) VALUES (?, ?, ?)
+     ON CONFLICT(tool_call_id) DO UPDATE SET provider = excluded.provider, meta = excluded.meta`,
+  ).run(toolCallId, provider, JSON.stringify(meta));
+}
+
+export function getToolCallMeta(db: Database.Database, toolCallId: string, provider: string): Record<string, unknown> | null {
+  const row = db
+    .prepare(`SELECT meta FROM tool_call_meta WHERE tool_call_id = ? AND provider = ?`)
+    .get(toolCallId, provider) as { meta: string } | undefined;
+  if (!row) return null;
+  try {
+    return JSON.parse(row.meta) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
 }

@@ -2,15 +2,27 @@ import type Anthropic from '@anthropic-ai/sdk';
 import type { ToolRegistry } from './tool-registry.js';
 import { truncateToolOutput } from './output-truncator.js';
 
-/** Minimal slice of the Anthropic SDK client this module needs — lets tests inject a fake. */
-export interface AnthropicLike {
+/**
+ * The one method the tool loop needs from any provider. Anthropic's SDK client
+ * satisfies it as-is; the OpenAI-compatible adapter (providers/openai-compat.ts)
+ * implements it by translating to/from chat-completions, so this loop never
+ * knows or cares which provider it is talking to. Also what tests inject.
+ */
+export interface LlmClient {
   messages: {
-    create(params: Anthropic.MessageCreateParamsNonStreaming): Promise<Anthropic.Message>;
+    create(
+      params: Anthropic.MessageCreateParamsNonStreaming,
+      options?: { signal?: AbortSignal },
+    ): Promise<Anthropic.Message>;
   };
 }
 
+/** @deprecated pre-Phase-3 name, kept so existing imports/tests keep working. */
+export type AnthropicLike = LlmClient;
+
 export interface ConversationDeps {
-  anthropic: AnthropicLike;
+  /** Any provider's client — despite the historical field name. */
+  anthropic: LlmClient;
   model: string;
   maxTokens?: number;
   tools: ToolRegistry;
@@ -104,13 +116,17 @@ export async function runTurn(
     // Kill switch check before each API call
     if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
 
-    const response = await deps.anthropic.messages.create({
-      model: deps.model,
-      max_tokens: deps.maxTokens ?? 4096,
-      system: cacheableSystem(deps.systemPrompt),
-      tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
-      messages,
-    });
+    const response = await deps.anthropic.messages.create(
+      {
+        model: deps.model,
+        max_tokens: deps.maxTokens ?? 4096,
+        system: cacheableSystem(deps.systemPrompt),
+        tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
+        messages,
+      },
+      // Lets the kill switch cancel a request that's already in flight, not just the next one.
+      { signal: deps.signal },
+    );
 
     messages.push({ role: 'assistant', content: response.content });
     deps.onUsage?.(response.usage);

@@ -6,10 +6,15 @@ import type {
   ConversationSummary,
   GazetaItem,
   OutgoingAttachment,
+  ModelOption,
   PendingApproval,
+  ProviderId,
+  ProvidersResponse,
   RawMessage,
   Skill,
   TurnState,
+  UsageRange,
+  UsageReport,
 } from './types';
 
 const TOKEN_KEY = 'everythingapp_token';
@@ -255,4 +260,40 @@ export function listConversationBatchJobs(conversationId: string): Promise<{ job
 
 export function getUsage(): Promise<{ summary: string }> {
   return request('/api/usage');
+}
+
+export function getUsageReport(range: UsageRange): Promise<UsageReport> {
+  // Minutes east of UTC, so "today" and the daily buckets follow this browser's clock.
+  const tzOffset = -new Date().getTimezoneOffset();
+  return request(`/api/usage/report?range=${range}&tzOffset=${tzOffset}`);
+}
+
+// ─── Providers & models ───────────────────────────────────────────────────
+
+export function getProviders(): Promise<ProvidersResponse> {
+  return request('/api/providers');
+}
+
+export function getModels(): Promise<{ models: ModelOption[] }> {
+  return request('/api/models');
+}
+
+/** Keys are write-only: the server never sends one back. */
+export function saveProviderKey(
+  id: ProviderId,
+  key: string,
+): Promise<{ ok: true; verified: boolean | null; verifyError: string | null }> {
+  return request(`/api/providers/${id}/key`, { method: 'PUT', body: JSON.stringify({ key }) });
+}
+
+export function deleteProviderKey(id: ProviderId): Promise<{ ok: boolean }> {
+  return request(`/api/providers/${id}/key`, { method: 'DELETE' });
+}
+
+export function testProviderKey(id: ProviderId): Promise<{ ok: boolean; error?: string }> {
+  return request(`/api/providers/${id}/test`, { method: 'POST' });
+}
+
+export function setProviderLimit(id: ProviderId, warnUsdMonthly: number | null): Promise<{ ok: true }> {
+  return request(`/api/providers/${id}/limits`, { method: 'PUT', body: JSON.stringify({ warnUsdMonthly }) });
 }
