@@ -29,10 +29,33 @@ export const REQUEST_HUMAN_INPUT_TOOL = {
         items: { type: 'string' },
         description: 'Optional predefined choices the user can pick from. Leave empty for free-form text input.',
       },
+      fields: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Machine key for this field, used in the returned response object.' },
+            label: { type: 'string', description: 'Human-readable label shown above the input.' },
+            type: { type: 'string', enum: ['text', 'number', 'select'], description: 'Defaults to text.' },
+            options: { type: 'array', items: { type: 'string' }, description: 'Required when type is select.' },
+          },
+          required: ['name', 'label'],
+        },
+        description:
+          'Optional multi-field form: ask for several labelled values at once (e.g. name + reason). ' +
+          'Takes priority over choices when both are present. Leave empty for a single free-form text input.',
+      },
     },
     required: ['title', 'description'],
   },
 } as const;
+
+export interface GazetaField {
+  name: string;
+  label: string;
+  type?: 'text' | 'number' | 'select';
+  options?: string[];
+}
 
 /**
  * Called by server.ts when the model invokes 'request_human_input'.
@@ -41,11 +64,13 @@ export const REQUEST_HUMAN_INPUT_TOOL = {
 export function handleRequestHumanInput(
   db: Database.Database,
   conversationId: string,
-  args: { title: string; description: string; choices?: string[] },
+  args: { title: string; description: string; choices?: string[]; fields?: GazetaField[] },
 ): string {
-  const inputSchema = args.choices?.length
-    ? { type: 'choice', choices: args.choices }
-    : { type: 'text' };
+  const inputSchema = args.fields?.length
+    ? { type: 'fields', fields: args.fields }
+    : args.choices?.length
+      ? { type: 'choice', choices: args.choices }
+      : { type: 'text' };
 
   createGazetaItem(db, {
     type: 'agent_question',

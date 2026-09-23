@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import type { PropsWithChildren } from 'react';
+import type { PropsWithChildren, ReactNode } from 'react';
 import { X } from 'lucide-react';
 
 export function Modal({
@@ -7,7 +7,8 @@ export function Modal({
   onClose,
   children,
   wide,
-}: PropsWithChildren<{ title: string; onClose: () => void; wide?: boolean }>) {
+  headerExtra,
+}: PropsWithChildren<{ title: string; onClose: () => void; wide?: boolean; headerExtra?: ReactNode }>) {
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === 'Escape') onClose();
@@ -31,13 +32,16 @@ export function Modal({
       >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold text-fg">{title}</h2>
-          <button
-            onClick={onClose}
-            className="rounded-full p-1 text-fg-secondary hover:bg-bg-tertiary hover:text-fg"
-            aria-label="Close"
-          >
-            <X size={18} />
-          </button>
+          <div className="flex items-center gap-1">
+            {headerExtra}
+            <button
+              onClick={onClose}
+              className="rounded-full p-1 text-fg-secondary hover:bg-bg-tertiary hover:text-fg"
+              aria-label="Close"
+            >
+              <X size={18} />
+            </button>
+          </div>
         </div>
         {children}
       </div>

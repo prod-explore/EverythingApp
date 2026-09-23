@@ -489,7 +489,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               'name' in block &&
               block.name === 'request_human_input'
             ) {
-              const input = (block as { input: { title: string; description: string; choices?: string[] } }).input;
+              const input = (
+                block as {
+                  input: { title: string; description: string; choices?: string[]; fields?: Array<{ name: string; label: string; type?: 'text' | 'number' | 'select'; options?: string[] }> };
+                }
+              ).input;
               handleRequestHumanInput(db, convId, input);
               sse.emitAll('gazeta:new', { type: 'agent_question' });
             }

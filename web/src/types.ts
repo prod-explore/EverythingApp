@@ -38,6 +38,20 @@ export interface OutgoingAttachment {
   data: string;
 }
 
+export interface GazetaField {
+  name: string;
+  label: string;
+  type?: 'text' | 'number' | 'select';
+  options?: string[];
+}
+
+/** Mirrors cli/src/gazeta.ts's handleRequestHumanInput schema-shaping. */
+export type GazetaInputSchema =
+  | { type: 'choice'; choices: string[] }
+  | { type: 'text' }
+  | { type: 'fields'; fields: GazetaField[] }
+  | null;
+
 export interface GazetaItem {
   id: string;
   type: 'approval' | 'batch_result' | 'agent_question' | 'daily_summary';
