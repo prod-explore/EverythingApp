@@ -12,7 +12,7 @@ import type { ModelInfo } from './registry.js';
  * the database or the loop except through MetaStore.
  */
 
-export type CompatFlavor = 'gemini' | 'deepseek';
+export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate';
 
 /**
  * Provider state that has no slot in the Anthropic message shape but that the

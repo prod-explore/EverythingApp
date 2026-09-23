@@ -5,9 +5,9 @@
  * (or set MODEL_PRICING_JSON, see below, without touching code at all).
  */
 
-export type ProviderId = 'anthropic' | 'gemini' | 'deepseek';
+export type ProviderId = 'anthropic' | 'gemini' | 'deepseek' | 'mindgate';
 
-export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'gemini', 'deepseek'];
+export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'gemini', 'deepseek', 'mindgate'];
 
 export function isProviderId(value: string): value is ProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(value);
@@ -46,6 +46,13 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     baseUrl: 'https://api.deepseek.com',
     baseUrlEnv: 'DEEPSEEK_BASE_URL',
     keyHint: 'sk-…',
+  },
+  mindgate: {
+    id: 'mindgate',
+    label: 'MindGate (RasPi / Local)',
+    baseUrl: 'https://mindgate.futumore.pl/v1',
+    baseUrlEnv: 'MINDGATE_BASE_URL',
+    keyHint: 'mg-…',
   },
 };
 
@@ -168,6 +175,42 @@ const CATALOG: ModelInfo[] = [
     supportsBatch: false,
     minOutputTokens: 16000,
   },
+  {
+    id: 'flash',
+    provider: 'mindgate',
+    label: 'MindGate Flash (Qwen 2.5 3B)',
+    pricing: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    supportsImages: false,
+    supportsWebSearch: false,
+    supportsBatch: false,
+  },
+  {
+    id: 'chat',
+    provider: 'mindgate',
+    label: 'MindGate Chat (Phi-4 14B)',
+    pricing: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    supportsImages: false,
+    supportsWebSearch: false,
+    supportsBatch: false,
+  },
+  {
+    id: 'coding-fast',
+    provider: 'mindgate',
+    label: 'MindGate Coding Fast (Qwen 2.5 Coder 7B)',
+    pricing: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    supportsImages: false,
+    supportsWebSearch: false,
+    supportsBatch: false,
+  },
+  {
+    id: 'reasoning',
+    provider: 'mindgate',
+    label: 'MindGate Reasoning (QwQ 32B)',
+    pricing: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    supportsImages: false,
+    supportsWebSearch: false,
+    supportsBatch: false,
+  },
 ];
 
 /**
@@ -191,6 +234,7 @@ function loadOverrides(env: NodeJS.ProcessEnv): Record<string, Partial<Pricing>>
 /** Best-effort provider guess for a model id that isn't in the catalog. Unknown → anthropic, matching pre-Phase-3 behaviour. */
 export function guessProvider(modelId: string): ProviderId {
   const id = modelId.toLowerCase();
+  if (['flash', 'chat', 'reasoning', 'coding-fast', 'coding-hard', 'extreme'].includes(id) || id.startsWith('mindgate') || id.startsWith('pipeline:')) return 'mindgate';
   if (id.startsWith('gemini')) return 'gemini';
   if (id.startsWith('deepseek')) return 'deepseek';
   return 'anthropic';

@@ -120,7 +120,7 @@ export interface Skill {
 
 // ─── Phase 3: providers, models, usage ───────────────────────────────────
 
-export type ProviderId = 'anthropic' | 'gemini' | 'deepseek';
+export type ProviderId = 'anthropic' | 'gemini' | 'deepseek' | 'mindgate';
 
 export interface ProviderInfo {
   id: ProviderId;

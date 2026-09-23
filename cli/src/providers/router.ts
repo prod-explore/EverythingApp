@@ -62,7 +62,7 @@ export class ProviderRouter {
 
   constructor(private readonly opts: RouterOptions) {
     this.env = opts.env ?? process.env;
-    this.vault = opts.vault ?? new KeyVault(opts.db, this.env['KEY_VAULT_SECRET']);
+    this.vault = opts.vault ?? new KeyVault(opts.db, this.env['KEY_VAULT_SECRET'] ?? '');
   }
 
   // ── keys ──────────────────────────────────────────────────────────────────
