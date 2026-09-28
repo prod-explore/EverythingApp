@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { WebApprovalGate } from '../web-approval.js';
+import { WebApprovalGate, looksDangerous } from '../web-approval.js';
 
 describe('WebApprovalGate', () => {
   it('parks confirm() until resolve() is called, then returns that answer', async () => {
@@ -104,5 +104,54 @@ describe('WebApprovalGate', () => {
     // test the raw JS behaviour to make sure resolve() doesn't throw on a bad value.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     assert.doesNotThrow(() => gate.resolve('unknown-id', true, 'bogus' as any));
+  });
+});
+
+describe('looksDangerous — browser-action patterns (§6b)', () => {
+  const dangerousLabels = [
+    'Delete Account',
+    'delete my account',
+    'Cancel subscription',
+    'Place Order',
+    'Confirm order',
+    'Buy now',
+    'Complete payment',
+    'Pay Now',
+    'Wire transfer',
+    'Unsubscribe',
+    'Send money',
+    'Delete repository',
+  ];
+
+  for (const label of dangerousLabels) {
+    it(`flags browser_act with label "${label}" as dangerous`, () => {
+      assert.equal(looksDangerous({ action: 'click', ref: 3, label }), true);
+    });
+  }
+
+  const routineLabels = ['Search', 'Add to cart', 'Next page', 'Home', 'Email address', 'Log in'];
+
+  for (const label of routineLabels) {
+    it(`does not flag browser_act with label "${label}" as dangerous`, () => {
+      assert.equal(looksDangerous({ action: 'click', ref: 3, label }), false);
+    });
+  }
+
+  it('a dangerous label still queues even after the tool was granted "always" scope', async () => {
+    const gate = new WebApprovalGate();
+
+    const routine = gate.confirm('conv-1', 'playwright/browser_act', { action: 'click', ref: 1, label: 'Add to cart' });
+    gate.resolve(gate.listPending()[0].id, true, 'always');
+    await routine;
+
+    const dangerous = gate.confirm('conv-1', 'playwright/browser_act', {
+      action: 'click',
+      ref: 2,
+      label: 'Delete Account',
+    });
+    assert.equal(gate.listPending().length, 1);
+    assert.equal(gate.listPending()[0].dangerous, true);
+    gate.resolve(gate.listPending()[0].id, true, 'once');
+    assert.equal(await dangerous, true);
   });
 });

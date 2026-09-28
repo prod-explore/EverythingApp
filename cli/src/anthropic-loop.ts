@@ -54,16 +54,27 @@ export interface ConversationDeps {
 const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
 
 /**
- * Sandbox-specific tools that need _conversation_id injected so the
- * supervisor's sticky lease mechanism works. Matches by the real tool name
- * portion (after the `__` separator that ToolRegistry uses for namespacing).
+ * Tools that are pinned to one conversation and need `_conversation_id`
+ * injected so their MCP server can maintain a sticky per-conversation
+ * lease — the sandbox's container pool (§Phase 4) and, since §6b, the
+ * playwright-mcp browser session pool work the same way. Matches by the
+ * real tool name portion (after the `__` separator ToolRegistry uses for
+ * namespacing).
  */
-const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log']);
+const STATEFUL_TOOL_NAMES = new Set([
+  'run_bash',
+  'git_op',
+  'read_log',
+  'browser_open',
+  'browser_observe',
+  'browser_act',
+  'browser_close',
+]);
 
-function isSandboxTool(exposedName: string): boolean {
+function needsConversationId(exposedName: string): boolean {
   const parts = exposedName.split('__');
   const realName = parts[parts.length - 1];
-  return SANDBOX_TOOL_NAMES.has(realName ?? '');
+  return STATEFUL_TOOL_NAMES.has(realName ?? '');
 }
 
 /**
@@ -185,11 +196,11 @@ export async function runTurn(
       }
 
       deps.onToolStart?.(label);
-      // Inject _conversation_id for sandbox tools so the supervisor can
-      // maintain sticky per-conversation container leases. The model never
-      // provides this — the orchestrator owns it.
+      // Inject _conversation_id for tools that need a sticky per-conversation
+      // lease (sandbox container, or — since §6b — a browser session). The
+      // model never provides this — the orchestrator owns it.
       const enrichedArgs =
-        deps.conversationId && isSandboxTool(use.name)
+        deps.conversationId && needsConversationId(use.name)
           ? { ...args, _conversation_id: deps.conversationId }
           : args;
       const result = await deps.tools.call(use.name, enrichedArgs);

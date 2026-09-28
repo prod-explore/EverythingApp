@@ -17,6 +17,19 @@ const DANGEROUS_PATTERNS: RegExp[] = [
   /\bDROP\s+(TABLE|DATABASE)\b/i,
   /\bTRUNCATE\s+TABLE\b/i,
   /:\(\)\s*\{\s*:\s*\|\s*:.*\}\s*;\s*:/, // classic shell fork-bomb shape
+  // Browser-agent actions (§6b) — matched against browser_act's required `label` field,
+  // which is copied from the page's own visible element text, not written by the model.
+  // Same "over-eager on purpose" tradeoff as the patterns above: a false positive is an
+  // extra approval prompt, a false negative is an unreviewed destructive click.
+  /\b(delete|remove|close|deactivate|cancel)\s+(my\s+)?(account|subscription|membership)\b/i,
+  /\b(place|confirm|submit)\s+(the\s+)?order\b/i,
+  /\b(buy|purchase)\s+now\b/i,
+  /\b(complete|confirm|authorize)\s+payment\b/i,
+  /\bpay\s+now\b/i,
+  /\bwire\s+transfer\b/i,
+  /\bunsubscribe\b/i,
+  /\bsend\s+money\b/i,
+  /\bdelete\s+(this\s+)?(post|repo|repository|project|file)\b/i,
 ];
 
 export function looksDangerous(args: Record<string, unknown>): boolean {

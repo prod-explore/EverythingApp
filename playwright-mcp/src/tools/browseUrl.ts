@@ -3,16 +3,7 @@ import { z } from 'zod';
 import { chromium } from 'playwright';
 import type { PlaywrightConfig } from '../config.js';
 import { extractWithQuarantine } from '../quarantine.js';
-
-/** Allowlist of URL schemes. Only http(s) allowed. */
-function isAllowedUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
+import { isAllowedUrl } from '../urlSafety.js';
 
 export function registerBrowseUrl(server: McpServer, config: PlaywrightConfig): void {
   server.tool(

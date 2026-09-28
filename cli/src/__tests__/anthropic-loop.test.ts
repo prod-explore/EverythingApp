@@ -227,3 +227,74 @@ describe('runTurn', () => {
     assert.deepEqual(calls, ['read_log']);
   });
 });
+
+describe('runTurn — _conversation_id injection (§6b: generalized beyond sandbox tools)', () => {
+  function connectionCapturingArgs(name: string, toolNames: string[], calls: Array<{ tool: string; args: Record<string, unknown> }>): McpConnectionLike {
+    return {
+      name,
+      async listTools() {
+        return toolNames.map(n => ({ name: n, description: n, inputSchema: { type: 'object' } }));
+      },
+      async callTool(toolName, args) {
+        calls.push({ tool: toolName, args: args ?? {} });
+        return { text: `${toolName} ok`, isError: false };
+      },
+    };
+  }
+
+  it('injects _conversation_id into browser_act calls (a stateful §6b tool), like it already does for run_bash', async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const registry = new ToolRegistry(['browser_act']); // auto-approve to skip the confirm() prompt in this test
+    await registry.loadFrom([connectionCapturingArgs('playwright', ['browser_act'], calls)]);
+
+    const anthropic = scriptedAnthropic([
+      fakeMessage([toolUseBlock('t1', 'playwright__browser_act', { action: 'click', ref: 1, label: 'Search' })], 'tool_use'),
+      fakeMessage([textBlock('done')], 'end_turn'),
+    ]);
+
+    await runTurn(
+      {
+        anthropic,
+        model: 'claude-sonnet-5',
+        tools: registry,
+        systemPrompt: 'sys',
+        confirm: async () => true,
+        conversationId: 'conv-abc123',
+      },
+      [],
+      'click search',
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0]!.args['_conversation_id'], 'conv-abc123');
+    // The model's own args are preserved alongside the injected one.
+    assert.equal(calls[0]!.args['action'], 'click');
+  });
+
+  it('does NOT inject _conversation_id into a non-stateful tool (e.g. browse_url)', async () => {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const registry = new ToolRegistry(['browse_url']);
+    await registry.loadFrom([connectionCapturingArgs('playwright', ['browse_url'], calls)]);
+
+    const anthropic = scriptedAnthropic([
+      fakeMessage([toolUseBlock('t1', 'playwright__browse_url', { url: 'https://example.com', extract: 'title' })], 'tool_use'),
+      fakeMessage([textBlock('done')], 'end_turn'),
+    ]);
+
+    await runTurn(
+      {
+        anthropic,
+        model: 'claude-sonnet-5',
+        tools: registry,
+        systemPrompt: 'sys',
+        confirm: async () => true,
+        conversationId: 'conv-abc123',
+      },
+      [],
+      'get the title',
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal('_conversation_id' in calls[0]!.args, false);
+  });
+});

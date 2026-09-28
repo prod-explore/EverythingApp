@@ -57,7 +57,15 @@ function loadAutoApproveTools(): string[] {
   // the terminal — default-deny on purpose, see Master Brief §7 point 5
   // ("whitelist, never a bare shell"). Override via AUTO_APPROVE_TOOLS if a
   // newly-added connector has more read-only tools worth whitelisting.
-  return ['read_log', 'get_path', 'search_notes'];
+  // browse_url and browser_observe are here because both already go through
+  // the quarantine layer and have no side effects on the target site — they
+  // read, they never click/type/submit. browser_open also has no side effect
+  // on the target site itself, but IS excluded here on purpose: it's the
+  // first call of a browser task and the natural point for a human to notice
+  // "the agent is about to go to this URL" before a chain of browser_act
+  // calls follows it — see roadmap §6b. (Was previously missing browse_url
+  // despite .env.example documenting it as auto-approved — fixed here.)
+  return ['read_log', 'get_path', 'search_notes', 'browse_url', 'browser_observe'];
 }
 
 export function loadConfig(): Config {
