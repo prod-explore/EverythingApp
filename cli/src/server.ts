@@ -1,6 +1,8 @@
 import express from 'express';
 import helmet from 'helmet';
 import { timingSafeEqual } from 'node:crypto';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
@@ -15,6 +17,7 @@ import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.j
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem } from './gazeta.js';
+import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import {
   openDb,
   runMigrations,
@@ -51,6 +54,12 @@ import {
   detachSkill,
   setProviderWarnLimit,
   getProviderLimit,
+  createArtifact,
+  listArtifacts,
+  getArtifact,
+  deleteArtifact,
+  listSubagentRuns,
+  getSubagentRun,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -445,7 +454,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         // Inside the try on purpose: a missing/undecryptable key must surface as an
         // ordinary turn:error the UI already knows how to show, not a crash.
         const { provider, info, client } = router.clientFor(effectiveModel);
-        const serverTools = info.supportsWebSearch && config.webSearchEnabled ? [webSearchTool, humanInputTool] : [humanInputTool];
+        const subagentTool = SPAWN_SUBAGENT_TOOL as unknown as Anthropic.ToolUnion;
+        const serverTools = info.supportsWebSearch && config.webSearchEnabled
+          ? [webSearchTool, humanInputTool, subagentTool]
+          : [humanInputTool, subagentTool];
 
         const updatedHistory = await runTurn(
           {
@@ -476,19 +488,20 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           content,
         );
 
-        // Handle virtual tool calls (request_human_input) in the updated history
+        // Handle virtual tool calls (request_human_input, spawn_subagent) in the updated history
         for (const msg of updatedHistory) {
           if (msg.role !== 'assistant') continue;
           const blocks = Array.isArray(msg.content) ? msg.content : [];
           for (const block of blocks) {
             if (
-              typeof block === 'object' &&
-              block !== null &&
-              'type' in block &&
-              block.type === 'tool_use' &&
-              'name' in block &&
-              block.name === 'request_human_input'
-            ) {
+              typeof block !== 'object' ||
+              block === null ||
+              !('type' in block) ||
+              block.type !== 'tool_use' ||
+              !('name' in block)
+            ) continue;
+
+            if (block.name === 'request_human_input') {
               const input = (
                 block as {
                   input: { title: string; description: string; choices?: string[]; fields?: Array<{ name: string; label: string; type?: 'text' | 'number' | 'select'; options?: string[] }> };
@@ -496,6 +509,36 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               ).input;
               handleRequestHumanInput(db, convId, input);
               sse.emitAll('gazeta:new', { type: 'agent_question' });
+            }
+
+            if (block.name === 'spawn_subagent') {
+              const input = (block as { id: string; input: { goal: string; model: string; allowed_tools?: string[] } }).input;
+              const toolUseId = (block as { id: string }).id;
+              sse.emit(convId, 'turn:tool_use', { label: `Subagent: ${input.goal.slice(0, 60)}` });
+              const result = await runSubagent(
+                { goal: input.goal, model: input.model, allowedTools: input.allowed_tools, depth: 0 },
+                { db, router, registry, sse, parentConvId: convId },
+              );
+              // Inject tool_result back into history so orchestrator can continue
+              updatedHistory.push({
+                role: 'user',
+                content: [
+                  {
+                    type: 'tool_result',
+                    tool_use_id: toolUseId,
+                    content: result.status === 'done'
+                      ? `Subagent completed.\n\nSummary:\n${result.summary}${result.artifactIds.length ? `\n\nArtifact IDs: ${result.artifactIds.join(', ')}` : ''}`
+                      : `Subagent failed: ${result.error ?? 'unknown error'}`,
+                    is_error: result.status === 'error',
+                  },
+                ],
+              } as Anthropic.MessageParam);
+              sse.emit(convId, 'turn:tool_result', {
+                toolName: 'spawn_subagent',
+                truncatedOutput: result.status === 'done' ? result.summary.slice(0, 200) : result.error,
+                isError: result.status === 'error',
+                wasTruncated: false,
+              });
             }
           }
         }
@@ -814,6 +857,83 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   app.get('/api/conversations/:id/batches', (req, res) => {
     res.json({ jobs: listBatchJobs(db, { conversationId: req.params.id }) });
+  });
+
+  // ─── §6b Chunk B: Artifacts ───────────────────────────────────────────────
+  // Files are stored under EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/).
+  // The DB row holds only metadata; the file content is served directly from disk.
+  // Artifact file writes happen via POST /api/artifacts (browser agent, subagent, etc.).
+  // Artifact file reads  happen via GET  /api/artifacts/:id/file  (inline display in the UI).
+  const artifactsDir = process.env['EVERYTHINGAPP_ARTIFACTS_DIR']
+    ?? path.join(os.homedir(), '.everythingapp', 'artifacts');
+
+  app.get('/api/artifacts', (req, res) => {
+    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : undefined;
+    res.json({ artifacts: listArtifacts(db, convId) });
+  });
+
+  app.get('/api/conversations/:id/artifacts', (req, res) => {
+    res.json({ artifacts: listArtifacts(db, req.params.id) });
+  });
+
+  app.post('/api/artifacts', express.raw({ limit: '50mb', type: '*/*' }), (req, res) => {
+    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
+    const filename = typeof req.query['filename'] === 'string' ? path.basename(req.query['filename']) : 'artifact';
+    const mimeType = req.headers['content-type'] ?? 'application/octet-stream';
+    const source = typeof req.query['source'] === 'string' ? req.query['source'] : 'upload';
+    const body = req.body as Buffer;
+
+    fs.mkdirSync(artifactsDir, { recursive: true });
+
+    const artifact = createArtifact(db, {
+      conversationId: convId,
+      filename,
+      mimeType,
+      sizeBytes: body.length,
+      source,
+    });
+
+    const filePath = path.join(artifactsDir, artifact.id + '_' + filename);
+    fs.writeFileSync(filePath, body);
+
+    if (convId) sse.emit(convId, 'artifact:new', artifact);
+    res.status(201).json(artifact);
+  });
+
+  app.get('/api/artifacts/:id', (req, res) => {
+    const artifact = getArtifact(db, req.params.id);
+    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    res.json(artifact);
+  });
+
+  app.get('/api/artifacts/:id/file', (req, res) => {
+    const artifact = getArtifact(db, req.params.id);
+    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    const filePath = path.join(artifactsDir, artifact.id + '_' + artifact.filename);
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'artifact file not found on disk' }); return; }
+    res.setHeader('Content-Type', artifact.mimeType);
+    res.setHeader('Content-Disposition', `inline; filename="${artifact.filename}"`);
+    res.sendFile(filePath);
+  });
+
+  app.delete('/api/artifacts/:id', (req, res) => {
+    const artifact = getArtifact(db, req.params.id);
+    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    const filePath = path.join(artifactsDir, artifact.id + '_' + artifact.filename);
+    try { fs.unlinkSync(filePath); } catch { /* file already gone — don't fail */ }
+    const ok = deleteArtifact(db, req.params.id);
+    res.json({ ok });
+  });
+
+  // ─── §6b Chunk B: Subagent runs ──────────────────────────────────────────
+  app.get('/api/conversations/:id/subagent-runs', (req, res) => {
+    res.json({ runs: listSubagentRuns(db, req.params.id) });
+  });
+
+  app.get('/api/subagent-runs/:id', (req, res) => {
+    const run = getSubagentRun(db, req.params.id);
+    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+    res.json(run);
   });
 
   // ─── Usage ────────────────────────────────────────────────────────────────

@@ -176,3 +176,29 @@ export interface SpendWarning {
   monthSpendUsd: number;
   thresholdUsd: number;
 }
+
+// ─── §6b Chunk B: Artifacts & Subagent runs ──────────────────────────────────
+
+export interface ArtifactRow {
+  id: string;
+  conversationId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  source: string;
+  createdAt: string;
+}
+
+export interface SubagentRunSummary {
+  id: string;
+  conversationId: string;
+  goal: string;
+  model: string;
+  allowedTools: string[];
+  status: 'running' | 'done' | 'error';
+  result: { summary: string; artifactIds: string[] } | null;
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+

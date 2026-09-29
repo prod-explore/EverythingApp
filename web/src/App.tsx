@@ -8,6 +8,8 @@ import { Header } from './components/layout/Header';
 import { Layout } from './components/layout/Layout';
 import { Login } from './components/Login';
 import { SettingsModal } from './components/settings/SettingsModal';
+import { BrowserPanel } from './components/browser/BrowserPanel';
+import { ArtifactsPanel } from './components/browser/ArtifactsPanel';
 import { useConversations } from './hooks/useConversations';
 import { useGazeta } from './hooks/useGazeta';
 import { useModels } from './hooks/useModels';
@@ -36,6 +38,9 @@ function MainApp() {
   const [gazetaOpen, setGazetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [browserPanelOpen, setBrowserPanelOpen] = useState(false);
+  const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
+  const [artifactRefresh, setArtifactRefresh] = useState(0);
   const { models } = useModels();
   const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
   const [usage, setUsage] = useState('—');
@@ -81,6 +86,7 @@ function MainApp() {
   useSSE(selectedId, (event, data) => {
     if (event === 'gazeta:new') refreshGazeta();
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
+    if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
   });
 
   useEffect(() => {
@@ -128,6 +134,8 @@ function MainApp() {
         if (searchOpen) setSearchOpen(false);
         else if (settingsOpen) setSettingsOpen(false);
         else if (gazetaOpen) setGazetaOpen(false);
+        else if (browserPanelOpen) setBrowserPanelOpen(false);
+        else if (artifactsPanelOpen) setArtifactsPanelOpen(false);
         else if (sidebarOpen) setSidebarOpen(false);
         return;
       }
@@ -140,7 +148,7 @@ function MainApp() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen]);
+  }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen, browserPanelOpen, artifactsPanelOpen]);
 
   if (loading || !selectedId) {
     return <div className="flex h-full items-center justify-center text-fg-tertiary">Loading…</div>;
@@ -171,6 +179,10 @@ function MainApp() {
         onModelChange={handleModelChange}
         onSandboxToggle={handleSandboxToggle}
         onToggleSidebar={() => setSidebarOpen(o => !o)}
+        onOpenBrowser={() => setBrowserPanelOpen(o => !o)}
+        onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
+        browserPanelOpen={browserPanelOpen}
+        artifactsPanelOpen={artifactsPanelOpen}
       />
       {spendWarning && (
         <div className="flex items-center justify-between gap-3 border-b border-danger/40 px-4 py-2 text-xs text-danger">
@@ -183,6 +195,22 @@ function MainApp() {
       <div className="relative flex-1 overflow-hidden">
         <ChatView conversationId={selectedId} />
         <ApprovalBanner conversationId={selectedId} />
+
+        {/* §6b Chunk B: floating overlays anchored to the chat area */}
+        {browserPanelOpen && (
+          <div className="absolute bottom-16 right-4 z-20 shadow-2xl">
+            <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
+          </div>
+        )}
+        {artifactsPanelOpen && (
+          <div className="absolute bottom-16 right-4 z-20 shadow-2xl">
+            <ArtifactsPanel
+              conversationId={selectedId}
+              onClose={() => setArtifactsPanelOpen(false)}
+              refreshTrigger={artifactRefresh}
+            />
+          </div>
+        )}
       </div>
 
       {gazetaOpen && (
@@ -195,3 +223,4 @@ function MainApp() {
     </Layout>
   );
 }
+

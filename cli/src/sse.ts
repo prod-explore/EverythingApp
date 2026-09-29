@@ -12,6 +12,7 @@ export type SSEEventName =
   | 'approval:resolved'
   | 'batch:resolved'
   | 'gazeta:new'
+  | 'artifact:new'
   | 'usage:warning'
   | 'keepalive';
 

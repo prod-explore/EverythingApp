@@ -165,7 +165,48 @@ export function runMigrations(db: Database.Database): void {
       meta         TEXT NOT NULL,
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
+
+    -- §6b Chunk B: Artifacts store.
+    -- Generated files (screenshots, recordings, non-repo downloads) from browser
+    -- agent sessions. NOT the Obsidian vault — the vault is tuned for markdown/
+    -- LiveSync sync, not binaries. Repo changes still go through git (sandbox).
+    -- filename: basename only (no directory), used to construct the file URL.
+    -- mime_type: e.g. 'image/jpeg', 'image/png', 'text/plain', 'application/zip'.
+    -- size_bytes: file size at save time — used for display, not a security boundary.
+    -- source: which tool/flow created this ('browser_screenshot', 'browser_recording', etc.)
+    CREATE TABLE IF NOT EXISTS artifacts (
+      id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+      filename        TEXT NOT NULL,
+      mime_type       TEXT NOT NULL DEFAULT 'application/octet-stream',
+      size_bytes      INTEGER NOT NULL DEFAULT 0,
+      source          TEXT NOT NULL DEFAULT 'unknown',
+      created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id, created_at);
+
+    -- §6b Chunk B: Subagent-with-a-goal tracking.
+    -- One row per subagent invocation. The parent agent spawns a subagent
+    -- with a goal + tool allowlist + model; the subagent runs an isolated loop
+    -- and writes its result here. The parent polls this row to get the result.
+    -- Only the structured result re-enters the parent's context — the full
+    -- subagent transcript is kept here for debugging but never injected into
+    -- the parent's message history.
+    CREATE TABLE IF NOT EXISTS subagent_runs (
+      id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+      goal            TEXT NOT NULL,
+      model           TEXT NOT NULL,
+      allowed_tools   TEXT NOT NULL DEFAULT '[]',   -- JSON string[]
+      status          TEXT NOT NULL DEFAULT 'running', -- running | done | error
+      result          TEXT,                          -- JSON { summary, artifacts }
+      error           TEXT,
+      started_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      finished_at     TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_subagent_conv ON subagent_runs(conversation_id, started_at);
   `);
+
 
   // Seed default settings
   const seedSetting = db.prepare(
@@ -711,3 +752,161 @@ export function getToolCallMeta(db: Database.Database, toolCallId: string, provi
     return null;
   }
 }
+
+// ─── §6b Chunk B: Artifacts ──────────────────────────────────────────────────
+
+export interface ArtifactRow {
+  id: string;
+  conversationId: string | null;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  source: string;
+  createdAt: string;
+}
+
+export function createArtifact(
+  db: Database.Database,
+  row: Omit<ArtifactRow, 'id' | 'createdAt'>,
+): ArtifactRow {
+  const result = db
+    .prepare(
+      `INSERT INTO artifacts (conversation_id, filename, mime_type, size_bytes, source)
+       VALUES (@conversationId, @filename, @mimeType, @sizeBytes, @source)
+       RETURNING id, conversation_id AS conversationId, filename, mime_type AS mimeType,
+                 size_bytes AS sizeBytes, source, created_at AS createdAt`,
+    )
+    .get(row) as ArtifactRow;
+  return result;
+}
+
+export function listArtifacts(
+  db: Database.Database,
+  conversationId?: string,
+): ArtifactRow[] {
+  if (conversationId) {
+    return db
+      .prepare(
+        `SELECT id, conversation_id AS conversationId, filename, mime_type AS mimeType,
+                size_bytes AS sizeBytes, source, created_at AS createdAt
+         FROM artifacts WHERE conversation_id = ? ORDER BY created_at DESC`,
+      )
+      .all(conversationId) as ArtifactRow[];
+  }
+  return db
+    .prepare(
+      `SELECT id, conversation_id AS conversationId, filename, mime_type AS mimeType,
+              size_bytes AS sizeBytes, source, created_at AS createdAt
+       FROM artifacts ORDER BY created_at DESC LIMIT 200`,
+    )
+    .all() as ArtifactRow[];
+}
+
+export function getArtifact(db: Database.Database, id: string): ArtifactRow | null {
+  return (
+    db
+      .prepare(
+        `SELECT id, conversation_id AS conversationId, filename, mime_type AS mimeType,
+                size_bytes AS sizeBytes, source, created_at AS createdAt
+         FROM artifacts WHERE id = ?`,
+      )
+      .get(id) as ArtifactRow | undefined
+  ) ?? null;
+}
+
+export function deleteArtifact(db: Database.Database, id: string): boolean {
+  return db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(id).changes > 0;
+}
+
+// ─── §6b Chunk B: Subagent runs ──────────────────────────────────────────────
+
+export interface SubagentRunRow {
+  id: string;
+  conversationId: string;
+  goal: string;
+  model: string;
+  allowedTools: string[]; // parsed from JSON
+  status: 'running' | 'done' | 'error';
+  result: { summary: string; artifactIds: string[] } | null; // parsed from JSON
+  error: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export function createSubagentRun(
+  db: Database.Database,
+  opts: { conversationId: string; goal: string; model: string; allowedTools: string[] },
+): SubagentRunRow {
+  const row = db
+    .prepare(
+      `INSERT INTO subagent_runs (conversation_id, goal, model, allowed_tools)
+       VALUES (@conversationId, @goal, @model, @allowedTools)
+       RETURNING id, conversation_id AS conversationId, goal, model,
+                 allowed_tools AS allowedToolsJson, status, result, error,
+                 started_at AS startedAt, finished_at AS finishedAt`,
+    )
+    .get({ ...opts, allowedTools: JSON.stringify(opts.allowedTools) }) as {
+      id: string; conversationId: string; goal: string; model: string;
+      allowedToolsJson: string; status: 'running'; result: null; error: null;
+      startedAt: string; finishedAt: null;
+    };
+  return { ...row, allowedTools: JSON.parse(row.allowedToolsJson), result: null };
+}
+
+export function resolveSubagentRun(
+  db: Database.Database,
+  id: string,
+  result: { summary: string; artifactIds: string[] },
+): void {
+  db.prepare(
+    `UPDATE subagent_runs SET status = 'done', result = ?, finished_at = datetime('now') WHERE id = ?`,
+  ).run(JSON.stringify(result), id);
+}
+
+export function failSubagentRun(db: Database.Database, id: string, error: string): void {
+  db.prepare(
+    `UPDATE subagent_runs SET status = 'error', error = ?, finished_at = datetime('now') WHERE id = ?`,
+  ).run(error, id);
+}
+
+export function getSubagentRun(db: Database.Database, id: string): SubagentRunRow | null {
+  const row = db
+    .prepare(
+      `SELECT id, conversation_id AS conversationId, goal, model,
+              allowed_tools AS allowedToolsJson, status,
+              result AS resultJson, error, started_at AS startedAt, finished_at AS finishedAt
+       FROM subagent_runs WHERE id = ?`,
+    )
+    .get(id) as {
+      id: string; conversationId: string; goal: string; model: string;
+      allowedToolsJson: string; status: 'running' | 'done' | 'error';
+      resultJson: string | null; error: string | null; startedAt: string; finishedAt: string | null;
+    } | undefined;
+  if (!row) return null;
+  return {
+    ...row,
+    allowedTools: JSON.parse(row.allowedToolsJson),
+    result: row.resultJson ? JSON.parse(row.resultJson) as { summary: string; artifactIds: string[] } : null,
+  };
+}
+
+export function listSubagentRuns(db: Database.Database, conversationId: string): SubagentRunRow[] {
+  const rows = db
+    .prepare(
+      `SELECT id, conversation_id AS conversationId, goal, model,
+              allowed_tools AS allowedToolsJson, status,
+              result AS resultJson, error, started_at AS startedAt, finished_at AS finishedAt
+       FROM subagent_runs WHERE conversation_id = ? ORDER BY started_at DESC`,
+    )
+    .all(conversationId) as Array<{
+      id: string; conversationId: string; goal: string; model: string;
+      allowedToolsJson: string; status: 'running' | 'done' | 'error';
+      resultJson: string | null; error: string | null; startedAt: string; finishedAt: string | null;
+    }>;
+  return rows.map(r => ({
+    ...r,
+    allowedTools: JSON.parse(r.allowedToolsJson),
+    result: r.resultJson ? JSON.parse(r.resultJson) as { summary: string; artifactIds: string[] } : null,
+  }));
+}
+

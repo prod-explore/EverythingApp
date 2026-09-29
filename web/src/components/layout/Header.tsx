@@ -1,4 +1,4 @@
-import { LogOut, Menu, Terminal } from 'lucide-react';
+import { FolderOpen, Globe, LogOut, Menu, Terminal } from 'lucide-react';
 import { clearToken } from '../../api';
 import { ModelOptions } from '../shared/ModelOptions';
 import type { ModelOption } from '../../types';
@@ -12,6 +12,10 @@ export function Header({
   onModelChange,
   onSandboxToggle,
   onToggleSidebar,
+  onOpenBrowser,
+  onOpenArtifacts,
+  browserPanelOpen,
+  artifactsPanelOpen,
 }: {
   title: string;
   usage: string;
@@ -23,6 +27,10 @@ export function Header({
   onModelChange: (model: string) => void;
   onSandboxToggle: (enabled: boolean) => void;
   onToggleSidebar: () => void;
+  onOpenBrowser: () => void;
+  onOpenArtifacts: () => void;
+  browserPanelOpen: boolean;
+  artifactsPanelOpen: boolean;
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-border px-4 py-3">
@@ -47,6 +55,34 @@ export function Header({
           {sandboxEnabled ? 'Sandbox on' : 'Sandbox off'}
         </button>
       )}
+
+      {/* §6b: Browser live-view toggle */}
+      <button
+        onClick={onOpenBrowser}
+        title={browserPanelOpen ? 'Hide browser view' : 'Show live browser view'}
+        aria-label={browserPanelOpen ? 'Hide browser panel' : 'Open browser panel'}
+        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors ${
+          browserPanelOpen
+            ? 'border border-fg/30 text-fg'
+            : 'border border-border text-fg-tertiary hover:text-fg-secondary'
+        }`}
+      >
+        <Globe size={12} />
+      </button>
+
+      {/* §6b: Artifacts panel toggle */}
+      <button
+        onClick={onOpenArtifacts}
+        title={artifactsPanelOpen ? 'Hide artifacts' : 'Show artifacts'}
+        aria-label={artifactsPanelOpen ? 'Hide artifacts panel' : 'Open artifacts panel'}
+        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors ${
+          artifactsPanelOpen
+            ? 'border border-fg/30 text-fg'
+            : 'border border-border text-fg-tertiary hover:text-fg-secondary'
+        }`}
+      >
+        <FolderOpen size={12} />
+      </button>
 
       {model !== null && (
         <select
@@ -75,3 +111,4 @@ export function Header({
     </header>
   );
 }
+

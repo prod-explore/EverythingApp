@@ -1,3 +1,4 @@
+import * as http from 'node:http';
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -5,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { PlaywrightConfig } from './config.js';
 import { registerAllTools } from './tools/index.js';
 import { BrowserSessionPool, ChromiumLauncher } from './sessionPool.js';
+import { attachLiveView } from './liveview.js';
 
 function extractToken(req: express.Request): string | undefined {
   const auth = req.headers.authorization;
@@ -45,7 +47,10 @@ function createMcpServer(config: PlaywrightConfig, pool: BrowserSessionPool): Mc
   return server;
 }
 
-export function createApp(config: PlaywrightConfig): express.Express {
+export function createApp(config: PlaywrightConfig): {
+  app: express.Express;
+  attachLiveViewToServer: (server: http.Server) => void;
+} {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
@@ -108,13 +113,17 @@ export function createApp(config: PlaywrightConfig): express.Express {
     res.json({ status: 'ok', service: 'playwright-mcp' });
   });
 
-  // Status of currently open browser sessions — for the web UI's (upcoming) live-view
-  // panel to discover what's running for a conversation, and for basic ops visibility.
-  // Not the live-view stream itself (that's websocket, added in the next patch).
+  // Status of currently open browser sessions — for the live-view panel.
   app.get('/mcp/browser-sessions', (req, res) => {
     if (!requireAuth(config, req, res)) return;
     res.json(pool.status());
   });
 
-  return app;
+  // Live-view WS is attached in index.ts after http.createServer(app),
+  // so the upgrade event fires before Express ever sees the connection.
+  function attachLiveViewToServer(server: http.Server): void {
+    attachLiveView(server, pool, config, () => config.apiKey);
+  }
+
+  return { app, attachLiveViewToServer };
 }
