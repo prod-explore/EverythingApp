@@ -86,6 +86,7 @@ function listen(app: http.RequestListener): Promise<http.Server> {
 // ─── Suite: Artifacts API ────────────────────────────────────────────────────
 
 let server: http.Server;
+let stopApp: () => void;
 let tmpDir: string;
 let convId: string;
 
@@ -96,14 +97,15 @@ before(async () => {
   const db = openDb(':memory:');
   runMigrations(db);
 
-  const { app } = await buildApp({
+  const built = await buildApp({
     db,
     connections: [],
     anthropic: fakeAnthropicClient,
     authToken: AUTH,
     config: { model: 'claude-test', autoApproveTools: [], webSearchEnabled: false },
   });
-  server = await listen(app);
+  stopApp = built.stop;
+  server = await listen(built.app);
 
   // Create a conversation for artifact association
   const res = await request(server, 'POST', '/api/conversations', JSON.stringify({ title: 'test' }), 'application/json');
@@ -111,6 +113,7 @@ before(async () => {
 });
 
 after(() => {
+  stopApp();
   server.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
   delete process.env['EVERYTHINGAPP_ARTIFACTS_DIR'];
