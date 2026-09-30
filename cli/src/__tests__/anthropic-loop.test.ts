@@ -298,3 +298,120 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
     assert.equal('_conversation_id' in calls[0]!.args, false);
   });
 });
+
+describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () => {
+  const askTool: Anthropic.Tool = {
+    name: 'ask_user',
+    description: 'queue a question',
+    input_schema: { type: 'object', properties: { q: { type: 'string' } } },
+  };
+
+  it('runs a virtual tool inside the loop and feeds back a real tool_result — no approval, no registry', async () => {
+    const registry = new ToolRegistry([]);
+    const seenInputs: Record<string, unknown>[] = [];
+    const confirmCalls: string[] = [];
+    const client = scriptedAnthropic([
+      fakeMessage([toolUseBlock('tu_1', 'ask_user', { q: 'why?' })], 'tool_use'),
+      fakeMessage([textBlock('done')], 'end_turn'),
+    ]);
+
+    const history = await runTurn(
+      {
+        anthropic: client,
+        model: 'm',
+        tools: registry,
+        systemPrompt: 's',
+        virtualTools: [{ definition: askTool, handler: async input => { seenInputs.push(input); return { text: 'queued' }; } }],
+        confirm: async label => { confirmCalls.push(label); return true; },
+      },
+      [],
+      'hi',
+    );
+
+    assert.deepEqual(seenInputs, [{ q: 'why?' }]);
+    assert.deepEqual(confirmCalls, [], 'a virtual tool without requiresApproval must not hit the approval gate');
+    // The model must see the virtual tool's definition…
+    assert.ok((client.calls[0]!.tools as Anthropic.Tool[]).some(t => t.name === 'ask_user'));
+    // …and a real result (not "Unknown tool") for the real tool_use id.
+    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    assert.equal(results[0]!.tool_use_id, 'tu_1');
+    assert.equal(results[0]!.content, 'queued');
+    assert.notEqual(results[0]!.is_error, true);
+  });
+
+  it('routes a virtual tool through the approval gate only when requiresApproval is set, and respects a denial', async () => {
+    const registry = new ToolRegistry([]);
+    let ran = false;
+    const confirmCalls: string[] = [];
+    const client = scriptedAnthropic([
+      fakeMessage([toolUseBlock('tu_1', 'ask_user', {})], 'tool_use'),
+      fakeMessage([textBlock('ok')], 'end_turn'),
+    ]);
+    const history = await runTurn(
+      {
+        anthropic: client,
+        model: 'm',
+        tools: registry,
+        systemPrompt: 's',
+        virtualTools: [{ definition: askTool, requiresApproval: true, handler: async () => { ran = true; return { text: 'x' }; } }],
+        confirm: async label => { confirmCalls.push(label); return false; },
+      },
+      [],
+      'hi',
+    );
+    assert.deepEqual(confirmCalls, ['ask_user']);
+    assert.equal(ran, false);
+    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    assert.equal(results[0]!.is_error, true);
+  });
+
+  it('turns a throwing virtual-tool handler into an is_error result instead of crashing the turn', async () => {
+    const client = scriptedAnthropic([
+      fakeMessage([toolUseBlock('tu_1', 'ask_user', {})], 'tool_use'),
+      fakeMessage([textBlock('recovered')], 'end_turn'),
+    ]);
+    const history = await runTurn(
+      {
+        anthropic: client,
+        model: 'm',
+        tools: new ToolRegistry([]),
+        systemPrompt: 's',
+        virtualTools: [{ definition: askTool, handler: async () => { throw new Error('boom'); } }],
+        confirm: async () => true,
+      },
+      [],
+      'hi',
+    );
+    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    assert.equal(results[0]!.is_error, true);
+    assert.match(String(results[0]!.content), /boom/);
+  });
+});
+
+describe('runTurn — kill switch while parked on the approval gate', () => {
+  it('does not execute the tool when the kill switch fires during confirm(), even if the human then approves', async () => {
+    const calls: string[] = [];
+    const registry = await registryWithSandbox(calls);
+    const controller = new AbortController();
+    const client = scriptedAnthropic([
+      fakeMessage([toolUseBlock('tu_1', 'sandbox__run_bash', { command: 'ls' })], 'tool_use'),
+    ]);
+    await assert.rejects(
+      runTurn(
+        {
+          anthropic: client,
+          model: 'm',
+          tools: registry,
+          systemPrompt: 's',
+          signal: controller.signal,
+          // Human clicks "Approve" only AFTER the kill switch was pressed.
+          confirm: async () => { controller.abort(); return true; },
+        },
+        [],
+        'hi',
+      ),
+      /kill switch/,
+    );
+    assert.deepEqual(calls, [], 'the tool must not run after the turn was killed');
+  });
+});

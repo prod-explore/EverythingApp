@@ -10,13 +10,13 @@ import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
-import { runTurn, type LlmClient } from './anthropic-loop.js';
+import { runTurn, type LlmClient, type VirtualTool } from './anthropic-loop.js';
 import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
 import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem } from './gazeta.js';
+import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import {
   openDb,
@@ -211,9 +211,54 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const sse = new SSEManager();
 
   // web_search is executed on Anthropic's side, so it only exists for Anthropic
-  // models. request_human_input is an ordinary custom tool and works anywhere.
+  // models. request_human_input / spawn_subagent are orchestrator-executed
+  // virtual tools (see VirtualTool in anthropic-loop.ts) and work with any provider.
   const webSearchTool: Anthropic.ToolUnion = { type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 };
-  const humanInputTool = REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.ToolUnion;
+
+  const isString = (v: unknown): v is string => typeof v === 'string';
+
+  function buildVirtualTools(convId: string): VirtualTool[] {
+    return [
+      {
+        definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.Tool,
+        handler: async input => {
+          const title = isString(input.title) ? input.title.trim() : '';
+          const description = isString(input.description) ? input.description.trim() : '';
+          if (!title || !description) {
+            return { text: 'request_human_input needs non-empty "title" and "description" strings.', isError: true };
+          }
+          const text = handleRequestHumanInput(db, convId, {
+            title,
+            description,
+            choices: Array.isArray(input.choices) ? input.choices.filter(isString) : undefined,
+            fields: Array.isArray(input.fields) ? (input.fields as GazetaField[]) : undefined,
+          });
+          sse.emitAll('gazeta:new', { type: 'agent_question' });
+          return { text };
+        },
+      },
+      {
+        definition: SPAWN_SUBAGENT_TOOL as unknown as Anthropic.Tool,
+        handler: async input => {
+          if (!isString(input.goal) || !input.goal.trim() || !isString(input.model) || !input.model.trim()) {
+            return { text: 'spawn_subagent needs non-empty "goal" and "model" strings.', isError: true };
+          }
+          const result = await runSubagent(
+            {
+              goal: input.goal,
+              model: input.model,
+              allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools.filter(isString) : undefined,
+              depth: 0,
+            },
+            { db, router, registry, sse, parentConvId: convId },
+          );
+          return result.status === 'done'
+            ? { text: `Subagent completed.\n\nSummary:\n${result.summary}${result.artifactIds.length ? `\n\nArtifact IDs: ${result.artifactIds.join(', ')}` : ''}` }
+            : { text: `Subagent failed: ${result.error ?? 'unknown error'}`, isError: true };
+        },
+      },
+    ];
+  }
 
   // ─── Per-conversation turn state ──────────────────────────────────────────
   type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';
@@ -454,10 +499,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         // Inside the try on purpose: a missing/undecryptable key must surface as an
         // ordinary turn:error the UI already knows how to show, not a crash.
         const { provider, info, client } = router.clientFor(effectiveModel);
-        const subagentTool = SPAWN_SUBAGENT_TOOL as unknown as Anthropic.ToolUnion;
-        const serverTools = info.supportsWebSearch && config.webSearchEnabled
-          ? [webSearchTool, humanInputTool, subagentTool]
-          : [humanInputTool, subagentTool];
+        const serverTools: Anthropic.ToolUnion[] = info.supportsWebSearch && config.webSearchEnabled ? [webSearchTool] : [];
 
         const updatedHistory = await runTurn(
           {
@@ -467,6 +509,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             tools: registry,
             systemPrompt: effectiveSystem,
             serverTools,
+            virtualTools: buildVirtualTools(convId),
             signal: controller.signal,
             conversationId: convId,
             confirm: async (label, args) => {
@@ -487,61 +530,6 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           historyBeforeTurn,
           content,
         );
-
-        // Handle virtual tool calls (request_human_input, spawn_subagent) in the updated history
-        for (const msg of updatedHistory) {
-          if (msg.role !== 'assistant') continue;
-          const blocks = Array.isArray(msg.content) ? msg.content : [];
-          for (const block of blocks) {
-            if (
-              typeof block !== 'object' ||
-              block === null ||
-              !('type' in block) ||
-              block.type !== 'tool_use' ||
-              !('name' in block)
-            ) continue;
-
-            if (block.name === 'request_human_input') {
-              const input = (
-                block as {
-                  input: { title: string; description: string; choices?: string[]; fields?: Array<{ name: string; label: string; type?: 'text' | 'number' | 'select'; options?: string[] }> };
-                }
-              ).input;
-              handleRequestHumanInput(db, convId, input);
-              sse.emitAll('gazeta:new', { type: 'agent_question' });
-            }
-
-            if (block.name === 'spawn_subagent') {
-              const input = (block as { id: string; input: { goal: string; model: string; allowed_tools?: string[] } }).input;
-              const toolUseId = (block as { id: string }).id;
-              sse.emit(convId, 'turn:tool_use', { label: `Subagent: ${input.goal.slice(0, 60)}` });
-              const result = await runSubagent(
-                { goal: input.goal, model: input.model, allowedTools: input.allowed_tools, depth: 0 },
-                { db, router, registry, sse, parentConvId: convId },
-              );
-              // Inject tool_result back into history so orchestrator can continue
-              updatedHistory.push({
-                role: 'user',
-                content: [
-                  {
-                    type: 'tool_result',
-                    tool_use_id: toolUseId,
-                    content: result.status === 'done'
-                      ? `Subagent completed.\n\nSummary:\n${result.summary}${result.artifactIds.length ? `\n\nArtifact IDs: ${result.artifactIds.join(', ')}` : ''}`
-                      : `Subagent failed: ${result.error ?? 'unknown error'}`,
-                    is_error: result.status === 'error',
-                  },
-                ],
-              } as Anthropic.MessageParam);
-              sse.emit(convId, 'turn:tool_result', {
-                toolName: 'spawn_subagent',
-                truncatedOutput: result.status === 'done' ? result.summary.slice(0, 200) : result.error,
-                isError: result.status === 'error',
-                wasTruncated: false,
-              });
-            }
-          }
-        }
 
         // Persist everything the turn produced AFTER the user message the
         // caller already stored, chaining each new row's parent_id off the

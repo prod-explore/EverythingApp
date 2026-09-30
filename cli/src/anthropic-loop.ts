@@ -20,6 +20,26 @@ export interface LlmClient {
 /** @deprecated pre-Phase-3 name, kept so existing imports/tests keep working. */
 export type AnthropicLike = LlmClient;
 
+/**
+ * In-process tool the orchestrator itself executes (e.g. request_human_input,
+ * spawn_subagent). Unlike MCP tools it never goes through ToolRegistry, but it
+ * runs INSIDE the tool loop: the model gets a real tool_result for the real
+ * tool_use id, in order, in the same turn. Names must not contain "__" (that
+ * separator is reserved for "<mcp-server>__<tool>").
+ */
+export interface VirtualToolContext {
+  toolUseId: string;
+  conversationId?: string;
+  signal?: AbortSignal;
+}
+
+export interface VirtualTool {
+  definition: Anthropic.Tool;
+  /** Route through the approval gate before running. Default: false. */
+  requiresApproval?: boolean;
+  handler(input: Record<string, unknown>, ctx: VirtualToolContext): Promise<{ text: string; isError?: boolean }>;
+}
+
 export interface ConversationDeps {
   /** Any provider's client — despite the historical field name. */
   anthropic: LlmClient;
@@ -29,6 +49,8 @@ export interface ConversationDeps {
   systemPrompt: string;
   /** Anthropic-hosted tools (e.g. web_search) — executed server-side, never routed through ToolRegistry or the approval gate. */
   serverTools?: Anthropic.ToolUnion[];
+  /** Orchestrator-executed tools, run inside the loop (see VirtualTool). */
+  virtualTools?: VirtualTool[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
   confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean>;
   /** Called for every text block the model produces, in order. */
@@ -137,8 +159,10 @@ export async function runTurn(
   userContent: Anthropic.MessageParam['content'],
 ): Promise<Anthropic.MessageParam[]> {
   const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userContent }];
+  const virtualByName = new Map((deps.virtualTools ?? []).map(v => [v.definition.name, v]));
   const toolDefs: Anthropic.ToolUnion[] = [
     ...(deps.tools.toAnthropicTools() as Anthropic.Tool[]),
+    ...(deps.virtualTools ?? []).map(v => v.definition),
     ...(deps.serverTools ?? []),
   ];
 
@@ -180,10 +204,15 @@ export async function runTurn(
       // Kill switch check before each tool execution
       if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
 
-      const label = deps.tools.describe(use.name);
+      const virtual = virtualByName.get(use.name);
+      const label = virtual ? use.name : deps.tools.describe(use.name);
       const args = (use.input ?? {}) as Record<string, unknown>;
 
-      const approved = !deps.tools.requiresApproval(use.name) || (await deps.confirm(label, args));
+      const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
+      const approved = !needsApproval || (await deps.confirm(label, args));
+      // Re-check AFTER the (possibly long) human wait: a kill switch pressed while this
+      // call was parked on the approval gate must stop it, even if "Approve" arrives late.
+      if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
 
       if (!approved) {
         toolResults.push({
@@ -196,24 +225,36 @@ export async function runTurn(
       }
 
       deps.onToolStart?.(label);
-      // Inject _conversation_id for tools that need a sticky per-conversation
-      // lease (sandbox container, or — since §6b — a browser session). The
-      // model never provides this — the orchestrator owns it.
-      const enrichedArgs =
-        deps.conversationId && needsConversationId(use.name)
-          ? { ...args, _conversation_id: deps.conversationId }
-          : args;
-      const result = await deps.tools.call(use.name, enrichedArgs);
+
+      let result: { text: string; isError?: boolean };
+      if (virtual) {
+        try {
+          result = await virtual.handler(args, { toolUseId: use.id, conversationId: deps.conversationId, signal: deps.signal });
+        } catch (err) {
+          if (deps.signal?.aborted) throw err;
+          result = { text: `Tool ${use.name} failed: ${(err as Error).message}`, isError: true };
+        }
+      } else {
+        // Inject _conversation_id for tools that need a sticky per-conversation
+        // lease (sandbox container, or — since §6b — a browser session). The
+        // model never provides this — the orchestrator owns it.
+        const enrichedArgs =
+          deps.conversationId && needsConversationId(use.name)
+            ? { ...args, _conversation_id: deps.conversationId }
+            : args;
+        result = await deps.tools.call(use.name, enrichedArgs);
+      }
+      const isError = result.isError === true;
 
       // Truncate long tool outputs for the model; keep full output for UI
       const { truncated, wasTruncated } = truncateToolOutput(result.text, deps.maxToolOutputLength);
-      deps.onToolResult?.(use.name, result.text, truncated, result.isError);
+      deps.onToolResult?.(use.name, result.text, truncated, isError);
 
       toolResults.push({
         type: 'tool_result',
         tool_use_id: use.id,
         content: wasTruncated ? truncated : result.text,
-        is_error: result.isError,
+        is_error: isError,
       });
     }
 
