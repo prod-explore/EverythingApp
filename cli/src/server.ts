@@ -239,7 +239,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       },
       {
         definition: SPAWN_SUBAGENT_TOOL as unknown as Anthropic.Tool,
-        handler: async input => {
+        handler: async (input, ctx) => {
           if (!isString(input.goal) || !input.goal.trim() || !isString(input.model) || !input.model.trim()) {
             return { text: 'spawn_subagent needs non-empty "goal" and "model" strings.', isError: true };
           }
@@ -250,7 +250,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools.filter(isString) : undefined,
               depth: 0,
             },
-            { db, router, registry, sse, parentConvId: convId },
+            {
+              db,
+              router,
+              registry,
+              sse,
+              parentConvId: convId,
+              approval: approvalGate,
+              signal: ctx.signal,
+              onUsage: ({ provider, model, usage }) => {
+                const { warning } = ledger.record({ conversationId: convId, provider, model, usage });
+                if (warning) sse.emitAll('usage:warning', warning);
+              },
+            },
           );
           return result.status === 'done'
             ? { text: `Subagent completed.\n\nSummary:\n${result.summary}${result.artifactIds.length ? `\n\nArtifact IDs: ${result.artifactIds.join(', ')}` : ''}` }
@@ -513,7 +525,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             signal: controller.signal,
             conversationId: convId,
             confirm: async (label, args) => {
-              const approved = await approvalGate.confirm(convId, label, args);
+              const approved = await approvalGate.confirm(convId, label, args, controller.signal);
               sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
               return approved;
             },

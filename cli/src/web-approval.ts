@@ -83,7 +83,18 @@ export class WebApprovalGate {
   private readonly chatAllowed = new Map<string, Set<string>>();
   private readonly pending = new Map<string, { entry: PendingApproval; resolve: (approved: boolean) => void }>();
 
-  async confirm(conversationId: string, toolLabel: string, args: Record<string, unknown>): Promise<boolean> {
+  /**
+   * `signal` ties the parked Promise to the turn's kill switch: if the turn is aborted while
+   * waiting on a human, the entry is removed and the call resolves `false` — otherwise the
+   * pending approval would linger in the UI and a late "Approve" would still be honoured.
+   */
+  async confirm(
+    conversationId: string,
+    toolLabel: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    if (signal?.aborted) return false;
     const dangerous = looksDangerous(args);
     if (!dangerous) {
       if (this.globalAllowed.has(toolLabel)) return true;
@@ -95,13 +106,14 @@ export class WebApprovalGate {
     const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString() };
 
     return new Promise<boolean>(resolve => {
-      this.pending.set(id, {
-        entry,
-        resolve: approved => {
-          this.pending.delete(id);
-          resolve(approved);
-        },
-      });
+      const onAbort = () => settle(false);
+      const settle = (approved: boolean) => {
+        signal?.removeEventListener('abort', onAbort);
+        this.pending.delete(id);
+        resolve(approved);
+      };
+      this.pending.set(id, { entry, resolve: settle });
+      signal?.addEventListener('abort', onAbort, { once: true });
     });
   }
 

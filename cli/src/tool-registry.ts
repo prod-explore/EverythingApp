@@ -43,12 +43,33 @@ export class ToolRegistry {
     }
   }
 
+  /**
+   * A new registry exposing only the named tools (same connections, same approval policy).
+   * A name matches by exposed name ("server__tool"), label ("server/tool") or bare tool name.
+   * Fail-closed: an empty/omitted list exposes NO tools — the model never even sees the
+   * definitions it is not allowed to use, so there is nothing to bypass.
+   */
+  restrictTo(allow: readonly string[] | undefined): ToolRegistry {
+    const sub = new ToolRegistry(this.autoApproveTools);
+    const wanted = new Set(allow ?? []);
+    for (const [key, tool] of this.tools) {
+      if (wanted.has(tool.exposedName) || wanted.has(`${tool.connection.name}/${tool.realName}`) || wanted.has(tool.realName)) {
+        sub.tools.set(key, tool);
+      }
+    }
+    return sub;
+  }
+
   toAnthropicTools(): AnthropicToolDef[] {
     return [...this.tools.values()].map(t => ({
       name: t.exposedName,
       description: t.description,
       input_schema: t.inputSchema,
     }));
+  }
+
+  has(exposedName: string): boolean {
+    return this.tools.has(exposedName);
   }
 
   /** Default-deny: a tool is auto-approved only if explicitly whitelisted by its real (unprefixed) name. */

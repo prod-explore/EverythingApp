@@ -61,6 +61,8 @@ export interface ConversationDeps {
   onUsage?: (usage: Anthropic.Usage) => void;
   /** Called after each tool call with the full (un-truncated) output — for UI display. */
   onToolResult?: (toolName: string, fullOutput: string, truncatedOutput: string, isError: boolean) => void;
+  /** Hard cap on model round-trips in this turn (runaway-loop guard, used for subagents). Unlimited when unset. */
+  maxSteps?: number;
   /** AbortSignal — set by the kill switch (POST /api/conversations/:id/kill). */
   signal?: AbortSignal;
   /** Max tool output length in characters before truncating for the model context. Default 30 000. */
@@ -71,6 +73,13 @@ export interface ConversationDeps {
    * The model never needs to supply this; the orchestrator sets it.
    */
   conversationId?: string;
+}
+
+export class StepLimitError extends Error {
+  constructor(public readonly limit: number) {
+    super(`Tool loop exceeded the ${limit}-step limit`);
+    this.name = 'StepLimitError';
+  }
 }
 
 const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
@@ -166,9 +175,13 @@ export async function runTurn(
     ...(deps.serverTools ?? []),
   ];
 
+  let steps = 0;
   for (;;) {
     // Kill switch check before each API call
     if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
+    if (deps.maxSteps !== undefined && ++steps > deps.maxSteps) {
+      throw new StepLimitError(deps.maxSteps);
+    }
 
     const response = await deps.anthropic.messages.create(
       {
@@ -207,6 +220,16 @@ export async function runTurn(
       const virtual = virtualByName.get(use.name);
       const label = virtual ? use.name : deps.tools.describe(use.name);
       const args = (use.input ?? {}) as Record<string, unknown>;
+
+      // A tool name that exists nowhere (hallucinated, or outside a subagent's allowlist) must fail
+      // fast with an error the model can read — not park on the approval gate asking a human to
+      // approve a call that can only ever return "Unknown tool".
+      if (!virtual && !deps.tools.has(use.name)) {
+        const result = { text: `Unknown tool: ${use.name}`, isError: true };
+        deps.onToolResult?.(use.name, result.text, result.text, true);
+        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
+        continue;
+      }
 
       const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
       const approved = !needsApproval || (await deps.confirm(label, args));

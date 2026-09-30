@@ -50,6 +50,11 @@ export function runMigrations(db: Database.Database): void {
   // ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, so this is
   // guarded manually — safe to run on both a fresh db (columns already
   // exist from CREATE TABLE below) and an existing pre-branching db.
+  // conversations.kind: 'chat' (user-visible) vs 'subagent' (isolated transcript of a spawn_subagent run,
+  // kept for the UI's run view but never listed in the sidebar).
+  if (!columnExists(db, 'conversations', 'kind')) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'`);
+  }
   if (!columnExists(db, 'messages', 'parent_id')) {
     db.exec(`ALTER TABLE messages ADD COLUMN parent_id INTEGER`);
   }
@@ -238,11 +243,11 @@ export interface ConversationListItem {
 
 export function createConversation(
   db: Database.Database,
-  opts: { title?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean } = {},
+  opts: { title?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent' } = {},
 ): { id: string } {
   const stmt = db.prepare(`
-    INSERT INTO conversations (title, system_prompt, model, sandbox_enabled)
-    VALUES (?, ?, ?, ?)
+    INSERT INTO conversations (title, system_prompt, model, sandbox_enabled, kind)
+    VALUES (?, ?, ?, ?, ?)
     RETURNING id
   `);
   const row = stmt.get(
@@ -250,6 +255,7 @@ export function createConversation(
     opts.systemPrompt ?? null,
     opts.model ?? null,
     opts.sandboxEnabled ? 1 : 0,
+    opts.kind ?? 'chat',
   ) as { id: string };
   return { id: row.id };
 }
@@ -261,6 +267,7 @@ export function listConversations(db: Database.Database): ConversationListItem[]
         `SELECT c.id, c.title, c.updated_at as updatedAt,
           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as messageCount
          FROM conversations c
+         WHERE c.kind = 'chat'
          ORDER BY c.updated_at DESC`,
       )
       .all() as ConversationListItem[]
