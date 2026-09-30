@@ -2,7 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { PlaywrightConfig } from '../config.js';
 import type { BrowserSessionPool } from '../sessionPool.js';
-import { isAllowedUrl } from '../urlSafety.js';
+import { UrlBlockedError } from '../urlSafety.js';
+import { guardFor } from '../urlGuardFor.js';
 import { observePage } from '../observe.js';
 import { formatObservation } from './formatObservation.js';
 import { ok, fail } from './types.js';
@@ -24,8 +25,11 @@ export function registerBrowserOpen(server: McpServer, config: PlaywrightConfig,
         .describe('Internal: conversation ID for session isolation. Set by the orchestrator.'),
     },
     async ({ url, _conversation_id }) => {
-      if (!isAllowedUrl(url)) {
-        return fail('Error: only http/https URLs are allowed.');
+      try {
+        await guardFor(config).check(url);
+      } catch (err) {
+        if (err instanceof UrlBlockedError) return fail(`Error: ${err.message}`);
+        throw err;
       }
 
       const convId = _conversation_id ?? 'default';

@@ -15,6 +15,7 @@ const config: PlaywrightConfig = {
   sessionIdleTimeoutMs: 1800000,
   watchdogIntervalMs: 120000,
   observationMaxInputChars: 100, // small on purpose, to exercise truncation below
+  allowPrivateHosts: [],
 };
 
 let originalFetch: typeof fetch;

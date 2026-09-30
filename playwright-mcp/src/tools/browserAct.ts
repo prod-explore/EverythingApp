@@ -2,7 +2,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { PlaywrightConfig } from '../config.js';
 import type { BrowserSessionPool } from '../sessionPool.js';
-import { isAllowedUrl } from '../urlSafety.js';
+import { UrlBlockedError } from '../urlSafety.js';
+import { guardFor } from '../urlGuardFor.js';
 import { observePage } from '../observe.js';
 import { formatObservation } from './formatObservation.js';
 import { ok, fail } from './types.js';
@@ -61,7 +62,12 @@ export function registerBrowserAct(server: McpServer, config: PlaywrightConfig, 
 
       try {
         if (action === 'navigate') {
-          if (!isAllowedUrl(value!)) return fail('Error: only http/https URLs are allowed.');
+          try {
+            await guardFor(config).check(value!);
+          } catch (err) {
+            if (err instanceof UrlBlockedError) return fail(`Error: ${err.message}`);
+            throw err;
+          }
           await page.goto(value!, { waitUntil: 'domcontentloaded', timeout: config.navTimeoutMs });
           pool.setCurrentUrl(convId, value!);
         } else if (action === 'press' && ref === undefined) {

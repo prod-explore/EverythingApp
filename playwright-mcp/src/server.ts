@@ -6,6 +6,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { PlaywrightConfig } from './config.js';
 import { registerAllTools } from './tools/index.js';
 import { BrowserSessionPool, ChromiumLauncher } from './sessionPool.js';
+import { guardFor } from './urlGuardFor.js';
 import { attachLiveView } from './liveview.js';
 
 function extractToken(req: express.Request): string | undefined {
@@ -64,7 +65,7 @@ export function createApp(config: PlaywrightConfig): {
     maxSessions: config.maxSessions,
     idleTimeoutMs: config.sessionIdleTimeoutMs,
     watchdogIntervalMs: config.watchdogIntervalMs,
-    makeLauncher: sessionId => new ChromiumLauncher(config.profileDir, sessionId),
+    makeLauncher: sessionId => new ChromiumLauncher(config.profileDir, sessionId, guardFor(config)),
   });
 
   app.get(/^\/\.well-known\/oauth-.*/, (_req, res) => res.status(404).end());

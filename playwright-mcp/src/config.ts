@@ -31,6 +31,8 @@ export interface PlaywrightConfig {
   /** Max chars of the per-step structured observation passed to the quarantine model.
    * Smaller than quarantineMaxInputChars since observations are structured, not raw text. */
   observationMaxInputChars: number;
+  /** Private hostnames/IPs the browser MAY reach (explicit opt-in; default none). Comma-separated in BROWSER_ALLOW_PRIVATE_HOSTS. */
+  allowPrivateHosts: string[];
 }
 
 function required(name: string): string {
@@ -52,5 +54,6 @@ export function loadConfig(): PlaywrightConfig {
     sessionIdleTimeoutMs: parseInt(process.env['PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS'] ?? '1800000', 10),
     watchdogIntervalMs: parseInt(process.env['PLAYWRIGHT_WATCHDOG_INTERVAL_MS'] ?? '120000', 10),
     observationMaxInputChars: parseInt(process.env['OBSERVATION_MAX_INPUT_CHARS'] ?? '40000', 10),
+    allowPrivateHosts: (process.env['BROWSER_ALLOW_PRIVATE_HOSTS'] ?? '').split(',').map(h => h.trim()).filter(Boolean),
   };
 }

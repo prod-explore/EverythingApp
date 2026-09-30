@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { chromium } from 'playwright';
 import type { PlaywrightConfig } from '../config.js';
 import { extractWithQuarantine } from '../quarantine.js';
-import { isAllowedUrl } from '../urlSafety.js';
+import { installRequestGuard, UrlBlockedError } from '../urlSafety.js';
+import { guardFor } from '../urlGuardFor.js';
 
 export function registerBrowseUrl(server: McpServer, config: PlaywrightConfig): void {
   server.tool(
@@ -30,11 +31,14 @@ export function registerBrowseUrl(server: McpServer, config: PlaywrightConfig): 
         .describe('Wait for network to be idle before extracting. Default true. Set false for fast pages.'),
     },
     async ({ url, extract, wait_for_idle = true }) => {
-      if (!isAllowedUrl(url)) {
-        return {
-          content: [{ type: 'text', text: 'Error: only http/https URLs are allowed.' }],
-          isError: true,
-        };
+      const guard = guardFor(config);
+      try {
+        await guard.check(url);
+      } catch (err) {
+        if (err instanceof UrlBlockedError) {
+          return { content: [{ type: 'text', text: `Error: ${err.message}` }], isError: true };
+        }
+        throw err;
       }
 
       let browser;
@@ -56,6 +60,7 @@ export function registerBrowseUrl(server: McpServer, config: PlaywrightConfig): 
             'Mozilla/5.0 (compatible; EverythingAppBot/1.0; +https://futumore.pl)',
         });
 
+        await installRequestGuard(context, guard); // redirects + sub-resources, not just the first URL
         const page = await context.newPage();
         page.setDefaultTimeout(config.navTimeoutMs);
 

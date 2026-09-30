@@ -1,4 +1,5 @@
 import { chromium, type BrowserContext, type Page } from 'playwright';
+import { installRequestGuard, type UrlGuard } from './urlSafety.js';
 
 /**
  * Browser-agent equivalent of sandbox-supervisor/src/pool.ts's sticky lease +
@@ -34,6 +35,8 @@ export class ChromiumLauncher implements ContextLauncher {
   constructor(
     private readonly profileDir: string,
     private readonly sessionId: string,
+    /** Applied to every request the browser makes (SSRF guard). */
+    private readonly guard?: UrlGuard,
   ) {}
 
   async launch(): Promise<{ context: BrowserContext; page: Page }> {
@@ -48,6 +51,7 @@ export class ChromiumLauncher implements ContextLauncher {
       ],
       userAgent: 'Mozilla/5.0 (compatible; EverythingAppBot/1.0; +https://futumore.pl)',
     });
+    if (this.guard) await installRequestGuard(context, this.guard, url => console.warn(`[ssrf-guard] blocked request to ${url}`));
     const page = context.pages()[0] ?? (await context.newPage());
     return { context, page };
   }

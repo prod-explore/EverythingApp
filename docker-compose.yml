@@ -56,7 +56,11 @@ services:
   # Playwright browser tool — controlled web browsing with dual-LLM quarantine.
   # Raw page content NEVER reaches the agent: it's filtered through the local
   # quarantine model (QUARANTINE_MODEL_URL) before being returned.
-  # Network: outbound HTTP(S) allowed. No docker.sock. No sandbox access.
+  # Network: public internet allowed; private networks are NOT (see deploy/egress-guard.sh
+  # for the network layer and playwright-mcp/src/urlSafety.ts for the application layer).
+  # No docker.sock. Lives on its own `browser-egress` bridge — it shares NO network with the
+  # supervisor, sandbox-mcp, github-mcp (holds the PAT) or n8n; only the web server is attached
+  # to both sides so it can call the MCP endpoint.
   playwright-mcp:
     build:
       context: ./playwright-mcp
@@ -77,6 +81,9 @@ services:
       PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS: ${PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS:-1800000}
       PLAYWRIGHT_WATCHDOG_INTERVAL_MS: ${PLAYWRIGHT_WATCHDOG_INTERVAL_MS:-120000}
       OBSERVATION_MAX_INPUT_CHARS: ${OBSERVATION_MAX_INPUT_CHARS:-40000}
+      # SSRF guard: the browser may only reach the PUBLIC internet. Comma-separated private
+      # hostnames/IPs to allow on purpose (default none), e.g. a NAS you want the agent to read.
+      BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-}
     volumes:
       # Persistent login sessions (§6b) live ONLY here — never mount this into
       # sandbox-mcp/everything-sandbox. That's the whole point: a shell tool
@@ -88,12 +95,10 @@ services:
     ports:
       - "127.0.0.1:3003:3003"
     restart: unless-stopped
-    # Playwright gets outbound internet access (it's a browser, it needs it).
-    # It is NOT connected to the bash sandbox container — network isolation
-    # prevents the model from using browse_url as a proxy to reach internal services.
-    # On the Pi, the docker bridge gives outbound access by default.
+    # Playwright gets outbound internet access (it's a browser, it needs it) on a dedicated
+    # bridge, so a page (or a prompt-injected URL) cannot reach the other services by name.
     networks:
-      - sandbox-internal
+      - browser-egress
 
   # GitHub connector — official github-mcp-server.
   # Token (PAT) is held here, never in the bash sandbox, never visible to the model.
@@ -148,6 +153,7 @@ services:
     restart: unless-stopped
     networks:
       - sandbox-internal
+      - browser-egress  # only to call playwright-mcp; the browser's own requests are guarded (urlSafety.ts)
 
   # n8n pipeline orchestrator — self-hosted, ISOLATED network.
   # CRITICAL: n8n is on n8n-net, NOT sandbox-internal.
@@ -187,6 +193,13 @@ networks:
   # n8n's own isolated network — pipeline internal communication.
   n8n-net:
     driver: bridge
+
+  # Browser agent: internet-facing. The fixed bridge name lets deploy/egress-guard.sh drop
+  # traffic from it to private ranges (LAN, host, other bridges) at the network layer.
+  browser-egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-ea-browser
 
 volumes:
   everythingapp_web_data:
