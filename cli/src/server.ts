@@ -415,7 +415,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   app.get('/api/conversations/:id', (req, res) => {
     const conv = getConversation(db, req.params.id);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    res.json(conv);
+    // Same resolution order a turn uses, so the UI's model picker never shows "nothing selected"
+    // for a conversation that simply inherits the default.
+    res.json({ ...conv, effectiveModel: conv.model || getSetting(db, 'default_model') || config.model });
   });
 
   app.patch('/api/conversations/:id', (req, res) => {

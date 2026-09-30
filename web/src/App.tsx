@@ -173,7 +173,7 @@ function MainApp() {
       <Header
         title={selected?.title ?? ''}
         usage={usage}
-        model={fullConv?.model ?? null}
+        model={fullConv ? fullConv.model || fullConv.effectiveModel || null : null}
         models={models}
         sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
@@ -197,18 +197,22 @@ function MainApp() {
         <ApprovalBanner conversationId={selectedId} />
 
         {/* §6b Chunk B: floating overlays anchored to the chat area */}
-        {browserPanelOpen && (
-          <div className="absolute bottom-16 right-4 z-20 shadow-2xl">
-            <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
-          </div>
-        )}
-        {artifactsPanelOpen && (
-          <div className="absolute bottom-16 right-4 z-20 shadow-2xl">
-            <ArtifactsPanel
-              conversationId={selectedId}
-              onClose={() => setArtifactsPanelOpen(false)}
-              refreshTrigger={artifactRefresh}
-            />
+        {(browserPanelOpen || artifactsPanelOpen) && (
+          <div className="pointer-events-none absolute bottom-16 right-4 z-20 flex max-h-[calc(100%-5rem)] flex-col items-end gap-3 overflow-y-auto">
+            {browserPanelOpen && (
+              <div className="pointer-events-auto shadow-2xl">
+                <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
+              </div>
+            )}
+            {artifactsPanelOpen && (
+              <div className="pointer-events-auto shadow-2xl">
+                <ArtifactsPanel
+                  conversationId={selectedId}
+                  onClose={() => setArtifactsPanelOpen(false)}
+                  refreshTrigger={artifactRefresh}
+                />
+              </div>
+            )}
           </div>
         )}
       </div>

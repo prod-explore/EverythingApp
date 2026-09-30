@@ -29,24 +29,28 @@ export function SettingsModal({
   const [activeTab, setActiveTab] = useState<Tab>('models');
 
   return (
-    <Modal title="Settings" onClose={onClose} wide>
-      {/* Tab bar */}
-      <div className="mb-6 flex gap-1 border-b border-border">
-        {TABS.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setActiveTab(t.id)}
-            className={`px-3 py-2 text-sm font-medium transition-colors ${
-              activeTab === t.id
-                ? 'border-b-2 border-fg text-fg'
-                : 'text-fg-tertiary hover:text-fg-secondary'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
-      </div>
-
+    <Modal
+      title="Settings"
+      onClose={onClose}
+      wide
+      tabs={
+        <div className="flex gap-1 overflow-x-auto border-b border-border">
+          {TABS.map(t => (
+            <button
+              key={t.id}
+              onClick={() => setActiveTab(t.id)}
+              className={`shrink-0 px-3 py-2 text-sm font-medium transition-colors ${
+                activeTab === t.id
+                  ? 'border-b-2 border-fg text-fg'
+                  : 'text-fg-tertiary hover:text-fg-secondary'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      }
+    >
       {/* Tab content */}
       <div className="min-h-[220px]">
         {activeTab === 'models' && <ModelsTab />}
