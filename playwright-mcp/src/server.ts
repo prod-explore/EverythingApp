@@ -65,7 +65,7 @@ export function createApp(config: PlaywrightConfig): {
     maxSessions: config.maxSessions,
     idleTimeoutMs: config.sessionIdleTimeoutMs,
     watchdogIntervalMs: config.watchdogIntervalMs,
-    makeLauncher: sessionId => new ChromiumLauncher(config.profileDir, sessionId, guardFor(config)),
+    makeLauncher: () => new ChromiumLauncher(guardFor(config)),
   });
 
   app.get(/^\/\.well-known\/oauth-.*/, (_req, res) => res.status(404).end());

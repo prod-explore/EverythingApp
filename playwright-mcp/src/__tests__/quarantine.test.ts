@@ -10,7 +10,6 @@ const config: PlaywrightConfig = {
   quarantineModel: 'fake-model',
   quarantineMaxInputChars: 80000,
   navTimeoutMs: 30000,
-  profileDir: './profile',
   maxSessions: 4,
   sessionIdleTimeoutMs: 1800000,
   watchdogIntervalMs: 120000,

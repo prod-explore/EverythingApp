@@ -19,7 +19,6 @@ export interface PlaywrightConfig {
    * sessions/restarts). MUST be a volume mounted ONLY into this container — never into
    * the code sandbox, which must never be able to read a logged-in session's cookies.
    * Default './profile' (relative to the container's cwd — mount a named volume there). */
-  profileDir: string;
   /** Max concurrent browser sessions (tabs). Sessions beyond this are refused until an
    * idle one is reclaimed. Default 4 — a Pi-sized budget, override for beefier hardware. */
   maxSessions: number;
@@ -49,7 +48,6 @@ export function loadConfig(): PlaywrightConfig {
     quarantineModel: process.env['QUARANTINE_MODEL'] ?? 'llama-3.1-8b-instruct',
     quarantineMaxInputChars: parseInt(process.env['QUARANTINE_MAX_INPUT_CHARS'] ?? '80000', 10),
     navTimeoutMs: parseInt(process.env['NAV_TIMEOUT_MS'] ?? '30000', 10),
-    profileDir: process.env['PLAYWRIGHT_PROFILE_DIR'] ?? './profile',
     maxSessions: parseInt(process.env['PLAYWRIGHT_MAX_SESSIONS'] ?? '4', 10),
     sessionIdleTimeoutMs: parseInt(process.env['PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS'] ?? '1800000', 10),
     watchdogIntervalMs: parseInt(process.env['PLAYWRIGHT_WATCHDOG_INTERVAL_MS'] ?? '120000', 10),

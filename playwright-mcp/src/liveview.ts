@@ -1,4 +1,5 @@
 import * as http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { BrowserSessionPool } from './sessionPool.js';
 import type { PlaywrightConfig } from './config.js';
@@ -31,6 +32,12 @@ import type { PlaywrightConfig } from './config.js';
  *  - The session is identified by conversationId, NOT by a sessionId the client
  *    manufactures — so one conversation cannot reach another conversation's tab.
  */
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 const FRAME_INTERVAL_MS = 200; // 5 fps — enough for "can I see what's happening"
 const JPEG_QUALITY = 60; // balance between latency and clarity on mobile
@@ -71,7 +78,7 @@ export function attachLiveView(
     const tokenFromQuery = url.searchParams.get('token') ?? undefined;
     const token = tokenFromHeader ?? tokenFromQuery;
 
-    if (!token || token !== getToken()) {
+    if (!token || !safeEqual(token, getToken())) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
       socket.destroy();
       return;

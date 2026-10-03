@@ -27,32 +27,45 @@ export interface ContextLauncher {
   launch(): Promise<{ context: BrowserContext; page: Page }>;
 }
 
-/** One Chromium process per session, using a per-session subdirectory of the
- * shared profile dir: each session's cookies/localStorage persist across
- * restarts (the "log in once" requirement), but sessions don't bleed into
- * each other by sharing one profile. */
+/**
+ * One Chromium process per session, with an EPHEMERAL profile: nothing (cookies, localStorage,
+ * credentials, history) survives the session. There are deliberately no persistent logins — an
+ * agent driving a logged-in browser turns any prompt injection into account takeover. Logging in
+ * or paying is done by the human via takeover, inside the live session, and ends with it.
+ *
+ * Hardened defaults: no downloads, no service workers, no granted permissions (camera, mic,
+ * geolocation, notifications, clipboard…), no extensions, WebRTC cannot leak local addresses.
+ * The SSRF request guard applies to every request the context makes.
+ */
 export class ChromiumLauncher implements ContextLauncher {
   constructor(
-    private readonly profileDir: string,
-    private readonly sessionId: string,
     /** Applied to every request the browser makes (SSRF guard). */
     private readonly guard?: UrlGuard,
   ) {}
 
   async launch(): Promise<{ context: BrowserContext; page: Page }> {
-    const dir = `${this.profileDir}/${this.sessionId}`;
-    const context = await chromium.launchPersistentContext(dir, {
+    const browser = await chromium.launch({
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage', // Pi has limited /dev/shm
         '--disable-gpu',
+        '--disable-extensions',
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
       ],
-      userAgent: 'Mozilla/5.0 (compatible; EverythingAppBot/1.0; +https://futumore.pl)',
     });
+    const context = await browser.newContext({
+      userAgent: 'Mozilla/5.0 (compatible; EverythingAppBot/1.0; +https://futumore.pl)',
+      acceptDownloads: false,
+      serviceWorkers: 'block',
+      permissions: [],
+    });
+    // A context made by browser.newContext() does not stop the browser process when closed;
+    // tie them together so closing a session never leaves a Chromium behind.
+    context.once('close', () => void browser.close().catch(() => {}));
     if (this.guard) await installRequestGuard(context, this.guard, url => console.warn(`[ssrf-guard] blocked request to ${url}`));
-    const page = context.pages()[0] ?? (await context.newPage());
+    const page = await context.newPage();
     return { context, page };
   }
 }

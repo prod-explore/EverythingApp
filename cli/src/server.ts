@@ -18,6 +18,7 @@ import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
+import { attachLiveViewProxy } from './liveview-proxy.js';
 import {
   openDb,
   runMigrations,
@@ -147,6 +148,14 @@ async function main(): Promise<void> {
   const port = Number(process.env['PORT'] ?? 3000);
   const server = app.listen(port, () => {
     console.log(`[server] listening on port ${port}`);
+  });
+
+  // Browser live view: same-origin WebSocket relayed to playwright-mcp (server-side key).
+  const playwrightCfg = config.mcpServers.find(c => c.name === 'playwright');
+  attachLiveViewProxy(server, {
+    upstreamUrl: playwrightCfg ? new URL(playwrightCfg.url).origin : undefined,
+    upstreamApiKey: playwrightCfg?.apiKey,
+    authToken,
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────

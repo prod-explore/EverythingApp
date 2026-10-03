@@ -76,7 +76,6 @@ services:
       QUARANTINE_MAX_INPUT_CHARS: ${QUARANTINE_MAX_INPUT_CHARS:-80000}
       NAV_TIMEOUT_MS: ${NAV_TIMEOUT_MS:-30000}
       # §6b: browser-agent sessions (browser_open/observe/act/close).
-      PLAYWRIGHT_PROFILE_DIR: /app/profile
       PLAYWRIGHT_MAX_SESSIONS: ${PLAYWRIGHT_MAX_SESSIONS:-4}
       PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS: ${PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS:-1800000}
       PLAYWRIGHT_WATCHDOG_INTERVAL_MS: ${PLAYWRIGHT_WATCHDOG_INTERVAL_MS:-120000}
@@ -84,14 +83,9 @@ services:
       # SSRF guard: the browser may only reach the PUBLIC internet. Comma-separated private
       # hostnames/IPs to allow on purpose (default none), e.g. a NAS you want the agent to read.
       BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-}
-    volumes:
-      # Persistent login sessions (§6b) live ONLY here — never mount this into
-      # sandbox-mcp/everything-sandbox. That's the whole point: a shell tool
-      # the model can use must never be able to `cat` a real logged-in cookie.
-      # NOTE (unverified): the base image runs as `pwuser`, not root — a fresh
-      # named volume may mount root-owned and need a chown before pwuser can
-      # write to it. Untested; check container logs on first run for EACCES.
-      - playwright_profiles:/app/profile
+    # No volumes on purpose: browser profiles are EPHEMERAL (no persistent logins). A leftover
+    # `playwright_profiles` volume from older versions can be deleted:
+    #   docker volume rm <project>_playwright_profiles
     ports:
       - "127.0.0.1:3003:3003"
     restart: unless-stopped
@@ -204,4 +198,3 @@ networks:
 volumes:
   everythingapp_web_data:
   n8n_data:
-  playwright_profiles:

@@ -5,21 +5,21 @@ import { getToken } from '../../api';
 /**
  * §6b Chunk B: Live-view panel for an active browser session.
  *
- * Connects to playwright-mcp's WebSocket at
- *   ws://<host>/mcp/liveview?conversationId=<id>&token=<token>
- * The WS URL is composed from the VITE_PLAYWRIGHT_WS_URL env var + query params.
+ * Connects to the SAME ORIGIN as the app:  wss://<this-host>/api/liveview?conversationId=<id>&token=<token>
+ * The server authenticates the token and relays the WebSocket to playwright-mcp with its own
+ * server-side key (cli/src/liveview-proxy.ts). No build-time URL, no second port, no mixed
+ * content behind HTTPS, and the CSP `connect-src 'self'` keeps working.
  *
  * Two modes:
  * 1. Watch-only (default): streams JPEG frames from the active session as <img> blobs.
  * 2. Takeover: sends mouse/keyboard events back to the session. Toggle with the
  *    "Take control" button. Visual indicator shows when takeover is active.
- *
- * The PLAYWRIGHT_MCP_WS_URL env variable must be set in the browser environment
- * (Vite: VITE_PLAYWRIGHT_WS_URL, e.g. ws://192.168.1.50:3003). If absent the
- * panel shows a setup prompt.
  */
 
-const WS_BASE = (import.meta as ImportMeta & { env: Record<string, string> }).env['VITE_PLAYWRIGHT_WS_URL'] ?? '';
+function liveViewUrl(conversationId: string, token: string): string {
+  const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${scheme}://${window.location.host}/api/liveview?conversationId=${encodeURIComponent(conversationId)}&token=${encodeURIComponent(token)}`;
+}
 
 interface Status {
   session: boolean;
@@ -39,6 +39,8 @@ export function BrowserPanel({
   const [status, setStatus] = useState<Status>({ session: false });
   const [takeover, setTakeover] = useState(false);
   const [connected, setConnected] = useState(false);
+  // Closed without ever opening: the proxy answered 502/503 (playwright-mcp down or not configured).
+  const [unavailable, setUnavailable] = useState(false);
   const prevBlobUrl = useRef<string | null>(null);
 
   // Keyboard + mouse events when takeover is active
@@ -49,16 +51,18 @@ export function BrowserPanel({
   }, []);
 
   useEffect(() => {
-    if (!WS_BASE) return;
-    const token = getToken() ?? '';
-    const url = `${WS_BASE}/mcp/liveview?conversationId=${encodeURIComponent(conversationId)}&token=${encodeURIComponent(token)}`;
-
-    const ws = new WebSocket(url);
+    setUnavailable(false);
+    const ws = new WebSocket(liveViewUrl(conversationId, getToken() ?? ''));
     ws.binaryType = 'blob';
     wsRef.current = ws;
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => { setConnected(false); wsRef.current = null; };
+    let opened = false;
+    ws.onopen = () => { opened = true; setConnected(true); };
+    ws.onclose = () => {
+      setConnected(false);
+      if (!opened) setUnavailable(true);
+      if (wsRef.current === ws) wsRef.current = null;
+    };
 
     ws.onmessage = (evt) => {
       if (typeof evt.data === 'string') {
@@ -171,22 +175,22 @@ export function BrowserPanel({
 
       {/* Live view */}
       <div className="relative bg-black" style={{ minHeight: 200 }}>
-        {!WS_BASE && (
+        {unavailable && (
           <div className="flex items-center justify-center h-40 text-xs text-fg-tertiary px-4 text-center">
-            Set <code className="mx-1 text-fg-secondary">VITE_PLAYWRIGHT_WS_URL</code> to enable live browser view.
+            Live view is unavailable — the browser service is not reachable or not configured.
           </div>
         )}
-        {WS_BASE && !connected && (
+        {!unavailable && !connected && (
           <div className="flex items-center justify-center h-40 text-xs text-fg-tertiary gap-2">
             <Loader size={14} className="animate-spin" /> Connecting…
           </div>
         )}
-        {WS_BASE && connected && !status.session && (
+        {connected && !status.session && (
           <div className="flex items-center justify-center h-40 text-xs text-fg-tertiary">
             No active browser session for this conversation.
           </div>
         )}
-        {WS_BASE && connected && status.session && (
+        {connected && status.session && (
           <>
             {takeover && (
               <div className="absolute top-2 left-2 z-10 rounded px-2 py-0.5 text-xs font-semibold bg-warning/80 text-black select-none pointer-events-none">
