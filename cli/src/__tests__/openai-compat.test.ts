@@ -8,6 +8,8 @@ import { getModelInfo } from '../providers/registry.js';
 import {
   OpenAiCompatClient,
   ProviderHttpError,
+  effectiveStatus,
+  flattenToolSchema,
   fromChatResponse,
   safeToolName,
   sanitizeSchemaForGemini,
@@ -25,7 +27,7 @@ function memoryMeta(): MetaStore & { store: Map<string, Record<string, unknown>>
 }
 
 // NameMap isn't exported; toChatTools/toChatMessages only need something with safe()/original().
-function ctxFor(flavor: 'gemini' | 'deepseek', model: string, meta: MetaStore = memoryMeta()): TranslateContext {
+function ctxFor(flavor: 'gemini' | 'deepseek' | 'mindgate', model: string, meta: MetaStore = memoryMeta()): TranslateContext {
   const map = new Map<string, string>();
   return {
     flavor,
@@ -388,5 +390,100 @@ describe('OpenAiCompatClient', () => {
     const pending = newClient(hanging).messages.create(params([{ role: 'user', content: 'hi' }]), { signal: controller.signal });
     setTimeout(() => controller.abort(), 10);
     await assert.rejects(pending, /abort/i);
+  });
+});
+
+// ─── small-model tool schemas, upstream error mapping ────────────────────────
+
+const nestedTool = {
+  name: 'request_human_input',
+  description: 'Ask the human',
+  input_schema: {
+    type: 'object',
+    properties: {
+      title: { type: 'string', description: 'Short title' },
+      choices: { type: 'array', items: { type: 'string' } },
+      fields: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, type: { type: 'string', enum: ['text', 'number'] } } } },
+      mode: { type: 'string', enum: ['a', 'b'] },
+      when: { anyOf: [{ type: 'string' }, { type: 'number' }] },
+    },
+    required: ['title', 'fields', 'gone'],
+  },
+} as unknown as Anthropic.Tool;
+
+describe('toolSchemaMode', () => {
+  it('flattenToolSchema keeps primitives, turns nested/combinator params into documented JSON strings, trims required', () => {
+    const { schema, flattened } = flattenToolSchema(nestedTool.input_schema);
+    assert.deepEqual(flattened.sort(), ['choices', 'fields', 'when']);
+    const props = (schema as { properties: Record<string, { type: string; description?: string; enum?: string[] }> }).properties;
+    assert.equal(props['title']!.type, 'string');
+    assert.deepEqual(props['mode']!.enum, ['a', 'b']);
+    assert.equal(props['fields']!.type, 'string');
+    assert.match(props['fields']!.description!, /array.*JSON-encoded string/);
+    assert.deepEqual((schema as { required: string[] }).required, ['title', 'fields'], '"required" never names a property that no longer exists');
+    assert.equal(flattenToolSchema({ type: 'object', properties: {} }).schema, undefined);
+  });
+
+  it("'flat' models receive simplified schemas and get nested arguments decoded back to real values", () => {
+    const ctx = ctxFor('mindgate', 'flash');
+    assert.equal(ctx.modelInfo.toolSchemaMode, 'flat');
+    const tools = toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], ctx);
+    assert.equal(tools.length, 1);
+    assert.equal((tools[0]!.function.parameters as { properties: Record<string, { type: string }> }).properties['fields']!.type, 'string');
+
+    const msg = fromChatResponse(
+      { choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'request_human_input', arguments: JSON.stringify({ title: 'T', fields: '[{"name":"x","type":"text"}]', choices: 'not json' }) } }] } }] },
+      'flash', ctx, 'mindgate',
+    );
+    const use = msg.content.find(b => b.type === 'tool_use') as Anthropic.ToolUseBlock;
+    assert.deepEqual((use.input as Record<string, unknown>)['fields'], [{ name: 'x', type: 'text' }]);
+    assert.equal((use.input as Record<string, unknown>)['choices'], 'not json', 'undecodable values are left for schema validation to report');
+  });
+
+  it("'full' models are untouched and 'none' models get no tools at all", () => {
+    const full = toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], ctxFor('deepseek', 'deepseek-chat'));
+    assert.equal((full[0]!.function.parameters as { properties: Record<string, { type: string }> }).properties['fields']!.type, 'array');
+    const none = { ...ctxFor('mindgate', 'flash'), modelInfo: { ...getModelInfo('flash'), toolSchemaMode: 'none' as const } };
+    assert.deepEqual(toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], none), []);
+  });
+});
+
+describe('effectiveStatus (MindGate wraps upstream 4xx in 5xx)', () => {
+  const ollama = `{"error":{"message":"Value looks like object, but can't find closing '}' symbol"}}`;
+  it('recognises deterministic upstream errors, leaves real outages alone, ignores other providers', () => {
+    assert.equal(effectiveStatus('mindgate', 500, ollama), 400);
+    assert.equal(effectiveStatus('mindgate', 500, 'upstream error 400: bad request'), 400);
+    assert.equal(effectiveStatus('mindgate', 502, 'connect ECONNREFUSED'), 502);
+    assert.equal(effectiveStatus('mindgate', 503, 'model loading'), 503);
+    assert.equal(effectiveStatus('mindgate', 400, ollama), 400);
+    assert.equal(effectiveStatus('deepseek', 500, ollama), 500);
+  });
+});
+
+describe('OpenAiCompatClient — MindGate tool-call parse failures', () => {
+  const ollama500 = `{"error":"Value looks like object, but can't find closing '}' symbol"}`;
+  const okBody = { id: 'x', choices: [{ finish_reason: 'stop', message: { content: 'Hello without tools' } }] };
+
+  it('does not retry the 500-wrapped 400, then answers once WITHOUT tools and says so', async () => {
+    const bodies: Array<{ tools?: unknown }> = [];
+    const f = (async (_url: string, init: RequestInit) => {
+      bodies.push(JSON.parse(String(init.body)));
+      return bodies.length === 1 ? new Response(ollama500, { status: 500 }) : new Response(JSON.stringify(okBody), { status: 200 });
+    }) as unknown as typeof fetch;
+    const client = newClient(f, { flavor: 'mindgate', modelInfo: m => ({ ...getModelInfo(m), toolSchemaMode: 'full' }) });
+    const res = await client.messages.create({ model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [nestedTool] });
+
+    assert.equal(bodies.length, 2, 'one failed attempt (no transient retries) + one tools-less retry');
+    assert.ok(bodies[0]!.tools);
+    assert.equal(bodies[1]!.tools, undefined);
+    const text = (res.content[0] as Anthropic.TextBlock).text;
+    assert.match(text, /without tools/);
+    assert.match(text, /Hello without tools/);
+  });
+
+  it('still surfaces genuine outages (no silent tools-less fallback)', async () => {
+    const f = (async () => new Response('connect ECONNREFUSED', { status: 502 })) as unknown as typeof fetch;
+    const client = newClient(f, { flavor: 'mindgate', maxRetries: 0 });
+    await assert.rejects(client.messages.create({ model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [nestedTool] }), (e: unknown) => e instanceof ProviderHttpError && e.status === 502);
   });
 });

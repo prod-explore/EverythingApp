@@ -81,6 +81,14 @@ export interface ModelInfo {
    * single visible token — the request "succeeds" with an empty answer.
    */
   minOutputTokens?: number;
+  /**
+   * How tool JSON schemas are sent to OpenAI-compatible providers:
+   *  - 'full' (default): as the MCP server declared them.
+   *  - 'flat': nested object/array parameters become JSON-encoded strings (decoded again on the way
+   *    back) and combinators are dropped — for small local models that cannot reliably emit nested JSON.
+   *  - 'none': no tools are sent; the model can only chat.
+   */
+  toolSchemaMode?: 'full' | 'flat' | 'none';
   /** Hidden from pickers (kept only so old conversations still get priced correctly). */
   hidden?: boolean;
 }
@@ -183,6 +191,8 @@ const CATALOG: ModelInfo[] = [
     supportsImages: false,
     supportsWebSearch: false,
     supportsBatch: false,
+    // A 3B model breaks on nested tool schemas (audit 2026-09-29: Ollama 400 "can't find closing '}'").
+    toolSchemaMode: 'flat',
   },
   {
     id: 'chat',

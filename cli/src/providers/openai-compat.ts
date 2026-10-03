@@ -150,6 +150,41 @@ export function sanitizeSchemaForGemini(schema: unknown): Record<string, unknown
   return cleaned;
 }
 
+/**
+ * 'flat' tool schema mode for small models. Keeps top-level primitive parameters as they are;
+ * nested object/array parameters (and anything built from anyOf/oneOf/allOf/$ref) become a string
+ * documented as JSON, so the model never has to emit nested JSON inside a tool call. Returns the
+ * simplified schema plus the names of the properties that must be JSON-decoded on the way back.
+ */
+export function flattenToolSchema(schema: unknown): { schema: Record<string, unknown> | undefined; flattened: string[] } {
+  if (!schema || typeof schema !== 'object') return { schema: undefined, flattened: [] };
+  const root = schema as Record<string, unknown>;
+  const props = root['properties'];
+  if (root['type'] !== 'object' || !props || typeof props !== 'object' || Object.keys(props).length === 0) {
+    return { schema: undefined, flattened: [] };
+  }
+  const flattened: string[] = [];
+  const out: Record<string, unknown> = {};
+  for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+    const p = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    const primitive = p['type'] === 'string' || p['type'] === 'number' || p['type'] === 'integer' || p['type'] === 'boolean';
+    const composite = 'anyOf' in p || 'oneOf' in p || 'allOf' in p || '$ref' in p;
+    if (primitive && !composite) {
+      const simple: Record<string, unknown> = { type: p['type'] };
+      if (typeof p['description'] === 'string') simple['description'] = p['description'];
+      if (Array.isArray(p['enum']) && p['enum'].every(v => typeof v === 'string')) simple['enum'] = p['enum'];
+      out[name] = simple;
+    } else {
+      flattened.push(name);
+      const was = p['type'] === 'array' ? 'an array' : p['type'] === 'object' ? 'an object' : 'a JSON value';
+      const desc = typeof p['description'] === 'string' ? `${p['description']} ` : '';
+      out[name] = { type: 'string', description: `${desc}(Pass ${was} as a JSON-encoded string.)` };
+    }
+  }
+  const required = Array.isArray(root['required']) ? (root['required'] as unknown[]).filter((r): r is string => typeof r === 'string' && r in out) : [];
+  return { schema: { type: 'object', properties: out, ...(required.length ? { required } : {}) }, flattened };
+}
+
 // ─── Anthropic → chat-completions ────────────────────────────────────────────
 
 function systemText(system: Anthropic.MessageCreateParams['system']): string {
@@ -213,6 +248,8 @@ export interface TranslateContext {
   modelInfo: ModelInfo;
   meta: MetaStore;
   names: NameMap;
+  /** Parameters sent as JSON-encoded strings in 'flat' mode: tool name (as sent) → property names. Filled by toChatTools. */
+  flattened?: Map<string, Set<string>>;
 }
 
 export function toChatMessages(params: Anthropic.MessageCreateParamsNonStreaming, ctx: TranslateContext): OaiMessage[] {
@@ -322,17 +359,30 @@ export function toChatTools(
   ctx: TranslateContext,
 ): Array<{ type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown> } }> {
   const out: Array<{ type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown> } }> = [];
+  const mode = ctx.modelInfo.toolSchemaMode ?? 'full';
+  if (mode === 'none') return out;
   for (const tool of tools ?? []) {
     // Server tools (web_search_20250305, …) have no input_schema and only exist on Anthropic's side.
     if (!('input_schema' in tool)) continue;
-    const parameters =
-      ctx.flavor === 'gemini'
-        ? sanitizeSchemaForGemini(tool.input_schema)
-        : (tool.input_schema as Record<string, unknown>);
+    const safeName = ctx.names.safe(tool.name);
+    let parameters: Record<string, unknown> | undefined;
+    if (mode === 'flat') {
+      const flat = flattenToolSchema(tool.input_schema);
+      parameters = flat.schema;
+      if (flat.flattened.length > 0) {
+        ctx.flattened ??= new Map();
+        ctx.flattened.set(safeName, new Set(flat.flattened));
+      }
+    } else {
+      parameters =
+        ctx.flavor === 'gemini'
+          ? sanitizeSchemaForGemini(tool.input_schema)
+          : (tool.input_schema as Record<string, unknown>);
+    }
     out.push({
       type: 'function',
       function: {
-        name: ctx.names.safe(tool.name),
+        name: safeName,
         ...(tool.description ? { description: tool.description } : {}),
         ...(parameters ? { parameters } : {}),
       },
@@ -365,6 +415,19 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
     } catch {
       // Surfacing the raw string makes the MCP server reject it with a schema error the model can read and retry.
       input = { __invalid_arguments: rawArgs };
+    }
+    // 'flat' mode: parameters we asked the model to JSON-encode are decoded back to real objects/arrays.
+    const encoded = ctx.flattened?.get(tc.function?.name ?? '');
+    if (encoded) {
+      for (const key of encoded) {
+        const v = input[key];
+        if (typeof v !== 'string') continue;
+        try {
+          input[key] = JSON.parse(v);
+        } catch {
+          /* leave the string: the tool's schema validation will tell the model what is wrong */
+        }
+      }
     }
     content.push({
       type: 'tool_use',
@@ -420,6 +483,22 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
 
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
+/**
+ * MindGate is a gateway in front of Ollama and wraps upstream errors in its own 5xx. A deterministic
+ * upstream 4xx (e.g. Ollama failing to parse a generated tool call) must NOT be retried as if it were
+ * a transient outage, and must read as what it is. Returns the status to treat the response as.
+ */
+export function effectiveStatus(flavor: CompatFlavor, status: number, body: string): number {
+  if (flavor !== 'mindgate' || status < 500) return status;
+  const m = /\b(?:error|status)\W{0,3}(4\d\d)\b/i.exec(body) ?? /\b(4\d\d)\s+(?:bad request|unprocessable)/i.exec(body);
+  if (m) return Number(m[1]);
+  if (TOOL_PARSE_ERROR.test(body)) return 400;
+  return status;
+}
+
+/** Ollama / llama.cpp messages for a generated tool call that is not valid JSON. */
+const TOOL_PARSE_ERROR = /looks like object|can'?t find closing|error parsing tool call|invalid tool call|failed to parse.*tool/i;
+
 function linkSignals(external: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`request timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -463,8 +542,30 @@ export class OpenAiCompatClient implements LlmClient {
         ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       };
 
-      const json = (await this.post('/chat/completions', body, options?.signal)) as OaiResponse;
-      return fromChatResponse(json, params.model, ctx, this.opts.flavor);
+      try {
+        const json = (await this.post('/chat/completions', body, options?.signal)) as OaiResponse;
+        return fromChatResponse(json, params.model, ctx, this.opts.flavor);
+      } catch (err) {
+        // A local model that cannot produce valid tool-call JSON must not kill the whole chat:
+        // answer once without tools and say so, instead of surfacing a raw gateway error.
+        if (
+          this.opts.flavor === 'mindgate' &&
+          tools.length > 0 &&
+          err instanceof ProviderHttpError &&
+          err.status === 400 &&
+          TOOL_PARSE_ERROR.test(err.message)
+        ) {
+          const { tools: _t, tool_choice: _c, ...bare } = body as typeof body & { tool_choice?: string };
+          const json = (await this.post('/chat/completions', bare, options?.signal)) as OaiResponse;
+          const msg = fromChatResponse(json, params.model, ctx, this.opts.flavor);
+          const note = '_(This local model could not produce a valid tool call, so it answered without tools. Pick a larger model for tool use.)_\n\n';
+          const first = msg.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
+          if (first) first.text = note + first.text;
+          else msg.content.unshift({ type: 'text', text: note.trim(), citations: null } as Anthropic.TextBlock);
+          return msg;
+        }
+        throw err;
+      }
     },
   };
 
@@ -493,12 +594,14 @@ export class OpenAiCompatClient implements LlmClient {
         });
         if (res.ok) return await res.json();
 
-        if (RETRYABLE.has(res.status) && attempt < maxRetries && !external?.aborted) {
+        const errBody = await res.text();
+        const status = effectiveStatus(this.opts.flavor, res.status, errBody);
+        if (RETRYABLE.has(status) && attempt < maxRetries && !external?.aborted) {
           const retryAfter = Number(res.headers.get('retry-after'));
           await this.sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 30) * 1000 : 1000 * 2 ** attempt);
           continue;
         }
-        throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 500)));
+        throw new ProviderHttpError(this.opts.flavor, status, this.redact(errBody.slice(0, 500)));
       } finally {
         cleanup();
       }
