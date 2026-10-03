@@ -787,6 +787,10 @@ export function createArtifact(
   return result;
 }
 
+export function getArtifactsTotalBytes(db: Database.Database): number {
+  return (db.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS total FROM artifacts`).get() as { total: number }).total;
+}
+
 export function listArtifacts(
   db: Database.Database,
   conversationId?: string,

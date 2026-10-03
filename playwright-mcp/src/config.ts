@@ -15,10 +15,6 @@ export interface PlaywrightConfig {
   quarantineMaxInputChars: number;
   /** Request timeout for Playwright navigation in ms. Default 30000. */
   navTimeoutMs: number;
-  /** Directory for the persistent browser profile (cookies/localStorage survive across
-   * sessions/restarts). MUST be a volume mounted ONLY into this container — never into
-   * the code sandbox, which must never be able to read a logged-in session's cookies.
-   * Default './profile' (relative to the container's cwd — mount a named volume there). */
   /** Max concurrent browser sessions (tabs). Sessions beyond this are refused until an
    * idle one is reclaimed. Default 4 — a Pi-sized budget, override for beefier hardware. */
   maxSessions: number;

@@ -19,6 +19,7 @@ import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
+import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
   openDb,
   runMigrations,
@@ -55,7 +56,7 @@ import {
   detachSkill,
   setProviderWarnLimit,
   getProviderLimit,
-  createArtifact,
+  createArtifact, getArtifactsTotalBytes,
   listArtifacts,
   getArtifact,
   deleteArtifact,
@@ -887,13 +888,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     res.json({ artifacts: listArtifacts(db, req.params.id) });
   });
 
-  app.post('/api/artifacts', express.raw({ limit: '50mb', type: '*/*' }), (req, res) => {
+  // Pi-sized limits: one upload is buffered in RAM, and the whole store is capped.
+  const artifactMaxBytes = Number(process.env['ARTIFACT_MAX_BYTES'] ?? 25 * 1024 * 1024);
+  const artifactQuotaBytes = Number(process.env['ARTIFACT_QUOTA_BYTES'] ?? 2 * 1024 * 1024 * 1024);
+
+  app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), (req, res) => {
     const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
-    const filename = typeof req.query['filename'] === 'string' ? path.basename(req.query['filename']) : 'artifact';
+    const filename = sanitizeFilename(typeof req.query['filename'] === 'string' ? req.query['filename'] : 'artifact');
     const mimeType = req.headers['content-type'] ?? 'application/octet-stream';
     const source = typeof req.query['source'] === 'string' ? req.query['source'] : 'upload';
-    const body = req.body as Buffer;
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
 
+    if (getArtifactsTotalBytes(db) + body.length > artifactQuotaBytes) {
+      res.status(413).json({ error: 'artifact storage quota exceeded — delete some artifacts first' });
+      return;
+    }
     fs.mkdirSync(artifactsDir, { recursive: true });
 
     const artifact = createArtifact(db, {
@@ -922,8 +931,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
     const filePath = path.join(artifactsDir, artifact.id + '_' + artifact.filename);
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'artifact file not found on disk' }); return; }
-    res.setHeader('Content-Type', artifact.mimeType);
-    res.setHeader('Content-Disposition', `inline; filename="${artifact.filename}"`);
+    // Never serve a client-chosen MIME type from the app's origin (see artifact-http.ts).
+    const policy = servePolicy(artifact.mimeType);
+    res.setHeader('Content-Type', policy.contentType);
+    res.setHeader('Content-Disposition', contentDisposition(policy.inline ? 'inline' : 'attachment', artifact.filename));
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    if (policy.sandbox) res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
     res.sendFile(filePath);
   });
 
