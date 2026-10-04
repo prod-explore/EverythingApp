@@ -16,7 +16,7 @@ import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, type GazetaField } from './gazeta.js';
+import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
@@ -62,6 +62,12 @@ import {
   deleteArtifact,
   listSubagentRuns,
   getSubagentRun,
+  createProject,
+  listProjects,
+  getProject,
+  updateProject,
+  deleteProject,
+  listProjectConversations,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -216,7 +222,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   console.log(`[tools] loaded ${registry.toAnthropicTools().length} tools from MCP`);
 
   // ─── Shared services ──────────────────────────────────────────────────────
-  const approvalGate = new WebApprovalGate();
+  const approvalGate = new WebApprovalGate(db);
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
 
@@ -231,20 +237,29 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     return [
       {
         definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.Tool,
-        handler: async input => {
+        handler: async (input, ctx) => {
           const title = isString(input.title) ? input.title.trim() : '';
           const description = isString(input.description) ? input.description.trim() : '';
           if (!title || !description) {
             return { text: 'request_human_input needs non-empty "title" and "description" strings.', isError: true };
           }
-          const text = handleRequestHumanInput(db, convId, {
+          const timeoutSeconds = typeof input.timeout_seconds === 'number' && input.timeout_seconds > 0
+            ? input.timeout_seconds
+            : undefined;
+          const { itemId, message } = handleRequestHumanInput(db, convId, {
             title,
             description,
             choices: Array.isArray(input.choices) ? input.choices.filter(isString) : undefined,
             fields: Array.isArray(input.fields) ? (input.fields as GazetaField[]) : undefined,
+            timeout_seconds: timeoutSeconds,
           });
-          sse.emitAll('gazeta:new', { type: 'agent_question' });
-          return { text };
+          sse.emitAll('gazeta:new', { type: 'agent_question', itemId });
+          // Block the agent turn until the user responds (or timeout/abort).
+          const response = await awaitHumanInput(itemId, ctx.signal, timeoutSeconds);
+          if (response === null) {
+            return { text: `No response received within the ${timeoutSeconds}s timeout. Continue without the answer or ask again later.` };
+          }
+          return { text: `User responded: ${JSON.stringify(response)}` };
         },
       },
       {
@@ -411,6 +426,58 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     res.json({ connectors: data });
   });
 
+  // ─── Projects ─────────────────────────────────────────────────────────────
+  app.get('/api/projects', (_req, res) => {
+    res.json({ projects: listProjects(db) });
+  });
+
+  app.post('/api/projects', (req, res) => {
+    const { name, description } = req.body ?? {};
+    if (typeof name !== 'string' || !name.trim()) {
+      res.status(400).json({ error: 'expected { name: string, description?: string }' });
+      return;
+    }
+    const project = createProject(db, { name: name.trim(), description });
+    res.status(201).json(project);
+  });
+
+  app.get('/api/projects/:id', (req, res) => {
+    const project = getProject(db, req.params.id);
+    if (!project) { res.status(404).json({ error: 'project not found' }); return; }
+    res.json(project);
+  });
+
+  app.patch('/api/projects/:id', (req, res) => {
+    const ok = updateProject(db, req.params.id, req.body ?? {});
+    if (!ok) { res.status(404).json({ error: 'project not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/projects/:id', (req, res) => {
+    const ok = deleteProject(db, req.params.id);
+    if (!ok) { res.status(404).json({ error: 'project not found' }); return; }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/projects/:id/conversations', (req, res) => {
+    const project = getProject(db, req.params.id);
+    if (!project) { res.status(404).json({ error: 'project not found' }); return; }
+    res.json({ conversations: listProjectConversations(db, req.params.id) });
+  });
+
+  // ─── Approval Grants ──────────────────────────────────────────────────────
+  app.get('/api/approval/grants', (req, res) => {
+    const { conversationId, projectId, scope, toolLabel } = req.query as Record<string, string | undefined>;
+    const grants = approvalGate.listGrants({ conversationId, projectId, scope });
+    res.json({ grants });
+  });
+
+  app.delete('/api/approval/grants/:id', (req, res) => {
+    const ok = approvalGate.revokeGrant(req.params.id);
+    if (!ok) { res.status(404).json({ error: 'grant not found' }); return; }
+    res.json({ ok: true });
+  });
+
   // ─── Conversations ────────────────────────────────────────────────────────
   app.get('/api/conversations', (_req, res) => {
     res.json({ conversations: listConversations(db) });
@@ -537,7 +604,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             signal: controller.signal,
             conversationId: convId,
             confirm: async (label, args) => {
-              const approved = await approvalGate.confirm(convId, label, args, controller.signal);
+              const approved = await approvalGate.confirm(convId, label, args, controller.signal, {
+                projectId: conv.projectId ?? undefined,
+                modelId: effectiveModel,
+              });
               sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
               return approved;
             },
@@ -783,15 +853,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.post('/api/approve', (req, res) => {
-    const { id, approved, scope } = req.body ?? {};
+    const { id, approved, scope, projectId, subjectType, subjectId } = req.body ?? {};
     if (typeof id !== 'string' || typeof approved !== 'boolean') {
-      res.status(400).json({ error: 'expected { id: string, approved: boolean, scope?: "once"|"chat"|"always" }' });
+      res.status(400).json({ error: 'expected { id: string, approved: boolean, scope?: "once"|"chat"|"project"|"always", projectId?: string, subjectType?: "model"|"skill", subjectId?: string }' });
       return;
     }
     // Validate scope, fall back to 'once' for anything unrecognised or missing.
-    const validScopes: ApprovalScope[] = ['once', 'chat', 'always'];
+    const validScopes: ApprovalScope[] = ['once', 'chat', 'project', 'always'];
     const resolvedScope: ApprovalScope = validScopes.includes(scope) ? scope as ApprovalScope : 'once';
-    const ok = approvalGate.resolve(id, approved, resolvedScope);
+    const ok = approvalGate.resolve(id, approved, resolvedScope, {
+      projectId: typeof projectId === 'string' ? projectId : undefined,
+      subjectType: subjectType === 'model' || subjectType === 'skill' ? subjectType : undefined,
+      subjectId: typeof subjectId === 'string' ? subjectId : undefined,
+    });
     if (!ok) { res.status(404).json({ error: 'no such pending approval' }); return; }
     res.json({ ok: true });
   });
@@ -851,8 +925,21 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.post('/api/gazeta/:id/respond', (req, res) => {
-    const ok = respondToGazetaItem(db, req.params.id, req.body?.response ?? null);
+    const id = req.params.id;
+    const response = req.body?.response ?? null;
+
+    const items = listGazetaItems(db);
+    const item = items.find(i => i.id === id);
+    if (!item) { res.status(404).json({ error: 'item not found' }); return; }
+
+    const ok = respondToGazetaItem(db, id, response);
     if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
+
+    // Wake up a blocking agent turn if one is waiting
+    resolveHumanInput(id, response);
+    // Emit SSE so the chat UI updates (the card changes from pending to responded)
+    sse.emit(item.conversationId ?? '', 'gazeta:responded', { id, response });
+
     res.json({ ok: true });
   });
 

@@ -1,10 +1,12 @@
 import type { PropsWithChildren } from 'react';
 import { Sidebar } from './Sidebar';
-import type { ConversationSummary } from '../../types';
+import type { ConversationSummary, ProjectListItem } from '../../types';
 
 export function Layout({
   conversations,
+  projects,
   selectedId,
+  selectedProjectId,
   sidebarOpen,
   onSelect,
   onCreate,
@@ -12,11 +14,15 @@ export function Layout({
   onDelete,
   onOpenGazeta,
   onOpenSettings,
+  onCreateProject,
+  onSelectProject,
   gazetaCount,
   children,
 }: PropsWithChildren<{
   conversations: ConversationSummary[];
+  projects: ProjectListItem[];
   selectedId: string | null;
+  selectedProjectId: string | null;
   sidebarOpen: boolean;
   onSelect: (id: string) => void;
   onCreate: () => void;
@@ -24,6 +30,8 @@ export function Layout({
   onDelete: (id: string) => void;
   onOpenGazeta: () => void;
   onOpenSettings: () => void;
+  onCreateProject: () => void;
+  onSelectProject: (id: string) => void;
   gazetaCount: number;
 }>) {
   return (
@@ -31,13 +39,17 @@ export function Layout({
       <div className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} md:block`}>
         <Sidebar
           conversations={conversations}
+          projects={projects}
           selectedId={selectedId}
+          selectedProjectId={selectedProjectId}
           onSelect={onSelect}
           onCreate={onCreate}
           onRename={onRename}
           onDelete={onDelete}
           onOpenGazeta={onOpenGazeta}
           onOpenSettings={onOpenSettings}
+          onCreateProject={onCreateProject}
+          onSelectProject={onSelectProject}
           gazetaCount={gazetaCount}
         />
       </div>

@@ -45,6 +45,10 @@ export const REQUEST_HUMAN_INPUT_TOOL = {
           'Optional multi-field form: ask for several labelled values at once (e.g. name + reason). ' +
           'Takes priority over choices when both are present. Leave empty for a single free-form text input.',
       },
+      timeout_seconds: {
+        type: 'number',
+        description: 'Optional: seconds to wait before timing out. Default: wait indefinitely.',
+      },
     },
     required: ['title', 'description'],
   },
@@ -64,15 +68,15 @@ export interface GazetaField {
 export function handleRequestHumanInput(
   db: Database.Database,
   conversationId: string,
-  args: { title: string; description: string; choices?: string[]; fields?: GazetaField[] },
-): string {
+  args: { title: string; description: string; choices?: string[]; fields?: GazetaField[]; timeout_seconds?: number },
+): { itemId: string; message: string } {
   const inputSchema = args.fields?.length
     ? { type: 'fields', fields: args.fields }
     : args.choices?.length
       ? { type: 'choice', choices: args.choices }
       : { type: 'text' };
 
-  createGazetaItem(db, {
+  const itemId = createGazetaItem(db, {
     type: 'agent_question',
     conversationId,
     title: args.title,
@@ -80,7 +84,10 @@ export function handleRequestHumanInput(
     inputSchema,
   });
 
-  return "Your question has been queued in the user's Gazeta inbox. Continue with the rest of the task if possible, or let the user know you're waiting.";
+  return {
+    itemId,
+    message: "Your question has been queued in the user's Gazeta inbox. The agent will wait for your response before continuing.",
+  };
 }
 
 /**
@@ -139,5 +146,80 @@ export async function generateDailySummary(
     type: 'daily_summary',
     title: `Daily Digest — ${pending.length} pending items`,
     description: summaryText,
+  });
+}
+
+// ─── Blocking mode: agent waits for human response ───────────────────────────
+
+/**
+ * In-process registry of pending human-input promises.
+ * Key = gazeta item ID, Value = { resolve, timer? }
+ * When /api/gazeta/:id/respond is called, the server looks up this map
+ * and resolves the matching promise, unblocking the agent turn.
+ */
+const pendingHumanInputs = new Map<
+  string,
+  { resolve: (response: unknown) => void; timer?: ReturnType<typeof setTimeout> }
+>();
+
+/**
+ * Called by server.ts when the user responds to a gazeta item.
+ * Resolves the blocking Promise in the agent turn (if any).
+ * Returns true if a blocking turn was waiting, false if the item was async.
+ */
+export function resolveHumanInput(itemId: string, response: unknown): boolean {
+  const pending = pendingHumanInputs.get(itemId);
+  if (!pending) return false;
+  if (pending.timer) clearTimeout(pending.timer);
+  pendingHumanInputs.delete(itemId);
+  pending.resolve(response);
+  return true;
+}
+
+/**
+ * Parks the current agent turn until the user responds via Gazeta.
+ * Returns the user's response (parsed from the gazeta item).
+ * If timeoutSeconds is set and expires, resolves with null (agent gets a timeout message).
+ * If the AbortSignal fires (kill switch), rejects with an abort error.
+ */
+export function awaitHumanInput(
+  itemId: string,
+  signal?: AbortSignal,
+  timeoutSeconds?: number,
+): Promise<unknown> {
+  return new Promise<unknown>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('Turn aborted by user (kill switch)'));
+      return;
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      pendingHumanInputs.delete(itemId);
+    };
+
+    const onAbort = () => {
+      cleanup();
+      reject(new Error('Turn aborted by user (kill switch)'));
+    };
+
+    if (timeoutSeconds) {
+      timer = setTimeout(() => {
+        signal?.removeEventListener('abort', onAbort);
+        pendingHumanInputs.delete(itemId);
+        resolve(null); // null = timeout, server.ts will format the tool_result
+      }, timeoutSeconds * 1000);
+    }
+
+    signal?.addEventListener('abort', onAbort, { once: true });
+    pendingHumanInputs.set(itemId, {
+      resolve: (response) => {
+        signal?.removeEventListener('abort', onAbort);
+        cleanup();
+        resolve(response);
+      },
+      timer,
+    });
   });
 }

@@ -107,7 +107,42 @@ export interface TurnState {
  * How broadly a single approval grants future auto-approval — mirrors
  * web-approval.ts's ApprovalScope on the backend.
  */
-export type ApprovalScope = 'once' | 'chat' | 'always';
+export type ApprovalScope = 'once' | 'chat' | 'project' | 'always';
+
+// ─── N1: Projects ─────────────────────────────────────────────────────────
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  workspaceVolume: string | null;
+  policy: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  conversationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+// ─── N1: Approval Grants ──────────────────────────────────────────────────
+
+export interface ApprovalGrantRow {
+  id: string;
+  toolLabel: string;
+  scope: 'chat' | 'project' | 'always';
+  subjectType: 'model' | 'skill' | null;
+  subjectId: string | null;
+  conversationId: string | null;
+  projectId: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+}
 
 /** A user-defined reusable prompt bundle — Phase 2. */
 export interface Skill {

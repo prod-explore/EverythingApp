@@ -212,6 +212,63 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_subagent_conv ON subagent_runs(conversation_id, started_at);
   `);
 
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      name TEXT NOT NULL,
+      description TEXT,
+      workspace_volume TEXT,
+      policy TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS project_repos (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      owner TEXT NOT NULL,
+      repo TEXT NOT NULL,
+      default_branch TEXT NOT NULL DEFAULT 'main',
+      push_mode TEXT NOT NULL DEFAULT 'ask',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE(project_id, owner, repo)
+    );
+  `);
+
+  if (!columnExists(db, 'conversations', 'project_id')) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL`);
+  }
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_conv_project ON conversations(project_id);
+
+    CREATE TABLE IF NOT EXISTS approval_grants (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      tool_label TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'always',
+      subject_type TEXT,
+      subject_id TEXT,
+      conversation_id TEXT,
+      project_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_grants_tool ON approval_grants(tool_label);
+    CREATE INDEX IF NOT EXISTS idx_grants_conv ON approval_grants(conversation_id);
+    CREATE INDEX IF NOT EXISTS idx_grants_proj ON approval_grants(project_id);
+
+    CREATE TABLE IF NOT EXISTS approval_audit (
+      id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
+      grant_id TEXT,
+      action TEXT NOT NULL,
+      tool_label TEXT NOT NULL,
+      tool_args TEXT,
+      conversation_id TEXT,
+      run_id TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_audit_tool ON approval_audit(tool_label, created_at);
+  `);
 
   // Seed default settings
   const seedSetting = db.prepare(
@@ -226,6 +283,7 @@ export function runMigrations(db: Database.Database): void {
 
 export interface ConversationRow {
   id: string;
+  projectId: string | null;
   title: string;
   systemPrompt: string | null;
   model: string | null;
@@ -236,6 +294,7 @@ export interface ConversationRow {
 
 export interface ConversationListItem {
   id: string;
+  projectId: string | null;
   title: string;
   updatedAt: string;
   messageCount: number;
@@ -243,15 +302,16 @@ export interface ConversationListItem {
 
 export function createConversation(
   db: Database.Database,
-  opts: { title?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent' } = {},
+  opts: { title?: string; projectId?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent' } = {},
 ): { id: string } {
   const stmt = db.prepare(`
-    INSERT INTO conversations (title, system_prompt, model, sandbox_enabled, kind)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO conversations (title, project_id, system_prompt, model, sandbox_enabled, kind)
+    VALUES (?, ?, ?, ?, ?, ?)
     RETURNING id
   `);
   const row = stmt.get(
     opts.title ?? 'New conversation',
+    opts.projectId ?? null,
     opts.systemPrompt ?? null,
     opts.model ?? null,
     opts.sandboxEnabled ? 1 : 0,
@@ -264,7 +324,7 @@ export function listConversations(db: Database.Database): ConversationListItem[]
   return (
     db
       .prepare(
-        `SELECT c.id, c.title, c.updated_at as updatedAt,
+        `SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt,
           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as messageCount
          FROM conversations c
          WHERE c.kind = 'chat'
@@ -277,14 +337,15 @@ export function listConversations(db: Database.Database): ConversationListItem[]
 export function getConversation(db: Database.Database, id: string): ConversationRow | null {
   const row = db
     .prepare(
-      `SELECT id, title, system_prompt as systemPrompt, model,
+      `SELECT id, project_id as projectId, title, system_prompt as systemPrompt, model,
               sandbox_enabled as sandboxEnabled, created_at as createdAt, updated_at as updatedAt
        FROM conversations WHERE id = ?`,
     )
-    .get(id) as ({ id: string; title: string; systemPrompt: string | null; model: string | null; sandboxEnabled: number; createdAt: string; updatedAt: string }) | undefined;
+    .get(id) as ({ id: string; projectId: string | null; title: string; systemPrompt: string | null; model: string | null; sandboxEnabled: number; createdAt: string; updatedAt: string }) | undefined;
   if (!row) return null;
   return {
     id: row.id,
+    projectId: row.projectId,
     title: row.title,
     systemPrompt: row.systemPrompt,
     model: row.model,
@@ -297,11 +358,12 @@ export function getConversation(db: Database.Database, id: string): Conversation
 export function updateConversation(
   db: Database.Database,
   id: string,
-  patch: { title?: string; systemPrompt?: string | null; model?: string | null; sandboxEnabled?: boolean },
+  patch: { title?: string; projectId?: string | null; systemPrompt?: string | null; model?: string | null; sandboxEnabled?: boolean },
 ): boolean {
   const sets: string[] = ["updated_at = datetime('now')"];
   const values: unknown[] = [];
   if (patch.title !== undefined) { sets.push('title = ?'); values.push(patch.title); }
+  if (patch.projectId !== undefined) { sets.push('project_id = ?'); values.push(patch.projectId); }
   if (patch.systemPrompt !== undefined) { sets.push('system_prompt = ?'); values.push(patch.systemPrompt); }
   if (patch.model !== undefined) { sets.push('model = ?'); values.push(patch.model); }
   if (patch.sandboxEnabled !== undefined) { sets.push('sandbox_enabled = ?'); values.push(patch.sandboxEnabled ? 1 : 0); }
@@ -678,6 +740,214 @@ export function attachSkill(db: Database.Database, conversationId: string, skill
 export function detachSkill(db: Database.Database, conversationId: string, skillId: string): boolean {
   const result = db.prepare(`DELETE FROM conversation_skills WHERE conversation_id = ? AND skill_id = ?`).run(conversationId, skillId);
   return result.changes > 0;
+}
+
+// ─── Projects ────────────────────────────────────────────────────────────────
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  description: string | null;
+  workspaceVolume: string | null;
+  policy: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectListItem {
+  id: string;
+  name: string;
+  description: string | null;
+  conversationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function createProject(
+  db: Database.Database,
+  opts: { name: string; description?: string },
+): ProjectRow {
+  const row = db.prepare(`
+    INSERT INTO projects (name, description)
+    VALUES (?, ?)
+    RETURNING *
+  `).get(opts.name, opts.description ?? null) as Record<string, unknown>;
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    description: row.description as string | null,
+    workspaceVolume: row.workspace_volume as string | null,
+    policy: JSON.parse(row.policy as string),
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export function listProjects(db: Database.Database): ProjectListItem[] {
+  const rows = db.prepare(`
+    SELECT p.id, p.name, p.description, p.created_at as createdAt, p.updated_at as updatedAt,
+           (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) as conversationCount
+    FROM projects p
+    ORDER BY p.updated_at DESC
+  `).all() as Array<{ id: string; name: string; description: string | null; createdAt: string; updatedAt: string; conversationCount: number }>;
+  return rows;
+}
+
+export function getProject(db: Database.Database, id: string): ProjectRow | null {
+  const row = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  if (!row) return null;
+  return {
+    id: row.id as string,
+    name: row.name as string,
+    description: row.description as string | null,
+    workspaceVolume: row.workspace_volume as string | null,
+    policy: JSON.parse(row.policy as string),
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export function updateProject(
+  db: Database.Database,
+  id: string,
+  patch: { name?: string; description?: string; policy?: Record<string, unknown> },
+): boolean {
+  const sets: string[] = ["updated_at = datetime('now')"];
+  const values: unknown[] = [];
+  if (patch.name !== undefined) { sets.push('name = ?'); values.push(patch.name); }
+  if (patch.description !== undefined) { sets.push('description = ?'); values.push(patch.description); }
+  if (patch.policy !== undefined) { sets.push('policy = ?'); values.push(JSON.stringify(patch.policy)); }
+  
+  if (sets.length === 1) return false;
+  values.push(id);
+  const result = db.prepare(`UPDATE projects SET ${sets.join(', ')} WHERE id = ?`).run(...values);
+  return result.changes > 0;
+}
+
+export function deleteProject(db: Database.Database, id: string): boolean {
+  return db.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+}
+
+export function listProjectConversations(db: Database.Database, projectId: string): ConversationListItem[] {
+  return db.prepare(`
+    SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt,
+      (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as messageCount
+    FROM conversations c
+    WHERE c.project_id = ? AND c.kind = 'chat'
+    ORDER BY c.updated_at DESC
+  `).all(projectId) as ConversationListItem[];
+}
+
+// ─── Approval Grants ──────────────────────────────────────────────────────────
+
+export interface ApprovalGrantRow {
+  id: string;
+  toolLabel: string;
+  scope: 'chat' | 'project' | 'always';
+  subjectType: 'model' | 'skill' | null;
+  subjectId: string | null;
+  conversationId: string | null;
+  projectId: string | null;
+  createdAt: string;
+  expiresAt: string | null;
+}
+
+export function createApprovalGrant(
+  db: Database.Database,
+  grant: Omit<ApprovalGrantRow, 'id' | 'createdAt'>,
+): ApprovalGrantRow {
+  const row = db.prepare(`
+    INSERT INTO approval_grants (tool_label, scope, subject_type, subject_id, conversation_id, project_id, expires_at)
+    VALUES (@toolLabel, @scope, @subjectType, @subjectId, @conversationId, @projectId, @expiresAt)
+    RETURNING *
+  `).get(grant) as Record<string, unknown>;
+  return {
+    id: row.id as string,
+    toolLabel: row.tool_label as string,
+    scope: row.scope as 'chat' | 'project' | 'always',
+    subjectType: row.subject_type as 'model' | 'skill' | null,
+    subjectId: row.subject_id as string | null,
+    conversationId: row.conversation_id as string | null,
+    projectId: row.project_id as string | null,
+    createdAt: row.created_at as string,
+    expiresAt: row.expires_at as string | null,
+  };
+}
+
+export function listApprovalGrants(
+  db: Database.Database,
+  filter?: { conversationId?: string; projectId?: string; scope?: string; toolLabel?: string },
+): ApprovalGrantRow[] {
+  let sql = `SELECT * FROM approval_grants`;
+  const conditions: string[] = [];
+  const values: string[] = [];
+  
+  if (filter?.conversationId) { conditions.push('conversation_id = ?'); values.push(filter.conversationId); }
+  if (filter?.projectId) { conditions.push('project_id = ?'); values.push(filter.projectId); }
+  if (filter?.scope) { conditions.push('scope = ?'); values.push(filter.scope); }
+  if (filter?.toolLabel) { conditions.push('tool_label = ?'); values.push(filter.toolLabel); }
+  
+  if (conditions.length > 0) sql += ` WHERE ` + conditions.join(' AND ');
+  sql += ` ORDER BY created_at DESC`;
+  
+  const rows = db.prepare(sql).all(...values) as Record<string, unknown>[];
+  return rows.map(row => ({
+    id: row.id as string,
+    toolLabel: row.tool_label as string,
+    scope: row.scope as 'chat' | 'project' | 'always',
+    subjectType: row.subject_type as 'model' | 'skill' | null,
+    subjectId: row.subject_id as string | null,
+    conversationId: row.conversation_id as string | null,
+    projectId: row.project_id as string | null,
+    createdAt: row.created_at as string,
+    expiresAt: row.expires_at as string | null,
+  }));
+}
+
+export function deleteApprovalGrant(db: Database.Database, id: string): boolean {
+  return db.prepare(`DELETE FROM approval_grants WHERE id = ?`).run(id).changes > 0;
+}
+
+export function findMatchingGrant(
+  db: Database.Database,
+  toolLabel: string,
+  opts?: { conversationId?: string; projectId?: string; modelId?: string; skillId?: string }
+): ApprovalGrantRow | null {
+  const grants = listApprovalGrants(db, { toolLabel });
+  
+  for (const grant of grants) {
+    if (grant.expiresAt && new Date(grant.expiresAt) < new Date()) continue;
+    
+    let matches = false;
+    if (grant.scope === 'always') matches = true;
+    else if (grant.scope === 'project' && grant.projectId === opts?.projectId) matches = true;
+    else if (grant.scope === 'chat' && grant.conversationId === opts?.conversationId) matches = true;
+    
+    if (matches) {
+      if (grant.subjectType === 'model' && grant.subjectId !== opts?.modelId) matches = false;
+      if (grant.subjectType === 'skill' && grant.subjectId !== opts?.skillId) matches = false;
+    }
+    
+    if (matches) return grant;
+  }
+  return null;
+}
+
+export function logApprovalAudit(
+  db: Database.Database,
+  entry: { grantId?: string; action: string; toolLabel: string; toolArgs?: string; conversationId?: string; runId?: string },
+): void {
+  db.prepare(`
+    INSERT INTO approval_audit (grant_id, action, tool_label, tool_args, conversation_id, run_id)
+    VALUES (@grantId, @action, @toolLabel, @toolArgs, @conversationId, @runId)
+  `).run({
+    grantId: entry.grantId ?? null,
+    action: entry.action,
+    toolLabel: entry.toolLabel,
+    toolArgs: entry.toolArgs ?? null,
+    conversationId: entry.conversationId ?? null,
+    runId: entry.runId ?? null,
+  });
 }
 
 // ─── Phase 3: provider keys / limits / usage / tool-call meta ────────────────

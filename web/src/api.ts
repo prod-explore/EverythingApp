@@ -1,4 +1,5 @@
 import type {
+  ApprovalGrantRow,
   ApprovalScope,
   BatchJob,
   ConnectorInfo,
@@ -8,6 +9,8 @@ import type {
   OutgoingAttachment,
   ModelOption,
   PendingApproval,
+  ProjectListItem,
+  ProjectRow,
   ProviderId,
   ProvidersResponse,
   RawMessage,
@@ -296,4 +299,41 @@ export function testProviderKey(id: ProviderId): Promise<{ ok: boolean; error?: 
 
 export function setProviderLimit(id: ProviderId, warnUsdMonthly: number | null): Promise<{ ok: true }> {
   return request(`/api/providers/${id}/limits`, { method: 'PUT', body: JSON.stringify({ warnUsdMonthly }) });
+}
+
+// ─── N1: Projects ─────────────────────────────────────────────────────────────
+
+export function listProjects(): Promise<{ projects: ProjectListItem[] }> {
+  return request('/api/projects');
+}
+
+export function createProject(name: string, description?: string): Promise<ProjectRow> {
+  return request('/api/projects', { method: 'POST', body: JSON.stringify({ name, description }) });
+}
+
+export function updateProject(id: string, patch: { name?: string; description?: string }): Promise<{ ok: boolean }> {
+  return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export function deleteProject(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/projects/${id}`, { method: 'DELETE' });
+}
+
+export function listProjectConversations(id: string): Promise<{ conversations: ConversationSummary[] }> {
+  return request(`/api/projects/${id}/conversations`);
+}
+
+// ─── N1: Approval Grants ──────────────────────────────────────────────────────
+
+export function listApprovalGrants(filter?: { conversationId?: string; projectId?: string; scope?: string }): Promise<{ grants: ApprovalGrantRow[] }> {
+  const params = new URLSearchParams();
+  if (filter?.conversationId) params.set('conversationId', filter.conversationId);
+  if (filter?.projectId) params.set('projectId', filter.projectId);
+  if (filter?.scope) params.set('scope', filter.scope);
+  const qs = params.toString();
+  return request(`/api/approval/grants${qs ? `?${qs}` : ''}`);
+}
+
+export function revokeApprovalGrant(id: string): Promise<{ ok: boolean }> {
+  return request(`/api/approval/grants/${id}`, { method: 'DELETE' });
 }
