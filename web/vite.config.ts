@@ -6,9 +6,23 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    // Point the dev server at a backend on another port with API_TARGET=http://localhost:3100.
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/health': 'http://localhost:3000',
+      '/api': process.env.API_TARGET ?? 'http://localhost:3000',
+      '/health': process.env.API_TARGET ?? 'http://localhost:3000',
+    },
+  },
+  build: {
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [
+            { name: 'markdown', test: /node_modules[\/](react-markdown|remark|rehype|unified|micromark|mdast|hast|highlight\.js|lowlight|vfile|unist|property-information|space-separated|comma-separated|decode-named|character-|trim-lines|bail|trough|devlop|is-plain)/ },
+            { name: 'assistant-ui', test: /node_modules[\/]@assistant-ui/ },
+            { name: 'react', test: /node_modules[\/](react|react-dom|scheduler)[\/]/ },
+          ],
+        },
+      },
     },
   },
 })

@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
 import { createProject, getConversation, getToken, getTurnStatus, listProjects, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
-import { GazetaView } from './components/gazeta/GazetaView';
+const GazetaView = lazy(() => import('./components/gazeta/GazetaView').then(m => ({ default: m.GazetaView })));
 import { NewProjectModal } from './components/layout/NewProjectModal';
 import { ProjectSettingsModal } from './components/layout/ProjectSettingsModal';
 import { RightRail } from './components/layout/RightRail';
@@ -11,15 +11,16 @@ import type { SidebarView } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { Layout } from './components/layout/Layout';
 import { Login } from './components/Login';
-import { SettingsModal, type SettingsTab } from './components/settings/SettingsModal';
-import { BrowserPanel } from './components/browser/BrowserPanel';
-import { ArtifactsPanel } from './components/browser/ArtifactsPanel';
+import type { SettingsTab } from './components/settings/SettingsModal';
+const SettingsModal = lazy(() => import('./components/settings/SettingsModal').then(m => ({ default: m.SettingsModal })));
+const BrowserPanel = lazy(() => import('./components/browser/BrowserPanel').then(m => ({ default: m.BrowserPanel })));
+const ArtifactsPanel = lazy(() => import('./components/browser/ArtifactsPanel').then(m => ({ default: m.ArtifactsPanel })));
 import { useConversations } from './hooks/useConversations';
 import { GazetaContext, useGazetaStore } from './hooks/useGazeta';
-import { AgentsPanel } from './components/agents/AgentsPanel';
-import { ExplorerPanel } from './components/workspace/ExplorerPanel';
-import { SourceControlPanel } from './components/scm/SourceControlPanel';
-import { GitHubPanel } from './components/github/GitHubPanel';
+const AgentsPanel = lazy(() => import('./components/agents/AgentsPanel').then(m => ({ default: m.AgentsPanel })));
+const ExplorerPanel = lazy(() => import('./components/workspace/ExplorerPanel').then(m => ({ default: m.ExplorerPanel })));
+const SourceControlPanel = lazy(() => import('./components/scm/SourceControlPanel').then(m => ({ default: m.SourceControlPanel })));
+const GitHubPanel = lazy(() => import('./components/github/GitHubPanel').then(m => ({ default: m.GitHubPanel })));
 import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
@@ -316,6 +317,7 @@ function MainApp() {
           <aside className="fixed inset-x-0 bottom-0 z-40 flex h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-bg shadow-2xl md:static md:inset-auto md:z-auto md:h-auto md:w-[420px] md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none lg:w-[480px]">
             <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border md:hidden" aria-hidden="true" />
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              <Suspense fallback={<p className="px-3 py-4 text-center text-xs text-fg-tertiary">Loading…</p>}>
               {browserPanelOpen && (
                 <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
               )}
@@ -342,6 +344,7 @@ function MainApp() {
                   refreshTrigger={artifactRefresh}
                 />
               )}
+              </Suspense>
             </div>
           </aside>
           </>
@@ -364,11 +367,13 @@ function MainApp() {
         />
       )}
       {newProjectOpen && <NewProjectModal onSubmit={submitNewProject} onClose={() => setNewProjectOpen(false)} />}
+      <Suspense fallback={null}>
       {gazetaOpen && (
         <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} projects={projects} />
       )}
       <ApprovalBanner pending={approvals.pending} respond={approvals.respond} active={gazetaOpen || settingsOpen} />
       {settingsOpen && <SettingsModal key={settingsTab} initialTab={settingsTab} onClose={() => setSettingsOpen(false)} conversationId={selectedId ?? undefined} />}
+      </Suspense>
       {searchOpen && (
         <ConversationSearch conversations={conversations} onSelect={setSelectedId} onClose={() => setSearchOpen(false)} />
       )}
