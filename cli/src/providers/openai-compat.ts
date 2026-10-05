@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
-import type { LlmClient } from '../anthropic-loop.js';
+import type { LlmClient, MessageStreamLike } from '../anthropic-loop.js';
 import type { ModelInfo } from './registry.js';
 
 /**
@@ -570,7 +570,136 @@ export class OpenAiCompatClient implements LlmClient {
         throw err;
       }
     },
+    stream: (params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike => this.stream(params, options),
   };
+
+  /**
+   * N2b — real token streaming for OpenAI-compatible providers. Text deltas are emitted as Anthropic-style
+   * `content_block_delta` events as they arrive; text, reasoning and `tool_calls` deltas (by index, with
+   * arguments split across chunks) are accumulated and the final message goes through the same
+   * fromChatResponse() translation as the non-streaming path, so tool calls behave identically.
+   * Gemini stays non-streaming: its thought signatures arrive outside the delta format we can trust.
+   * Any HTTP error before the stream starts falls back to create() (retries, local-model fallback).
+   */
+  stream(params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike {
+    const listeners: Array<(e: Anthropic.MessageStreamEvent) => void> = [];
+    const emitText = (text: string) => {
+      const event = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as Anthropic.MessageStreamEvent;
+      for (const l of listeners) l(event);
+    };
+    const final = (async () => {
+      await Promise.resolve(); // let the caller attach listeners first
+      if (this.opts.flavor === 'gemini') return this.messages.create(params, options);
+      return this.streamOnce(params, options?.signal, emitText);
+    })();
+    return {
+      on(event: 'streamEvent', listener: (e: Anthropic.MessageStreamEvent) => void) {
+        if (event === 'streamEvent') listeners.push(listener);
+        return this;
+      },
+      finalMessage: () => final,
+    };
+  }
+
+  private async streamOnce(
+    params: Anthropic.MessageCreateParamsNonStreaming,
+    external: AbortSignal | undefined,
+    emitText: (text: string) => void,
+  ): Promise<Anthropic.Message> {
+    const info = this.opts.modelInfo(params.model);
+    const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
+    const tools = toChatTools(params.tools, ctx);
+    const body = {
+      model: this.opts.upstreamModel?.(params.model) ?? params.model,
+      messages: toChatMessages(params, ctx),
+      max_tokens: Math.max(params.max_tokens, info.minOutputTokens ?? 0),
+      stream: true,
+      stream_options: { include_usage: true },
+      ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
+    };
+    const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? 180_000);
+    try {
+      const res = await this.fetchImpl(`${this.opts.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', ...(this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {}) },
+        body: JSON.stringify(body),
+        signal,
+      });
+      const type = res.headers.get('content-type') ?? '';
+      if (!res.ok || !res.body) {
+        cleanup();
+        return this.messages.create(params, { signal: external });
+      }
+      // Some servers ignore stream:true and answer with plain JSON — accept that too.
+      if (!type.includes('event-stream')) return fromChatResponse((await res.json()) as OaiResponse, params.model, ctx, this.opts.flavor);
+
+      let text = '';
+      let reasoning = '';
+      let finish: string | null = null;
+      let id = '';
+      let model = '';
+      let usage: OaiResponse['usage'];
+      const calls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
+      const decoder = new TextDecoder();
+      const reader = res.body.getReader();
+      let buffer = '';
+      let done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        buffer += decoder.decode(chunk.value, { stream: true });
+        let nl: number;
+        while ((nl = buffer.indexOf('\n')) !== -1) {
+          const line = buffer.slice(0, nl).trim();
+          buffer = buffer.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          if (data === '[DONE]') { done = true; break; }
+          let evt: {
+            id?: string; model?: string; usage?: OaiResponse['usage'];
+            choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
+            error?: { message?: string };
+          };
+          try { evt = JSON.parse(data); } catch { continue; }
+          if (evt.error) throw new ProviderHttpError(this.opts.flavor, 502, this.redact(String(evt.error.message ?? 'stream error')));
+          if (evt.id) id = evt.id;
+          if (evt.model) model = evt.model;
+          if (evt.usage) usage = evt.usage;
+          const choice = evt.choices?.[0];
+          if (!choice) continue;
+          if (choice.finish_reason) finish = choice.finish_reason;
+          const d = choice.delta ?? {};
+          if (d.reasoning_content) reasoning += d.reasoning_content;
+          if (d.content) { text += d.content; emitText(d.content); }
+          for (const tc of d.tool_calls ?? []) {
+            const i = tc.index ?? calls.length;
+            calls[i] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
+            if (tc.id) calls[i]!.id = tc.id;
+            if (tc.function?.name) calls[i]!.function.name += tc.function.name;
+            if (tc.function?.arguments) calls[i]!.function.arguments += tc.function.arguments;
+          }
+        }
+      }
+      const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
+      const json = {
+        id, model: model || body.model,
+        choices: [{
+          index: 0,
+          finish_reason: finish ?? (toolCalls.length ? 'tool_calls' : 'stop'),
+          message: {
+            role: 'assistant',
+            content: text || null,
+            ...(reasoning ? { reasoning_content: reasoning } : {}),
+            ...(toolCalls.length ? { tool_calls: toolCalls } : {}),
+          },
+        }],
+        usage,
+      } as unknown as OaiResponse;
+      return fromChatResponse(json, params.model, ctx, this.opts.flavor);
+    } finally {
+      cleanup();
+    }
+  }
 
   /** Cheap authenticated call used by "Test key" in Settings. */
   async ping(): Promise<void> {
