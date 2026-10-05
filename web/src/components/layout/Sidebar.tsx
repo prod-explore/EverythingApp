@@ -4,13 +4,15 @@ import type { ConversationSummary, ProjectListItem } from '../../types';
 import { Button } from '../shared/Button';
 import { GazetaCounter } from '../gazeta/GazetaCounter';
 
-type SidebarView = 'chats' | 'projects';
+export type SidebarView = 'chats' | 'projects';
 
 export function Sidebar({
   conversations,
   projects,
   selectedId,
   selectedProjectId,
+  view,
+  onViewChange,
   onSelect,
   onCreate,
   onRename,
@@ -25,6 +27,8 @@ export function Sidebar({
   projects: ProjectListItem[];
   selectedId: string | null;
   selectedProjectId: string | null;
+  view: SidebarView;
+  onViewChange: (view: SidebarView) => void;
   onSelect: (id: string) => void;
   onCreate: (projectId?: string) => void;
   onRename: (id: string, title: string) => void;
@@ -35,7 +39,6 @@ export function Sidebar({
   onSelectProject: (id: string) => void;
   gazetaCount: number;
 }) {
-  const [view, setView] = useState<SidebarView>('chats');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
 
@@ -57,7 +60,7 @@ export function Sidebar({
       {/* View switcher */}
       <div className="flex border-b border-border">
         <button
-          onClick={() => setView('chats')}
+          onClick={() => onViewChange('chats')}
           className={`flex-1 py-2 text-xs font-medium transition-colors ${
             view === 'chats'
               ? 'border-b-2 border-fg text-fg'
@@ -67,7 +70,7 @@ export function Sidebar({
           Chats
         </button>
         <button
-          onClick={() => setView('projects')}
+          onClick={() => onViewChange('projects')}
           className={`flex-1 py-2 text-xs font-medium transition-colors ${
             view === 'projects'
               ? 'border-b-2 border-fg text-fg'

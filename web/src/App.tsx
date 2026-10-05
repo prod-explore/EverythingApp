@@ -4,6 +4,9 @@ import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
 import { GazetaView } from './components/gazeta/GazetaView';
+import { NewProjectModal } from './components/layout/NewProjectModal';
+import { RightRail } from './components/layout/RightRail';
+import type { SidebarView } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { Layout } from './components/layout/Layout';
 import { Login } from './components/Login';
@@ -54,6 +57,8 @@ function MainApp() {
   const [usage, setUsage] = useState('—');
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
   const refreshProjects = useCallback(async () => {
@@ -69,16 +74,12 @@ function MainApp() {
     void refreshProjects();
   }, [refreshProjects]);
 
-  async function handleCreateProject() {
-    const name = window.prompt('Project name')?.trim();
-    if (!name) return;
-    try {
-      const project = await createProject(name);
-      await refreshProjects();
-      setSelectedProjectId(project.id);
-    } catch {
-      // Best-effort, same as the other sidebar actions.
-    }
+  // Throws on failure so the modal can stay open and say so.
+  async function submitNewProject(name: string) {
+    const project = await createProject(name);
+    await refreshProjects();
+    setSelectedProjectId(project.id);
+    setNewProjectOpen(false);
   }
 
   // Clicking the open project again collapses it.
@@ -201,6 +202,11 @@ function MainApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen, browserPanelOpen, artifactsPanelOpen]);
 
+  function openProjectsView() {
+    setSidebarView('projects');
+    toggleSidebarCollapsed(); // only reachable from the collapsed rail, so this expands it
+  }
+
   function toggleSidebarCollapsed() {
     setSidebarCollapsed(prev => {
       const next = !prev;
@@ -234,7 +240,11 @@ function MainApp() {
       onCreate={handleCreate}
       onRename={renameConversation}
       onDelete={handleDelete}
-      onCreateProject={handleCreateProject}
+      onCreateProject={() => setNewProjectOpen(true)}
+      sidebarView={sidebarView}
+      onSidebarViewChange={setSidebarView}
+      onExpandSidebar={toggleSidebarCollapsed}
+      onOpenProjects={openProjectsView}
       onSelectProject={handleSelectProject}
       onOpenGazeta={() => setGazetaOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)}
@@ -248,7 +258,6 @@ function MainApp() {
         sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
         onSandboxToggle={handleSandboxToggle}
-        sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => (window.matchMedia('(min-width: 768px)').matches ? toggleSidebarCollapsed() : setSidebarOpen(o => !o))}
         onOpenBrowser={() => setBrowserPanelOpen(o => !o)}
         onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
@@ -286,8 +295,15 @@ function MainApp() {
             </div>
           </aside>
         )}
+        <RightRail
+          browserOpen={browserPanelOpen}
+          artifactsOpen={artifactsPanelOpen}
+          onToggleBrowser={() => setBrowserPanelOpen(o => !o)}
+          onToggleArtifacts={() => setArtifactsPanelOpen(o => !o)}
+        />
       </div>
 
+      {newProjectOpen && <NewProjectModal onSubmit={submitNewProject} onClose={() => setNewProjectOpen(false)} />}
       {gazetaOpen && (
         <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} />
       )}

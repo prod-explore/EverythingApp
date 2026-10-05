@@ -11,7 +11,6 @@ export function Header({
   sandboxEnabled,
   onModelChange,
   onSandboxToggle,
-  sidebarCollapsed,
   onToggleSidebar,
   onOpenBrowser,
   onOpenArtifacts,
@@ -27,7 +26,6 @@ export function Header({
   sandboxEnabled: boolean | undefined;
   onModelChange: (model: string) => void;
   onSandboxToggle: (enabled: boolean) => void;
-  sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onOpenBrowser: () => void;
   onOpenArtifacts: () => void;
@@ -36,7 +34,7 @@ export function Header({
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-border px-4 py-3">
-      <button onClick={onToggleSidebar} className={`text-fg-secondary hover:text-fg ${sidebarCollapsed ? '' : 'md:hidden'}`} aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)">
+      <button onClick={onToggleSidebar} className="text-fg-secondary hover:text-fg md:hidden" aria-label="Toggle sidebar">
         <Menu size={20} />
       </button>
       <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{title}</h1>
@@ -63,7 +61,7 @@ export function Header({
         onClick={onOpenBrowser}
         title={browserPanelOpen ? 'Hide browser view' : 'Show live browser view'}
         aria-label={browserPanelOpen ? 'Hide browser panel' : 'Open browser panel'}
-        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors ${
+        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors md:hidden ${
           browserPanelOpen
             ? 'border border-fg/30 text-fg'
             : 'border border-border text-fg-tertiary hover:text-fg-secondary'
@@ -77,7 +75,7 @@ export function Header({
         onClick={onOpenArtifacts}
         title={artifactsPanelOpen ? 'Hide artifacts' : 'Show artifacts'}
         aria-label={artifactsPanelOpen ? 'Hide artifacts panel' : 'Open artifacts panel'}
-        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors ${
+        className={`flex shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors md:hidden ${
           artifactsPanelOpen
             ? 'border border-fg/30 text-fg'
             : 'border border-border text-fg-tertiary hover:text-fg-secondary'

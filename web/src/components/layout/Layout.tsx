@@ -1,5 +1,6 @@
 import type { PropsWithChildren } from 'react';
-import { Sidebar } from './Sidebar';
+import { Sidebar, type SidebarView } from './Sidebar';
+import { SidebarRail } from './SidebarRail';
 import type { ConversationSummary, ProjectListItem } from '../../types';
 
 export function Layout({
@@ -9,6 +10,10 @@ export function Layout({
   selectedProjectId,
   sidebarOpen,
   sidebarCollapsed,
+  sidebarView,
+  onSidebarViewChange,
+  onExpandSidebar,
+  onOpenProjects,
   onSelect,
   onCreate,
   onRename,
@@ -25,8 +30,12 @@ export function Layout({
   selectedId: string | null;
   selectedProjectId: string | null;
   sidebarOpen: boolean;
-  /** Desktop only: hides the rail completely (mobile uses sidebarOpen). */
+  /** Desktop only: shrinks the sidebar to an icon rail (mobile uses sidebarOpen). */
   sidebarCollapsed: boolean;
+  sidebarView: SidebarView;
+  onSidebarViewChange: (view: SidebarView) => void;
+  onExpandSidebar: () => void;
+  onOpenProjects: () => void;
   onSelect: (id: string) => void;
   onCreate: (projectId?: string) => void;
   onRename: (id: string, title: string) => void;
@@ -45,6 +54,8 @@ export function Layout({
           projects={projects}
           selectedId={selectedId}
           selectedProjectId={selectedProjectId}
+          view={sidebarView}
+          onViewChange={onSidebarViewChange}
           onSelect={onSelect}
           onCreate={onCreate}
           onRename={onRename}
@@ -56,6 +67,18 @@ export function Layout({
           gazetaCount={gazetaCount}
         />
       </div>
+      {sidebarCollapsed && (
+        <div className="hidden md:block">
+          <SidebarRail
+            gazetaCount={gazetaCount}
+            onExpand={onExpandSidebar}
+            onCreate={() => onCreate()}
+            onOpenProjects={onOpenProjects}
+            onOpenGazeta={onOpenGazeta}
+            onOpenSettings={onOpenSettings}
+          />
+        </div>
+      )}
       <div className="relative flex min-w-0 flex-1 flex-col">{children}</div>
     </div>
   );
