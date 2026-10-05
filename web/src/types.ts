@@ -55,17 +55,48 @@ export type GazetaInputSchema =
   | { type: 'fields'; fields: GazetaField[] }
   | null;
 
+/** A report pin: the file as it was when the report was posted (artifactId = snapshot copy). */
+export interface GazetaAttachment {
+  path: string;
+  sha256?: string;
+  artifactId?: string;
+  error?: string;
+}
+
+export type GazetaItemType = 'agent_question' | 'report' | 'batch_result' | 'daily_summary';
+export type GazetaStatus = 'pending' | 'responded' | 'dismissed' | 'expired';
+
 export interface GazetaItem {
   id: string;
-  type: 'approval' | 'batch_result' | 'agent_question' | 'daily_summary';
+  type: GazetaItemType | 'approval';
   conversationId: string | null;
+  projectId: string | null;
+  runId: string | null;
+  /** Who asked: "assistant" for the chat agent, or a worker's label. */
+  agent: string | null;
+  urgent: boolean;
+  attachments: GazetaAttachment[] | null;
   title: string;
   description: string | null;
   inputSchema: unknown;
   response: unknown;
-  status: 'pending' | 'responded' | 'dismissed';
+  status: GazetaStatus;
   createdAt: string;
   respondedAt: string | null;
+}
+
+/** How an answer reached the agent: straight into its waiting tool call, or later as a chat/inbox message. */
+export type GazetaDelivery = 'tool_result' | 'message';
+
+export interface GazetaQuery {
+  status?: GazetaStatus;
+  conversationId?: string;
+  projectId?: string;
+  type?: string;
+  agent?: string;
+  /** Cursor: createdAt of the oldest item already loaded. */
+  before?: string;
+  limit?: number;
 }
 
 export interface BatchJob {
@@ -235,6 +266,44 @@ export interface ArtifactRow {
   sizeBytes: number;
   source: string;
   createdAt: string;
+}
+
+// ─── N6/N7: durable runs (Agents-lite) — mirrors cli/src/runs.ts ─────────────
+
+export type RunStatus = 'running' | 'waiting_input' | 'waiting_children' | 'done' | 'error' | 'aborted' | 'interrupted';
+
+export interface RunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  costUsd: number;
+}
+
+export interface RunRow {
+  id: string;
+  parentRunId: string | null;
+  rootRunId: string;
+  projectId: string | null;
+  conversationId: string | null;
+  /** Worker transcript conversation; null for root runs (their transcript is the chat itself). */
+  transcriptConversationId: string | null;
+  label: string;
+  model: string;
+  goal: string;
+  tools: string[];
+  depth: number;
+  status: RunStatus;
+  result: string | null;
+  error: string | null;
+  usage: RunUsage;
+  heartbeatAt: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+/** agent:budget_warning SSE payload. */
+export interface BudgetWarning {
+  rootRunId: string;
+  usage: RunUsage;
 }
 
 export interface SubagentRunSummary {

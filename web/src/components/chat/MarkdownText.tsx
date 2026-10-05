@@ -32,7 +32,10 @@ function extractText(node: unknown): string {
   return '';
 }
 
-export const MarkdownText: TextMessagePartComponent = ({ text }) => (
+export const MarkdownText: TextMessagePartComponent = ({ text }) => <MarkdownBody text={text} />;
+
+/** The same renderer outside assistant-ui's message-part context (Gazeta reports, agent transcripts). */
+export const MarkdownBody = ({ text }: { text: string }) => (
   <Markdown
     remarkPlugins={[remarkGfm]}
     rehypePlugins={[rehypeHighlight]}

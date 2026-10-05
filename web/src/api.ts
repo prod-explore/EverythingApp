@@ -5,7 +5,9 @@ import type {
   ConnectorInfo,
   Conversation,
   ConversationSummary,
+  GazetaDelivery,
   GazetaItem,
+  GazetaQuery,
   OutgoingAttachment,
   ModelOption,
   PendingApproval,
@@ -14,6 +16,7 @@ import type {
   ProviderId,
   ProvidersResponse,
   RawMessage,
+  RunRow,
   Skill,
   TurnState,
   UsageRange,
@@ -237,17 +240,45 @@ export function detachSkill(conversationId: string, skillId: string): Promise<{ 
 
 // ─── Gazeta ───────────────────────────────────────────────────────────────
 
-export function getGazetaItems(status?: string): Promise<{ items: GazetaItem[] }> {
-  const qs = status ? `?status=${encodeURIComponent(status)}` : '';
-  return request(`/api/gazeta${qs}`);
+/** Server order: urgent pending first, then newest. */
+export function getGazetaItems(query: GazetaQuery = {}): Promise<{ items: GazetaItem[] }> {
+  const params = new URLSearchParams();
+  for (const [k, v] of Object.entries(query)) if (v !== undefined && v !== '') params.set(k, String(v));
+  const qs = params.toString();
+  return request(`/api/gazeta${qs ? `?${qs}` : ''}`);
 }
 
-export function respondToGazetaItem(id: string, response: unknown): Promise<{ ok: true }> {
+/** Throws ApiError with status 409 when the item was already answered/dismissed/expired elsewhere. */
+export function respondToGazetaItem(id: string, response: unknown): Promise<{ ok: true; delivered: GazetaDelivery }> {
   return request(`/api/gazeta/${id}/respond`, { method: 'POST', body: JSON.stringify({ response }) });
 }
 
 export function dismissGazetaItem(id: string): Promise<{ ok: true }> {
   return request(`/api/gazeta/${id}/dismiss`, { method: 'POST' });
+}
+
+export function bulkDismissGazetaItems(ids: string[]): Promise<{ ok: true; dismissed: number }> {
+  return request('/api/gazeta/bulk-dismiss', { method: 'POST', body: JSON.stringify({ ids }) });
+}
+
+// ─── Runs / Agents (N6/N7) ────────────────────────────────────────────────
+
+export function listConversationRuns(conversationId: string): Promise<{ runs: RunRow[] }> {
+  return request(`/api/conversations/${conversationId}/runs`);
+}
+
+/** 404 for root runs (no separate transcript) — worker transcripts are written when the worker finishes. */
+export function getRunTranscript(runId: string): Promise<{ messages: RawMessage[] }> {
+  return request(`/api/runs/${runId}/transcript`);
+}
+
+export function stopRun(runId: string): Promise<{ ok: true }> {
+  return request(`/api/runs/${runId}/stop`, { method: 'POST' });
+}
+
+/** <img>/<a> can't send the Authorization header, so the token rides in the query (same as SSE). */
+export function artifactFileUrl(id: string): string {
+  return `/api/artifacts/${id}/file?token=${encodeURIComponent(getToken() ?? '')}`;
 }
 
 // ─── Batch jobs ───────────────────────────────────────────────────────────

@@ -24,6 +24,7 @@ export function Layout({
   onSelectProject,
   onEditProject,
   gazetaCount,
+  gazetaUrgent,
   children,
 }: PropsWithChildren<{
   conversations: ConversationSummary[];
@@ -47,6 +48,7 @@ export function Layout({
   onSelectProject: (id: string) => void;
   onEditProject: (id: string) => void;
   gazetaCount: number;
+  gazetaUrgent?: number;
 }>) {
   return (
     <div className="relative flex h-full">
@@ -68,12 +70,14 @@ export function Layout({
           onSelectProject={onSelectProject}
           onEditProject={onEditProject}
           gazetaCount={gazetaCount}
+          gazetaUrgent={gazetaUrgent}
         />
       </div>
       {sidebarCollapsed && (
         <div className="hidden md:block">
           <SidebarRail
             gazetaCount={gazetaCount}
+            gazetaUrgent={gazetaUrgent}
             onExpand={onExpandSidebar}
             onCreate={() => onCreate()}
             onOpenProjects={onOpenProjects}
