@@ -6,8 +6,8 @@ import { ok } from './types.js';
 export function registerBrowserClose(server: McpServer, pool: BrowserSessionPool): void {
   server.tool(
     'browser_close',
-    'Close this conversation\'s browser session. Login state (cookies) persists to next time ' +
-      'regardless — this just frees the tab slot. Not required at the end of a task; idle sessions ' +
+    'Close this conversation\'s browser session. The profile is ephemeral, so this also discards ' +
+      'its cookies, logins and any allowed downloads. Not required at the end of a task; idle sessions ' +
       'time out on their own, but call this when you know you\'re done to free the slot sooner.',
     {
       _conversation_id: z

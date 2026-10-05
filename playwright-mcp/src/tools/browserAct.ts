@@ -2,11 +2,11 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { PlaywrightConfig } from '../config.js';
 import type { BrowserSessionPool } from '../sessionPool.js';
-import { UrlBlockedError } from '../urlSafety.js';
-import { guardFor } from '../urlGuardFor.js';
+import { drainEvents } from '../browserContext.js';
 import { observePage } from '../observe.js';
-import { formatObservation } from './formatObservation.js';
-import { ok, fail } from './types.js';
+import { observationResult, UNTRUSTED_CONTENT_NOTICE } from './formatObservation.js';
+import { applyCallPolicy, checkTargetUrl, hiddenPolicyArgs, withDownloadPermission } from './policyArgs.js';
+import { fail } from './types.js';
 
 const ACTIONS = ['click', 'type', 'select', 'press', 'navigate'] as const;
 type Action = (typeof ACTIONS)[number];
@@ -22,7 +22,9 @@ export function registerBrowserAct(server: McpServer, config: PlaywrightConfig, 
       'sure the page hasn\'t changed since. `label` is REQUIRED and must be copied from that same ' +
       'observation line (e.g. the text after the [ref] in `[3] button: "Delete Account"` is ' +
       '`Delete Account`) — it\'s shown to the human if this action needs their approval, so a vague ' +
-      'or missing label makes that approval prompt useless to them.',
+      'or missing label makes that approval prompt useless to them. Downloads and file uploads are ' +
+      'blocked unless the user allowed them; navigations to domains outside the project policy fail. ' +
+      UNTRUSTED_CONTENT_NOTICE,
     {
       action: z.enum(ACTIONS).describe('Which kind of action to perform.'),
       ref: z
@@ -46,8 +48,9 @@ export function registerBrowserAct(server: McpServer, config: PlaywrightConfig, 
         .string()
         .optional()
         .describe('Internal: conversation ID for session isolation. Set by the orchestrator.'),
+      ...hiddenPolicyArgs,
     },
-    async ({ action, ref, value, label, _conversation_id }) => {
+    async ({ action, ref, value, label, _conversation_id, _policy, _allow_downloads }) => {
       const convId = _conversation_id ?? 'default';
       const session = pool.get(convId);
       if (!session) {
@@ -58,54 +61,61 @@ export function registerBrowserAct(server: McpServer, config: PlaywrightConfig, 
       if (invalid) return fail(invalid);
 
       pool.touch(convId);
-      const { page } = session;
+      const { page, state } = session;
+      applyCallPolicy(config, state, _policy);
 
       try {
-        if (action === 'navigate') {
-          try {
-            await guardFor(config).check(value!);
-          } catch (err) {
-            if (err instanceof UrlBlockedError) return fail(`Error: ${err.message}`);
-            throw err;
+        return await withDownloadPermission(state, _allow_downloads, async () => {
+          if (action === 'navigate') {
+            const blocked = await checkTargetUrl(config, state.policy, value!);
+            if (blocked) return fail(blocked);
+            await page.goto(value!, { waitUntil: 'domcontentloaded', timeout: config.navTimeoutMs });
+            pool.setCurrentUrl(convId, value!);
+          } else if (action === 'press' && ref === undefined) {
+            await page.keyboard.press(value!);
+          } else {
+            const locator = page.locator(`[data-ea-ref="${ref}"]`);
+            const count = await locator.count();
+            if (count === 0) {
+              return fail(
+                `Ref [${ref}] not found on the current page — it may be stale (the page changed since ` +
+                  `your last observation). Call browser_observe to get current refs, then retry.`,
+              );
+            }
+            switch (action) {
+              case 'click':
+                await locator.first().click({ timeout: config.navTimeoutMs });
+                break;
+              case 'type':
+                await locator.first().fill(value ?? '', { timeout: config.navTimeoutMs });
+                break;
+              case 'select':
+                await locator.first().selectOption(value ?? '', { timeout: config.navTimeoutMs });
+                break;
+              case 'press':
+                await locator.first().press(value!, { timeout: config.navTimeoutMs });
+                break;
+            }
+            pool.setCurrentUrl(convId, page.url());
           }
-          await page.goto(value!, { waitUntil: 'domcontentloaded', timeout: config.navTimeoutMs });
-          pool.setCurrentUrl(convId, value!);
-        } else if (action === 'press' && ref === undefined) {
-          await page.keyboard.press(value!);
-        } else {
-          const locator = page.locator(`[data-ea-ref="${ref}"]`);
-          const count = await locator.count();
-          if (count === 0) {
-            return fail(
-              `Ref [${ref}] not found on the current page — it may be stale (the page changed since ` +
-                `your last observation). Call browser_observe to get current refs, then retry.`,
-            );
-          }
-          switch (action) {
-            case 'click':
-              await locator.first().click({ timeout: config.navTimeoutMs });
-              break;
-            case 'type':
-              await locator.first().fill(value ?? '', { timeout: config.navTimeoutMs });
-              break;
-            case 'select':
-              await locator.first().selectOption(value ?? '', { timeout: config.navTimeoutMs });
-              break;
-            case 'press':
-              await locator.first().press(value!, { timeout: config.navTimeoutMs });
-              break;
-          }
-          pool.setCurrentUrl(convId, page.url());
-        }
 
-        // Best-effort settle — SPAs that never go network-idle shouldn't fail the action.
-        await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
+          // Best-effort settle — SPAs that never go network-idle shouldn't fail the action.
+          await page.waitForLoadState('networkidle', { timeout: 3000 }).catch(() => {});
 
-        const obs = await observePage(page, config);
-        return ok(formatObservation(obs, `(performed: ${action} on "${label}"${value ? ` = "${value}"` : ''})`));
+          const obs = await observePage(page, config, state.policy.js);
+          return observationResult(
+            obs,
+            [`(performed: ${action} on ${JSON.stringify(label)}${value ? ` = ${JSON.stringify(value)}` : ''})`],
+            drainEvents(state),
+          );
+        });
       } catch (err: unknown) {
         const message = err instanceof Error ? err.message : String(err);
-        return fail(`browser_act error performing "${action}" on "${label}": ${message}`);
+        const events = drainEvents(state);
+        return fail(
+          `browser_act error performing "${action}" on "${label}": ${message}` +
+            (events.length ? '\n' + events.map(e => `- ${e}`).join('\n') : ''),
+        );
       }
     },
   );

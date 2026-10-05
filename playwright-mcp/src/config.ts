@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { parseJsPolicy, parsePatternList, type JsPolicy } from './policy.js';
 
 export interface PlaywrightConfig {
   mcpPort: number;
@@ -28,12 +29,35 @@ export interface PlaywrightConfig {
   observationMaxInputChars: number;
   /** Private hostnames/IPs the browser MAY reach (explicit opt-in; default none). Comma-separated in BROWSER_ALLOW_PRIVATE_HOSTS. */
   allowPrivateHosts: string[];
+  /** Use the local quarantine model for browse_url extraction (QUARANTINE_EXTRACT_ENABLED, default true).
+   * Its output is schema-validated; on failure the deterministic extract is returned instead. */
+  quarantineExtractEnabled: boolean;
+  /** Add an optional quarantine-model summary to browser observations (OBSERVATION_QUARANTINE_ENABLED,
+   * default false). The element table and page text never depend on it. */
+  observationQuarantineEnabled: boolean;
+  /** Max chars of sanitised page text included in an observation (OBSERVATION_MAX_TEXT_CHARS, default 12000). */
+  observationMaxTextChars: number;
+  /** Max chars of one element label (OBSERVATION_LABEL_MAX_CHARS, default 100). */
+  observationLabelMaxChars: number;
+  /** Max interactive elements listed per observation (OBSERVATION_MAX_ELEMENTS, default 300). */
+  observationMaxElements: number;
+  /** Operator domain allowlist (BROWSER_DOMAIN_ALLOW, comma-separated globs; empty = any public domain). */
+  domainAllow: string[];
+  /** Operator domain denylist (BROWSER_DOMAIN_DENY, comma-separated globs). */
+  domainDeny: string[];
+  /** Operator JavaScript policy (BROWSER_JS_POLICY = disabled | review | allowed, default allowed). */
+  jsPolicy: JsPolicy;
 }
 
 function required(name: string): string {
   const value = process.env[name];
   if (!value) throw new Error(`Missing required environment variable: ${name}`);
   return value;
+}
+
+function bool(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value.trim() === '') return fallback;
+  return /^(1|true|yes|on)$/i.test(value.trim());
 }
 
 export function loadConfig(): PlaywrightConfig {
@@ -49,5 +73,13 @@ export function loadConfig(): PlaywrightConfig {
     watchdogIntervalMs: parseInt(process.env['PLAYWRIGHT_WATCHDOG_INTERVAL_MS'] ?? '120000', 10),
     observationMaxInputChars: parseInt(process.env['OBSERVATION_MAX_INPUT_CHARS'] ?? '40000', 10),
     allowPrivateHosts: (process.env['BROWSER_ALLOW_PRIVATE_HOSTS'] ?? '').split(',').map(h => h.trim()).filter(Boolean),
+    quarantineExtractEnabled: bool(process.env['QUARANTINE_EXTRACT_ENABLED'], true),
+    observationQuarantineEnabled: bool(process.env['OBSERVATION_QUARANTINE_ENABLED'], false),
+    observationMaxTextChars: parseInt(process.env['OBSERVATION_MAX_TEXT_CHARS'] ?? '12000', 10),
+    observationLabelMaxChars: parseInt(process.env['OBSERVATION_LABEL_MAX_CHARS'] ?? '100', 10),
+    observationMaxElements: parseInt(process.env['OBSERVATION_MAX_ELEMENTS'] ?? '300', 10),
+    domainAllow: parsePatternList(process.env['BROWSER_DOMAIN_ALLOW']),
+    domainDeny: parsePatternList(process.env['BROWSER_DOMAIN_DENY']),
+    jsPolicy: parseJsPolicy(process.env['BROWSER_JS_POLICY'], 'allowed'),
   };
 }
