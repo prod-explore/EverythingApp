@@ -618,6 +618,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               return approved;
             },
             onAssistantText: text => sse.emit(convId, 'turn:text', { text }),
+            onTextDelta: delta => sse.emit(convId, 'turn:text_delta', delta),
             onToolStart: label => sse.emit(convId, 'turn:tool_use', { label }),
             onToolResult: (toolName, fullOutput, truncatedOutput, isError) => {
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });

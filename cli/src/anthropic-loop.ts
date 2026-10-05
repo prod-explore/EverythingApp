@@ -14,7 +14,19 @@ export interface LlmClient {
       params: Anthropic.MessageCreateParamsNonStreaming,
       options?: { signal?: AbortSignal },
     ): Promise<Anthropic.Message>;
+    /**
+     * Optional streaming variant. Anthropic's SDK client has it; providers that don't
+     * (the OpenAI-compatible adapter) simply fall back to `create` — nothing breaks, the
+     * reply just arrives in one piece instead of token by token.
+     */
+    stream?(params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike;
   };
+}
+
+/** The slice of the SDK's MessageStream the loop uses. */
+export interface MessageStreamLike {
+  on(event: 'streamEvent', listener: (event: Anthropic.MessageStreamEvent) => void): unknown;
+  finalMessage(): Promise<Anthropic.Message>;
 }
 
 /** @deprecated pre-Phase-3 name, kept so existing imports/tests keep working. */
@@ -53,8 +65,14 @@ export interface ConversationDeps {
   virtualTools?: VirtualTool[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
   confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean>;
-  /** Called for every text block the model produces, in order. */
+  /** Called for every text block the model produces, in order. Always fires, with the complete block. */
   onAssistantText?: (text: string) => void;
+  /**
+   * Live text chunks while a response is still being generated; `block` is the content-block
+   * index within that response, so a response with several text blocks can be told apart.
+   * Only fires when the provider supports streaming. onAssistantText still follows with the final text.
+   */
+  onTextDelta?: (delta: { block: number; text: string }) => void;
   /** Called right before a tool actually executes (after approval). */
   onToolStart?: (toolLabel: string) => void;
   /** Called once per API response with that response's usage. */
@@ -183,17 +201,28 @@ export async function runTurn(
       throw new StepLimitError(deps.maxSteps);
     }
 
-    const response = await deps.anthropic.messages.create(
-      {
-        model: deps.model,
-        max_tokens: deps.maxTokens ?? 4096,
-        system: cacheableSystem(deps.systemPrompt),
-        tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
-        messages,
-      },
-      // Lets the kill switch cancel a request that's already in flight, not just the next one.
-      { signal: deps.signal },
-    );
+    const params: Anthropic.MessageCreateParamsNonStreaming = {
+      model: deps.model,
+      max_tokens: deps.maxTokens ?? 4096,
+      system: cacheableSystem(deps.systemPrompt),
+      tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
+      messages,
+    };
+    // Lets the kill switch cancel a request that's already in flight, not just the next one.
+    const options = { signal: deps.signal };
+    const onTextDelta = deps.onTextDelta;
+    let response: Anthropic.Message;
+    if (onTextDelta && deps.anthropic.messages.stream) {
+      const stream = deps.anthropic.messages.stream(params, options);
+      stream.on('streamEvent', event => {
+        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text) {
+          onTextDelta({ block: event.index, text: event.delta.text });
+        }
+      });
+      response = await stream.finalMessage();
+    } else {
+      response = await deps.anthropic.messages.create(params, options);
+    }
 
     messages.push({ role: 'assistant', content: response.content });
     deps.onUsage?.(response.usage);

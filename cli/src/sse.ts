@@ -3,6 +3,7 @@ import type { Response } from 'express';
 export type SSEEventName =
   | 'turn:start'
   | 'turn:text'
+  | 'turn:text_delta'
   | 'turn:tool_use'
   | 'turn:tool_result'
   | 'turn:done'

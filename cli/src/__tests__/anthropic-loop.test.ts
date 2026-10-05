@@ -415,3 +415,88 @@ describe('runTurn — kill switch while parked on the approval gate', () => {
     assert.deepEqual(calls, [], 'the tool must not run after the turn was killed');
   });
 });
+
+describe('runTurn — streaming text deltas (N2b)', () => {
+  const baseDeps = (client: AnthropicLike, extra: Record<string, unknown> = {}) => ({
+    anthropic: client,
+    model: 'claude-sonnet-5',
+    tools: new ToolRegistry([]),
+    systemPrompt: 'sys',
+    confirm: async () => true,
+    ...extra,
+  });
+
+  it('forwards text deltas live, then still reports the complete block via onAssistantText', async () => {
+    let createCalls = 0;
+    const client: AnthropicLike = {
+      messages: {
+        async create() {
+          createCalls++;
+          throw new Error('create must not be used when stream is available');
+        },
+        stream() {
+          let listener: ((e: Anthropic.MessageStreamEvent) => void) | undefined;
+          return {
+            on(_event, l) {
+              listener = l;
+            },
+            async finalMessage() {
+              for (const text of ['Hel', 'lo']) {
+                listener?.({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as Anthropic.MessageStreamEvent);
+              }
+              // Non-text deltas (tool input JSON) must be ignored.
+              listener?.({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } } as Anthropic.MessageStreamEvent);
+              return fakeMessage([textBlock('Hello')], 'end_turn');
+            },
+          };
+        },
+      },
+    };
+    const deltas: Array<{ block: number; text: string }> = [];
+    const finals: string[] = [];
+    await runTurn(
+      baseDeps(client, { onTextDelta: (d: { block: number; text: string }) => deltas.push(d), onAssistantText: (t: string) => finals.push(t) }) as never,
+      [],
+      'hi',
+    );
+    assert.deepEqual(deltas, [{ block: 0, text: 'Hel' }, { block: 0, text: 'lo' }]);
+    assert.deepEqual(finals, ['Hello']);
+    assert.equal(createCalls, 0);
+  });
+
+  it('falls back to create() when the client has no stream (e.g. the OpenAI-compatible adapter)', async () => {
+    const client: AnthropicLike = {
+      messages: {
+        async create() {
+          return fakeMessage([textBlock('whole')], 'end_turn');
+        },
+      },
+    };
+    const deltas: unknown[] = [];
+    const finals: string[] = [];
+    await runTurn(
+      baseDeps(client, { onTextDelta: (d: unknown) => deltas.push(d), onAssistantText: (t: string) => finals.push(t) }) as never,
+      [],
+      'hi',
+    );
+    assert.deepEqual(deltas, []);
+    assert.deepEqual(finals, ['whole']);
+  });
+
+  it('does not stream when nobody listens for deltas (subagents, batch)', async () => {
+    let streamed = false;
+    const client: AnthropicLike = {
+      messages: {
+        async create() {
+          return fakeMessage([textBlock('x')], 'end_turn');
+        },
+        stream() {
+          streamed = true;
+          throw new Error('should not be called');
+        },
+      },
+    };
+    await runTurn(baseDeps(client) as never, [], 'hi');
+    assert.equal(streamed, false);
+  });
+});
