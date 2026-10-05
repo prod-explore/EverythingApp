@@ -1,8 +1,17 @@
 {
   "name": "EverythingApp",
   "short_name": "EverythingApp",
+  "description": "Self-hosted AI OS: projects, agents, sandboxes, browser and GitHub in one place.",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
   "background_color": "#000000",
-  "theme_color": "#000000"
+  "theme_color": "#000000",
+  "categories": ["productivity", "developer"],
+  "icons": [
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
 }
