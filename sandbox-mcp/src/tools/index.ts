@@ -5,6 +5,7 @@ import { registerRunBash } from './runBash.js';
 import { registerGitOp } from './gitOp.js';
 import { registerReadLog } from './readLog.js';
 import { registerTerminalTools } from './terminals.js';
+import { registerCheckpointTools } from './checkpoints.js';
 
 /** Registers every tool this server exposes onto a fresh McpServer instance. */
 export function registerAllTools(
@@ -17,4 +18,5 @@ export function registerAllTools(
   registerGitOp(server, ctx);
   registerReadLog(server, ctx);
   registerTerminalTools(server, ctx);
+  registerCheckpointTools(server, ctx);
 }

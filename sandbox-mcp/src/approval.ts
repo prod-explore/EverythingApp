@@ -1,6 +1,6 @@
 // Tools that always require explicit approval before execution.
-// read_log is read-only and does not require approval.
-const ALWAYS_REQUIRE_APPROVAL: ReadonlySet<string> = new Set(['run_bash', 'git_op']);
+// read_log and checkpoint_list are read-only and do not require approval; rollback discards work.
+const ALWAYS_REQUIRE_APPROVAL: ReadonlySet<string> = new Set(['run_bash', 'git_op', 'rollback']);
 
 /**
  * Returns true if this tool requires approval before it may run.

@@ -8,7 +8,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js",
-    "test": "npm run build && node --test dist/__tests__/tools.test.js"
+    "test": "rm -rf dist && npm run build && node --test --test-timeout=15000 dist/__tests__/tools.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",

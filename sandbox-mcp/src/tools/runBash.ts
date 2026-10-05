@@ -26,7 +26,7 @@ export function registerRunBash(server: McpServer, { config, supervisor }: ToolC
       'A terminal is a long-lived bash: the working directory, exported variables and shell functions carry over to the next command ' +
       'in the same terminal. Use separate named terminals for separate jobs (e.g. "dev", "tests"); the default is "main". ' +
       'stdout and stderr are merged. The sandbox has internet access and /workspace persists across chats, restarts and idle periods ' +
-      '(everything outside /workspace may be reset if the sandbox container is recreated). ' +
+      '(everything else is read-only or temporary: /tmp and $HOME are wiped when the sandbox stops; you are not root, so apt and global installs are unavailable — install project-locally). ' +
       `A command is limited to ${Math.round(MAX_COMMAND_MS / 1000)}s; if it times out the terminal is killed. ` +
       'For long-running processes (dev servers, builds, watchers) start them in the background, e.g. `nohup npm run dev > dev.log 2>&1 &`, ' +
       'and check on them with `tail dev.log`. Stdin is not available: commands cannot prompt for input. ' +
