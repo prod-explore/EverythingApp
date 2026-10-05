@@ -987,6 +987,13 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const artifactMaxBytes = Number(process.env['ARTIFACT_MAX_BYTES'] ?? 25 * 1024 * 1024);
   const artifactQuotaBytes = Number(process.env['ARTIFACT_QUOTA_BYTES'] ?? 2 * 1024 * 1024 * 1024);
 
+  // On-disk name: id + an ASCII-safe filename (portable across filesystems); legacy files used the raw name.
+  const artifactPath = (a: { id: string; filename: string }) => {
+    const safe = path.join(artifactsDir, a.id + '_' + a.filename.replace(/[^A-Za-z0-9._-]/g, '_'));
+    const legacy = path.join(artifactsDir, a.id + '_' + a.filename);
+    return !fs.existsSync(safe) && fs.existsSync(legacy) ? legacy : safe;
+  };
+
   app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), (req, res) => {
     const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
     const filename = sanitizeFilename(typeof req.query['filename'] === 'string' ? req.query['filename'] : 'artifact');
@@ -1008,7 +1015,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       source,
     });
 
-    const filePath = path.join(artifactsDir, artifact.id + '_' + filename);
+    const filePath = artifactPath(artifact);
     fs.writeFileSync(filePath, body);
 
     if (convId) sse.emit(convId, 'artifact:new', artifact);
@@ -1024,7 +1031,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   app.get('/api/artifacts/:id/file', (req, res) => {
     const artifact = getArtifact(db, req.params.id);
     if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    const filePath = path.join(artifactsDir, artifact.id + '_' + artifact.filename);
+    const filePath = artifactPath(artifact);
     if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'artifact file not found on disk' }); return; }
     // Never serve a client-chosen MIME type from the app's origin (see artifact-http.ts).
     const policy = servePolicy(artifact.mimeType);
@@ -1038,7 +1045,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   app.delete('/api/artifacts/:id', (req, res) => {
     const artifact = getArtifact(db, req.params.id);
     if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    const filePath = path.join(artifactsDir, artifact.id + '_' + artifact.filename);
+    const filePath = artifactPath(artifact);
     try { fs.unlinkSync(filePath); } catch { /* file already gone — don't fail */ }
     const ok = deleteArtifact(db, req.params.id);
     res.json({ ok });
