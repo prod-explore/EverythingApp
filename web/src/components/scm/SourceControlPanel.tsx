@@ -81,7 +81,12 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
         </div>
       </div>
 
-      {notRepo ? (
+      {error && !status && !notRepo ? (
+        <div className="space-y-2 p-3 text-center">
+          <PanelMessage tone="error">{error}</PanelMessage>
+          <button onClick={() => void refresh()} className="rounded-button border border-border px-3 py-1 text-xs text-fg hover:border-border-hover">Retry</button>
+        </div>
+      ) : notRepo ? (
         <div className="space-y-2 p-3 text-xs">
           <PanelMessage>/workspace/{dir} is not a git repository yet.</PanelMessage>
           {repoForDir && (

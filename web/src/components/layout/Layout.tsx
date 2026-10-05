@@ -13,6 +13,7 @@ export function Layout({
   sidebarView,
   onSidebarViewChange,
   onExpandSidebar,
+  onCloseSidebar,
   onOpenProjects,
   onSelect,
   onCreate,
@@ -37,6 +38,7 @@ export function Layout({
   sidebarView: SidebarView;
   onSidebarViewChange: (view: SidebarView) => void;
   onExpandSidebar: () => void;
+  onCloseSidebar: () => void;
   onOpenProjects: () => void;
   onSelect: (id: string) => void;
   onCreate: (projectId?: string) => void;
@@ -52,6 +54,7 @@ export function Layout({
 }>) {
   return (
     <div className="relative flex h-full">
+      {sidebarOpen && <div className="fixed inset-0 z-20 bg-black/60 md:hidden" aria-hidden="true" onClick={onCloseSidebar} />}
       <div className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} ${sidebarCollapsed ? 'md:hidden' : 'md:block'}`}>
         <Sidebar
           conversations={conversations}

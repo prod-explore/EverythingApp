@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { ChevronDown, ChevronRight, Maximize2, TriangleAlert, Wrench } from 'lucide-react';
+import { ChevronDown, ChevronRight, Maximize2, TriangleAlert } from 'lucide-react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
+import { toolLabel } from '../../lib/toolLabels';
 import { useLatestStepId } from './stepContext';
 import { FileViewer } from '../files/FileViewer';
 
@@ -29,6 +30,7 @@ export function ToolCallCard({ toolCallId, toolName, args, result, isError }: To
   const running = result === undefined;
   const resultText = typeof result === 'string' ? result : result !== undefined ? JSON.stringify(result, null, 2) : undefined;
   const isLong = (resultText?.length ?? 0) > VIEWER_THRESHOLD;
+  const friendly = toolLabel(toolName, args as Record<string, unknown> | undefined, running);
 
   return (
     <div className="my-2 max-w-full rounded-container border border-border bg-bg-secondary text-sm not-prose">
@@ -37,15 +39,16 @@ export function ToolCallCard({ toolCallId, toolName, args, result, isError }: To
         className="flex w-full items-center gap-2 px-3 py-2 text-left text-fg-secondary hover:text-fg"
       >
         {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-        <Wrench size={14} className={running ? 'animate-pulse' : ''} />
-        <span className="truncate font-mono text-xs">{toolName}</span>
+        <friendly.icon size={14} className={running ? 'animate-pulse' : ''} />
+        <span className="shrink-0 text-xs">{friendly.label}</span>
+        {friendly.detail && <span className="min-w-0 truncate font-mono text-xs text-fg-tertiary">{friendly.detail}</span>}
         {isError && <TriangleAlert size={14} className="ml-auto shrink-0 text-danger" />}
       </button>
       {open && (
         <div className="space-y-2 border-t border-border px-3 py-2 font-mono text-xs">
           {Object.keys(args ?? {}).length > 0 && (
             <div>
-              <div className="mb-1 text-fg-tertiary">args</div>
+              <div className="mb-1 text-fg-tertiary">{toolName} · args</div>
               <pre className="overflow-x-auto whitespace-pre-wrap text-fg-secondary">
                 {JSON.stringify(args, null, 2)}
               </pre>

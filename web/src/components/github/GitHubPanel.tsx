@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, CircleCheck, CircleDot, CircleX, Clock, ExternalLink, GitPullRequest, GitMerge as Github, Play } from 'lucide-react';
-import { githubApi, githubText, projectRepos } from '../../api-workspace';
+import { githubApi, githubConnect, githubText, projectRepos } from '../../api-workspace';
 import type { ProjectRepo } from '../../types-workspace';
 import { MarkdownBody as MarkdownText } from '../chat/MarkdownText';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
@@ -29,7 +29,11 @@ function StateIcon({ status, conclusion }: { status: string; conclusion: string 
 }
 
 /** GitHub panel (Plan v3 §7.2): PRs, issues, checks and Actions for the project's linked repos, through the server. */
-export function GitHubPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
+export function GitHubPanel({ projectId, onClose, onConnect }: { projectId: string; onClose: () => void; onConnect: () => void }) {
+  const [connected, setConnected] = useState<boolean | null>(null);
+  useEffect(() => {
+    githubConnect.status().then(s => setConnected(s.connected)).catch(() => setConnected(true)); // unknown → let the panel show its own errors
+  }, []);
   const [repos, setRepos] = useState<ProjectRepo[] | null>(null);
   const [repo, setRepo] = useState<ProjectRepo | null>(null);
   const [tab, setTab] = useState<'pulls' | 'issues' | 'actions'>('pulls');
@@ -43,6 +47,12 @@ export function GitHubPanel({ projectId, onClose }: { projectId: string; onClose
 
   return (
     <DockPanel title="GitHub" icon={<Github size={16} />} onClose={onClose}>
+      {connected === false ? (
+        <div className="space-y-3 p-4 text-center">
+          <PanelMessage>GitHub is not connected yet.</PanelMessage>
+          <button onClick={onConnect} className="rounded-button bg-fg px-4 py-2 text-sm font-medium text-bg hover:opacity-90">Connect GitHub</button>
+        </div>
+      ) : (<>
       {repos && repos.length === 0 && <PanelMessage>No repositories linked. Add one in Project settings → Repositories.</PanelMessage>}
       {repo && (
         <>
@@ -71,6 +81,7 @@ export function GitHubPanel({ projectId, onClose }: { projectId: string; onClose
           {view.kind === 'run' && <RunDetail projectId={projectId} base={base} id={view.id} onBack={() => setView({ kind: 'list' })} />}
         </>
       )}
+      </>)}
     </DockPanel>
   );
 }

@@ -188,7 +188,7 @@ export function GazetaAnswer({ item }: { item: GazetaItem }) {
       {schema?.type === 'choice' && (
         <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
           {schema.choices.map(choice => (
-            <Button key={choice} variant="ghost" disabled={busy} onClick={() => void submit({ choice })}>
+            <Button key={choice} variant="ghost" className="px-3 py-1.5 text-xs" disabled={busy} onClick={() => void submit({ choice })}>
               {choice}
             </Button>
           ))}
@@ -314,7 +314,7 @@ export function GazetaCard({
 
   return (
     <article
-      className={`rounded-container border p-4 ${urgent ? 'border-accent' : 'border-border'} ${open ? '' : 'opacity-70'}`}
+      className={`rounded-container border p-3 sm:p-4 ${urgent ? 'border-accent' : 'border-border'} ${open ? '' : 'opacity-70'}`}
       aria-label={`${TYPE_LABEL[item.type] ?? item.type}: ${item.title}`}
     >
       <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -335,7 +335,7 @@ export function GazetaCard({
         <span className="ml-auto text-xs text-fg-tertiary">{new Date(item.createdAt).toLocaleString()}</span>
       </div>
 
-      <h3 className="mb-1 text-sm font-medium text-fg">{item.title}</h3>
+      <h3 className="mb-1 text-sm font-medium leading-snug text-fg">{item.title}</h3>
       {item.description && (
         <div className="prose prose-invert prose-sm mb-3 max-w-none text-fg-secondary [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-bg [&_pre]:p-3">
           <MarkdownBody text={item.description} />
@@ -348,13 +348,13 @@ export function GazetaCard({
         </div>
       )}
 
-      <div className="mb-3">
+      <div className="mb-2">
         <GazetaAnswer item={item} />
       </div>
 
       <div className="flex items-center gap-2">
         {open && (
-          <Button variant="ghost" onClick={() => void handleDismiss()}>
+          <Button variant="ghost" className="px-3 py-1.5 text-xs" onClick={() => void handleDismiss()}>
             Dismiss
           </Button>
         )}

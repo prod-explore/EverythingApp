@@ -11,7 +11,7 @@ import type { SidebarView } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
 import { Layout } from './components/layout/Layout';
 import { Login } from './components/Login';
-import { SettingsModal } from './components/settings/SettingsModal';
+import { SettingsModal, type SettingsTab } from './components/settings/SettingsModal';
 import { BrowserPanel } from './components/browser/BrowserPanel';
 import { ArtifactsPanel } from './components/browser/ArtifactsPanel';
 import { useConversations } from './hooks/useConversations';
@@ -20,6 +20,7 @@ import { AgentsPanel } from './components/agents/AgentsPanel';
 import { ExplorerPanel } from './components/workspace/ExplorerPanel';
 import { SourceControlPanel } from './components/scm/SourceControlPanel';
 import { GitHubPanel } from './components/github/GitHubPanel';
+import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
 import type { BudgetWarning, Conversation, ProjectListItem, SpendWarning } from './types';
@@ -51,6 +52,8 @@ function MainApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [gazetaOpen, setGazetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('models');
+  const openSettings = useCallback((tab: SettingsTab = 'models') => { setSettingsTab(tab); setSettingsOpen(true); }, []);
   const [searchOpen, setSearchOpen] = useState(false);
   // Desktop-only: hides the left rail entirely. Remembered across reloads; storage can be unavailable.
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -64,6 +67,7 @@ function MainApp() {
   const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
   const { models } = useModels();
+  const approvals = useApprovals(selectedId);
   const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
   const [usage, setUsage] = useState('—');
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
@@ -263,6 +267,7 @@ function MainApp() {
       sidebarView={sidebarView}
       onSidebarViewChange={setSidebarView}
       onExpandSidebar={toggleSidebarCollapsed}
+      onCloseSidebar={() => setSidebarOpen(false)}
       onOpenProjects={openProjectsView}
       onSelectProject={handleSelectProject}
       onEditProject={setEditProjectId}
@@ -284,6 +289,8 @@ function MainApp() {
         onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
         browserPanelOpen={browserPanelOpen}
         artifactsPanelOpen={artifactsPanelOpen}
+        dockTool={dockTool}
+        onToggleTool={t => setDockTool(cur => (cur === t ? null : t))}
       />
       {spendWarning && (
         <div className="flex items-center justify-between gap-3 border-b border-danger/40 px-4 py-2 text-xs text-danger">
@@ -295,13 +302,19 @@ function MainApp() {
       )}
       <div className="flex flex-1 overflow-hidden">
         <div className="relative min-w-0 flex-1 overflow-hidden">
-          <ChatView conversationId={selectedId} />
-          <ApprovalBanner conversationId={selectedId} />
+          <ChatView conversationId={selectedId} onOpenSettings={() => openSettings('models')} approvals={approvals} />
         </div>
 
         {/* Right dock: browser on top, artifacts below. Side column on desktop, full-screen sheet on mobile. */}
         {(browserPanelOpen || artifactsPanelOpen || dockTool) && (
-          <aside className="fixed inset-0 z-40 flex flex-col bg-bg md:static md:inset-auto md:z-auto md:w-[420px] md:shrink-0 md:border-l md:border-border lg:w-[480px]">
+          <>
+          <div
+            className="fixed inset-0 z-40 bg-black/60 md:hidden"
+            aria-hidden="true"
+            onClick={() => { setBrowserPanelOpen(false); setArtifactsPanelOpen(false); setDockTool(null); }}
+          />
+          <aside className="fixed inset-x-0 bottom-0 z-40 flex h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-bg shadow-2xl md:static md:inset-auto md:z-auto md:h-auto md:w-[420px] md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none lg:w-[480px]">
+            <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border md:hidden" aria-hidden="true" />
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               {browserPanelOpen && (
                 <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
@@ -318,7 +331,7 @@ function MainApp() {
                 <NeedsProject title="Source Control" onClose={() => setDockTool(null)} />
               ))}
               {dockTool === 'github' && (projectOfChat ? (
-                <GitHubPanel key={projectOfChat} projectId={projectOfChat} onClose={() => setDockTool(null)} />
+                <GitHubPanel key={projectOfChat} projectId={projectOfChat} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
               ) : (
                 <NeedsProject title="GitHub" onClose={() => setDockTool(null)} />
               ))}
@@ -331,6 +344,7 @@ function MainApp() {
               )}
             </div>
           </aside>
+          </>
         )}
         <RightRail
           browserOpen={browserPanelOpen}
@@ -353,7 +367,8 @@ function MainApp() {
       {gazetaOpen && (
         <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} projects={projects} />
       )}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} conversationId={selectedId ?? undefined} />}
+      <ApprovalBanner pending={approvals.pending} respond={approvals.respond} active={gazetaOpen || settingsOpen} />
+      {settingsOpen && <SettingsModal key={settingsTab} initialTab={settingsTab} onClose={() => setSettingsOpen(false)} conversationId={selectedId ?? undefined} />}
       {searchOpen && (
         <ConversationSearch conversations={conversations} onSelect={setSelectedId} onClose={() => setSearchOpen(false)} />
       )}

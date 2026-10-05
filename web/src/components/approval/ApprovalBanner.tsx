@@ -1,26 +1,24 @@
-import type { ApprovalScope } from '../../types';
-import { useApprovals } from '../../hooks/useApprovals';
+import type { ApprovalScope, PendingApproval } from '../../types';
 import { ApprovalModal } from './ApprovalModal';
 
 /**
- * Renders pending tool-call approvals for the current conversation.
- * Dangerous calls go straight to the full ApprovalModal (which forces 'once'
- * scope for dangerous calls). Routine calls also use the modal so the user
- * gets the full scope picker.
- *
- * The banner/inline approach for routine calls has been folded into the modal
- * in Phase 2 — one consistent UX for all approvals.
+ * Emergency fallback: approvals normally render inline in the chat (InlineApprovals). The modal only
+ * takes over while something else covers the chat (Gazeta inbox, Settings), so a pending call can't stall unseen.
  */
-export function ApprovalBanner({ conversationId }: { conversationId: string }) {
-  const { pending, respond } = useApprovals(conversationId);
-
-  // Show the first pending approval as a modal (dangerous ones first so they
-  // can't be buried behind a pile of routine approvals).
+export function ApprovalBanner({
+  pending,
+  respond,
+  active,
+}: {
+  pending: PendingApproval[];
+  respond: (id: string, approved: boolean, scope?: ApprovalScope) => Promise<void>;
+  /** True when the inline cards are hidden behind another view. */
+  active: boolean;
+}) {
+  if (!active) return null;
   const sorted = [...pending].sort((a, b) => (b.dangerous ? 1 : 0) - (a.dangerous ? 1 : 0));
   const current = sorted[0];
-
   if (!current) return null;
-
   return (
     <ApprovalModal
       approval={current}

@@ -7,8 +7,9 @@ const MODELS_CHANGED = 'ea:models-changed';
 
 export function useModels() {
   const [models, setModels] = useState<ModelOption[]>([]);
+  const [loaded, setLoaded] = useState(false);
   const load = useCallback(() => {
-    getModels().then(r => setModels(r.models)).catch(() => {});
+    getModels().then(r => { setModels(r.models); setLoaded(true); }).catch(() => {});
   }, []);
   // Every useModels() instance (header picker, Settings) reloads when any of them changes keys/providers.
   useEffect(() => {
@@ -17,7 +18,7 @@ export function useModels() {
     return () => window.removeEventListener(MODELS_CHANGED, load);
   }, [load]);
   const refresh = useCallback(() => window.dispatchEvent(new Event(MODELS_CHANGED)), []);
-  return { models, refresh };
+  return { models, loaded, refresh };
 }
 
 export const PROVIDER_LABELS: Record<string, string> = {

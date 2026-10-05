@@ -117,14 +117,14 @@ export function Sidebar({
                 )}
                 <button
                   onClick={() => startEdit(c)}
-                  className="shrink-0 rounded p-1 text-fg-tertiary opacity-0 hover:text-fg group-hover:opacity-100"
+                  className="shrink-0 rounded p-1 text-fg-tertiary opacity-0 hover:text-fg group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                   aria-label="Rename"
                 >
                   <Pencil size={13} />
                 </button>
                 <button
                   onClick={() => onDelete(c.id)}
-                  className="shrink-0 rounded p-1 text-fg-tertiary opacity-0 hover:text-danger group-hover:opacity-100"
+                  className="shrink-0 rounded p-1 text-fg-tertiary opacity-0 hover:text-danger group-hover:opacity-100 [@media(hover:none)]:opacity-100"
                   aria-label="Delete"
                 >
                   <Trash2 size={13} />
@@ -155,7 +155,7 @@ export function Sidebar({
                 >
                   <FolderOpen size={14} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate text-left">{p.name}</span>
-                  <span className="shrink-0 text-xs text-fg-tertiary group-hover:hidden">{p.conversationCount}</span>
+                  <span className="shrink-0 text-xs text-fg-tertiary group-hover:hidden [@media(hover:none)]:hidden">{p.conversationCount}</span>
                   <span
                     role="button"
                     tabIndex={0}
@@ -163,7 +163,7 @@ export function Sidebar({
                     title="Project settings"
                     onClick={e => { e.stopPropagation(); onEditProject(p.id); }}
                     onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onEditProject(p.id); } }}
-                    className="hidden shrink-0 rounded p-0.5 text-fg-tertiary hover:text-fg group-hover:block"
+                    className="hidden shrink-0 rounded p-1 text-fg-tertiary hover:text-fg group-hover:block [@media(hover:none)]:block"
                   >
                     <Settings size={13} />
                   </span>

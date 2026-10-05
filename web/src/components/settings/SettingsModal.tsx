@@ -8,9 +8,9 @@ import { ModelsTab } from './tabs/ModelsTab';
 import { SkillsTab } from './tabs/SkillsTab';
 import { UsageTab } from './tabs/UsageTab';
 
-type Tab = 'models' | 'usage' | 'connectors' | 'github' | 'skills' | 'appearance' | 'account';
+export type SettingsTab = 'models' | 'usage' | 'connectors' | 'github' | 'skills' | 'appearance' | 'account';
 
-const TABS: { id: Tab; label: string }[] = [
+const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'models', label: 'Models' },
   { id: 'usage', label: 'Usage' },
   { id: 'connectors', label: 'Connectors' },
@@ -23,12 +23,14 @@ const TABS: { id: Tab; label: string }[] = [
 export function SettingsModal({
   onClose,
   conversationId,
+  initialTab = 'models',
 }: {
   onClose: () => void;
   /** When provided, the Skills tab shows attach/detach controls for this conversation. */
   conversationId?: string;
+  initialTab?: SettingsTab;
 }) {
-  const [activeTab, setActiveTab] = useState<Tab>('models');
+  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
   return (
     <Modal

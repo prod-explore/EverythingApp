@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { getUsageReport } from '../../../api';
-import { PROVIDER_LABELS } from '../../../hooks/useModels';
+import { providerLabel, useModels } from '../../../hooks/useModels';
 import type { UsageRange, UsageReport, UsageTotals } from '../../../types';
 
 const RANGES: { id: UsageRange; label: string }[] = [
@@ -54,6 +54,8 @@ export function UsageTab() {
   const [range, setRange] = useState<UsageRange>('30d');
   const [report, setReport] = useState<UsageReport | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { models } = useModels();
+  const modelLabel = (id: string) => models.find(m => m.id === id)?.label ?? id;
 
   useEffect(() => {
     let cancelled = false;
@@ -96,7 +98,7 @@ export function UsageTab() {
             </p>
             {report.totals.unpricedCalls > 0 && (
               <p className="mt-1 text-xs text-fg-tertiary">
-                {report.totals.unpricedCalls} call(s) used a model with no known price and are counted as $0 — set MODEL_PRICING_JSON on the server.
+                {report.totals.unpricedCalls} call(s) used a model with no known price and are counted as $0 — set MODEL_PRICING_JSON on the server, or enter prices for a custom provider's models (Models tab).
               </p>
             )}
           </div>
@@ -107,7 +109,7 @@ export function UsageTab() {
                 .filter(m => m.warnUsd !== null)
                 .map(m => (
                   <div key={m.provider} className="text-xs text-fg-secondary">
-                    {PROVIDER_LABELS[m.provider] ?? m.provider} this month: {usd(m.costUsd)} of {usd(m.warnUsd!)} warning threshold
+                    {providerLabel(m.provider, models)} this month: {usd(m.costUsd)} of {usd(m.warnUsd!)} warning threshold
                     <div className="mt-1 h-1 rounded bg-bg-tertiary">
                       <div className={`h-1 rounded ${m.costUsd >= m.warnUsd! ? 'bg-danger' : 'bg-fg'}`} style={{ width: `${Math.min(100, (m.costUsd / m.warnUsd!) * 100)}%` }} />
                     </div>
@@ -133,8 +135,8 @@ export function UsageTab() {
             </div>
           )}
 
-          <Table title="By provider" rows={report.byProvider.map(p => ({ key: p.provider, label: PROVIDER_LABELS[p.provider] ?? p.provider, t: p }))} />
-          <Table title="By model" rows={report.byModel.map(m => ({ key: m.provider + m.model, label: m.model, t: m }))} />
+          <Table title="By provider" rows={report.byProvider.map(p => ({ key: p.provider, label: providerLabel(p.provider, models), t: p }))} />
+          <Table title="By model" rows={report.byModel.map(m => ({ key: m.provider + m.model, label: modelLabel(m.model), t: m }))} />
           <Table
             title="By conversation"
             rows={report.byConversation.map(c => ({ key: c.conversationId ?? 'none', label: c.title ?? (c.conversationId ? '(deleted conversation)' : '(batch / no conversation)'), t: c }))}
