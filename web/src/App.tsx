@@ -15,10 +15,16 @@ import { SettingsModal } from './components/settings/SettingsModal';
 import { BrowserPanel } from './components/browser/BrowserPanel';
 import { ArtifactsPanel } from './components/browser/ArtifactsPanel';
 import { useConversations } from './hooks/useConversations';
-import { useGazeta } from './hooks/useGazeta';
+import { GazetaContext, useGazetaStore } from './hooks/useGazeta';
+import { AgentsPanel } from './components/agents/AgentsPanel';
+import { ExplorerPanel } from './components/workspace/ExplorerPanel';
+import { SourceControlPanel } from './components/scm/SourceControlPanel';
+import { GitHubPanel } from './components/github/GitHubPanel';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
-import type { Conversation, ProjectListItem, SpendWarning } from './types';
+import type { BudgetWarning, Conversation, ProjectListItem, SpendWarning } from './types';
+
+export type DockTool = 'agents' | 'files' | 'scm' | 'github';
 
 export default function App() {
   const [authed, setAuthed] = useState(() => getToken() !== null);
@@ -37,7 +43,10 @@ function MainApp() {
     renameConversation,
     deleteConversation,
   } = useConversations();
-  const { items: gazetaItems, refresh: refreshGazeta } = useGazeta();
+  const gazeta = useGazetaStore();
+  const [dockTool, setDockTool] = useState<DockTool | null>(null);
+  const [agentsRefresh, setAgentsRefresh] = useState(0);
+  const [budgetWarning, setBudgetWarning] = useState<BudgetWarning | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [gazetaOpen, setGazetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -100,6 +109,8 @@ function MainApp() {
   }
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
+  const projectOfChat = selected?.projectId ?? null;
+  const workspaceOwner = projectOfChat ?? selectedId;
 
   // Header's model switch needs the full Conversation (model isn't part of
   // the summary list useConversations() returns) — refetched on every
@@ -137,7 +148,9 @@ function MainApp() {
   // but far simpler than lifting SSE state into a shared context for one
   // side-channel.
   useSSE(selectedId, (event, data) => {
-    if (event === 'gazeta:new' || event === 'gazeta:responded') refreshGazeta();
+    if (event.startsWith('gazeta:')) gazeta.handleEvent(event, data);
+    if (event === 'agent:spawned' || event === 'agent:finished') setAgentsRefresh(r => r + 1);
+    if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
     if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
   });
@@ -226,6 +239,7 @@ function MainApp() {
   }
 
   return (
+    <GazetaContext.Provider value={gazeta}>
     <Layout
       conversations={conversations}
       selectedId={selectedId}
@@ -251,7 +265,8 @@ function MainApp() {
       onEditProject={setEditProjectId}
       onOpenGazeta={() => setGazetaOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)}
-      gazetaCount={gazetaItems.length}
+      gazetaCount={gazeta.pending.length}
+      gazetaUrgent={gazeta.urgentCount}
     >
       <Header
         title={selected?.title ?? ''}
@@ -282,12 +297,28 @@ function MainApp() {
         </div>
 
         {/* Right dock: browser on top, artifacts below. Side column on desktop, full-screen sheet on mobile. */}
-        {(browserPanelOpen || artifactsPanelOpen) && (
+        {(browserPanelOpen || artifactsPanelOpen || dockTool) && (
           <aside className="fixed inset-0 z-40 flex flex-col bg-bg md:static md:inset-auto md:z-auto md:w-[420px] md:shrink-0 md:border-l md:border-border lg:w-[480px]">
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               {browserPanelOpen && (
                 <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
               )}
+              {dockTool === 'agents' && selectedId && (
+                <AgentsPanel conversationId={selectedId} refreshKey={agentsRefresh} budgetWarning={budgetWarning} onClose={() => setDockTool(null)} />
+              )}
+              {dockTool === 'files' && selectedId && (
+                <ExplorerPanel key={workspaceOwner ?? ''} owner={workspaceOwner ?? selectedId} onClose={() => setDockTool(null)} />
+              )}
+              {dockTool === 'scm' && (projectOfChat ? (
+                <SourceControlPanel key={projectOfChat} projectId={projectOfChat} onClose={() => setDockTool(null)} />
+              ) : (
+                <NeedsProject title="Source Control" onClose={() => setDockTool(null)} />
+              ))}
+              {dockTool === 'github' && (projectOfChat ? (
+                <GitHubPanel key={projectOfChat} projectId={projectOfChat} onClose={() => setDockTool(null)} />
+              ) : (
+                <NeedsProject title="GitHub" onClose={() => setDockTool(null)} />
+              ))}
               {artifactsPanelOpen && (
                 <ArtifactsPanel
                   conversationId={selectedId}
@@ -303,6 +334,8 @@ function MainApp() {
           artifactsOpen={artifactsPanelOpen}
           onToggleBrowser={() => setBrowserPanelOpen(o => !o)}
           onToggleArtifacts={() => setArtifactsPanelOpen(o => !o)}
+          tool={dockTool}
+          onToggleTool={t => setDockTool(cur => (cur === t ? null : t))}
         />
       </div>
 
@@ -315,13 +348,26 @@ function MainApp() {
       )}
       {newProjectOpen && <NewProjectModal onSubmit={submitNewProject} onClose={() => setNewProjectOpen(false)} />}
       {gazetaOpen && (
-        <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} />
+        <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} projects={projects} />
       )}
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} conversationId={selectedId ?? undefined} />}
       {searchOpen && (
         <ConversationSearch conversations={conversations} onSelect={setSelectedId} onClose={() => setSearchOpen(false)} />
       )}
     </Layout>
+    </GazetaContext.Provider>
   );
 }
 
+
+function NeedsProject({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <section className="flex flex-col border-b border-border">
+      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <h2 className="flex-1 text-sm font-medium text-fg">{title}</h2>
+        <button onClick={onClose} className="text-xs text-fg-tertiary hover:text-fg">Close</button>
+      </header>
+      <p className="px-3 py-4 text-center text-xs text-fg-tertiary">This chat isn't in a project. Move it into a project (or start a chat inside one) to use {title}.</p>
+    </section>
+  );
+}

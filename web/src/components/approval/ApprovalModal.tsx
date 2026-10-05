@@ -15,6 +15,12 @@ import { Button } from '../shared/Button';
  * For dangerous calls: scope picker is hidden — dangerous calls are always
  * forced to 'once' by the server regardless (§12 pt.5 of the Master Brief).
  */
+/** Worker approvals are labelled "[agent researcher] srv/tool" (or "[subagent] …") by the server. */
+function agentOf(label: string): string | null {
+  const m = /^\[(agent ([^\]]+)|subagent)\]/.exec(label);
+  return m ? (m[2] ?? 'subagent') : null;
+}
+
 export function ApprovalModal({
   approval,
   onRespond,
@@ -69,7 +75,15 @@ export function ApprovalModal({
         </div>
 
         {/* Tool label + args */}
-        <div className="mb-2 font-mono text-sm text-fg">{approval.toolLabel}</div>
+        {approval.warning && (
+          <p className="mb-3 rounded-button border border-danger/40 bg-danger/5 px-3 py-2 text-xs text-danger">{approval.warning}</p>
+        )}
+        <div className="mb-2 flex items-center gap-2 font-mono text-sm text-fg">
+          {agentOf(approval.toolLabel) && (
+            <span className="rounded bg-accent/15 px-1.5 py-0.5 font-sans text-xs text-accent">{agentOf(approval.toolLabel)}</span>
+          )}
+          <span className="min-w-0 break-all">{approval.toolLabel.replace(/^\[(agent [^\]]+|subagent)\]\s*/, '')}</span>
+        </div>
         {approval.commands ? (
           /* Shell command: one row per sub-command, so a chained `&& rm …` can't hide behind an allowed prefix. */
           <div className="mb-4 max-h-56 space-y-1 overflow-auto rounded-lg bg-bg p-2">

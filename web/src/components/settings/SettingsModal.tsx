@@ -3,16 +3,18 @@ import { clearToken } from '../../api';
 import { Modal } from '../shared/Modal';
 import { AppearanceTab } from './tabs/AppearanceTab';
 import { ConnectorsTab } from './tabs/ConnectorsTab';
+import { GitHubTab } from './tabs/GitHubTab';
 import { ModelsTab } from './tabs/ModelsTab';
 import { SkillsTab } from './tabs/SkillsTab';
 import { UsageTab } from './tabs/UsageTab';
 
-type Tab = 'models' | 'usage' | 'connectors' | 'skills' | 'appearance' | 'account';
+type Tab = 'models' | 'usage' | 'connectors' | 'github' | 'skills' | 'appearance' | 'account';
 
 const TABS: { id: Tab; label: string }[] = [
   { id: 'models', label: 'Models' },
   { id: 'usage', label: 'Usage' },
   { id: 'connectors', label: 'Connectors' },
+  { id: 'github', label: 'GitHub' },
   { id: 'skills', label: 'Skills' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'account', label: 'Account' },
@@ -56,6 +58,7 @@ export function SettingsModal({
         {activeTab === 'models' && <ModelsTab />}
         {activeTab === 'usage' && <UsageTab />}
         {activeTab === 'connectors' && <ConnectorsTab />}
+        {activeTab === 'github' && <GitHubTab />}
         {activeTab === 'skills' && <SkillsTab conversationId={conversationId} />}
         {activeTab === 'appearance' && <AppearanceTab />}
         {activeTab === 'account' && <AccountTab />}

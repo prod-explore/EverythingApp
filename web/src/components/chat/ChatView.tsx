@@ -3,6 +3,7 @@ import { MessageSquare } from 'lucide-react';
 import { useEverythingAppRuntime } from '../../lib/runtime';
 import { EmptyState } from '../shared/EmptyState';
 import { Composer } from './Composer';
+import { ChatQuestions } from '../gazeta/ChatQuestions';
 import { AssistantBubble, UserBubble } from './MessageBubble';
 
 export function ChatView({ conversationId }: { conversationId: string }) {
@@ -19,6 +20,7 @@ export function ChatView({ conversationId }: { conversationId: string }) {
             {({ message }) => (message.role === 'user' ? <UserBubble key={message.id} /> : <AssistantBubble key={message.id} />)}
           </ThreadPrimitive.Messages>
         </ThreadPrimitive.Viewport>
+        <ChatQuestions conversationId={conversationId} />
         <Composer conversationId={conversationId} error={error} onRetry={retry} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>

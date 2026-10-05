@@ -120,6 +120,8 @@ export interface PendingApproval {
   createdAt: string;
   /** Shell tools: per-sub-command verdicts from the project command policy. */
   commands?: { command: string; prefix: string; decision: 'allow' | 'ask' | 'deny'; reason: string }[];
+  /** Why this call needs a fresh approval (e.g. a page looked like a prompt injection). */
+  warning?: string;
 }
 
 export type CommandMode = 'strict' | 'auto' | 'allowlist';
