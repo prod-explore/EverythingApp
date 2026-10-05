@@ -1,3 +1,4 @@
+import { CustomConnectorsSection } from './CustomSections';
 import { useEffect, useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { getConnectors } from '../../../api';
@@ -13,7 +14,7 @@ import { Badge } from '../../shared/Badge';
  * pre-grants here that persist across server restarts, but the in-flow
  * picker is the primary mechanism for now.
  */
-export function ConnectorsTab() {
+function ConnectorList({ reload }: { reload: number }) {
   const [connectors, setConnectors] = useState<ConnectorInfo[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -22,7 +23,7 @@ export function ConnectorsTab() {
     getConnectors()
       .then(({ connectors }) => setConnectors(connectors))
       .finally(() => setLoading(false));
-  }, []);
+  }, [reload]);
 
   function toggle(name: string) {
     setExpanded(prev => {
@@ -42,7 +43,7 @@ export function ConnectorsTab() {
       <div className="space-y-2">
         <p className="text-sm text-fg-tertiary">No MCP connectors configured.</p>
         <p className="text-xs text-fg-tertiary">
-          Add connectors via the <code className="font-mono">MCP_CONNECTORS</code> env var and restart the server.
+          Add one below, or via the <code className="font-mono">MCP_CONNECTORS</code> env var.
         </p>
       </div>
     );
@@ -92,6 +93,16 @@ export function ConnectorsTab() {
       <p className="pt-1 text-xs text-fg-tertiary">
         To grant permanent per-tool approval, click <strong>Approve for this chat</strong> or <strong>Always approve</strong> in the approval dialog when a tool call comes in.
       </p>
+    </div>
+  );
+}
+
+export function ConnectorsTab() {
+  const [reload, setReload] = useState(0);
+  return (
+    <div>
+      <ConnectorList reload={reload} />
+      <CustomConnectorsSection onChanged={() => setReload(r => r + 1)} />
     </div>
   );
 }

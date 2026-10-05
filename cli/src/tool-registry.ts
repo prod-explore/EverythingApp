@@ -60,6 +60,11 @@ export class ToolRegistry {
     return sub;
   }
 
+  /** Drops every tool of one connection (connector disabled/removed at runtime). */
+  removeConnection(name: string): void {
+    for (const [key, tool] of this.tools) if (tool.connection.name === name) this.tools.delete(key);
+  }
+
   /** Exposed name for any accepted spelling ("server__tool", "server/tool", bare "tool"), or undefined. */
   resolveName(name: string): string | undefined {
     for (const tool of this.tools.values()) {

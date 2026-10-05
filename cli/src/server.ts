@@ -26,6 +26,8 @@ import { createHash } from 'node:crypto';
 import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
 import { SupervisorExec } from './supervisor-client.js';
+import { createN5Routes, migrateN5 } from './n5-routes.js';
+import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
@@ -232,6 +234,11 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
   console.log(`[tools] loaded ${registry.toAnthropicTools().length} tools from MCP`);
+
+  // ─── N5: custom providers + UI connectors ──────────────────────────────────
+  migrateN5(db);
+  const n5 = createN5Routes({ db, router, registry, connections: connections as McpConnectionLike[] });
+  await n5.startSaved();
 
   // ─── Shared services ──────────────────────────────────────────────────────
   const approvalGate = new WebApprovalGate(db);
@@ -516,6 +523,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.use('/api', github.api);
+  app.use('/api', n5.api);
 
   // ─── Workspace Explorer + checkpoints (N3) ────────────────────────────────
   // `owner` = a project id, or a chat id for chats without a project (same rule as the sandbox tools).

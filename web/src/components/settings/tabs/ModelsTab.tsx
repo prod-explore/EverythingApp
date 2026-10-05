@@ -2,6 +2,7 @@ import { useSettings } from '../../../hooks/useSettings';
 import { useModels } from '../../../hooks/useModels';
 import { ModelOptions } from '../../shared/ModelOptions';
 import { ProvidersSection } from './ProvidersSection';
+import { CustomProvidersSection } from './CustomSections';
 
 export function ModelsTab() {
   const { settings, set } = useSettings();
@@ -10,6 +11,7 @@ export function ModelsTab() {
   return (
     <div className="space-y-6">
       <ProvidersSection onChanged={refreshModels} />
+      <CustomProvidersSection onChanged={refreshModels} />
 
       <div>
         <label className="mb-2 block text-xs font-medium text-fg-secondary">Default model</label>

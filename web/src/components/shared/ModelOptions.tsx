@@ -10,7 +10,7 @@ export function ModelOptions({ models, current }: { models: ModelOption[]; curre
       {/* A conversation can carry a model that isn't in the catalog (older/custom id) — keep it selectable. */}
       {current && !known && <option value={current}>{current}</option>}
       {groups.map(g => (
-        <optgroup key={g} label={PROVIDER_LABELS[g] ?? g}>
+        <optgroup key={g} label={PROVIDER_LABELS[g] ?? g.replace(/^custom:/, '@')}>
           {models
             .filter(m => m.provider === g)
             .map(m => (

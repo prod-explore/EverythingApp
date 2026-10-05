@@ -5,16 +5,60 @@
  * (or set MODEL_PRICING_JSON, see below, without touching code at all).
  */
 
-export type ProviderId = 'anthropic' | 'gemini' | 'deepseek' | 'mindgate';
+export type BuiltinProviderId = 'anthropic' | 'gemini' | 'deepseek' | 'mindgate';
+/** N5: user-added OpenAI-compatible endpoints (OpenRouter, LM Studio, vLLM, Together, …). */
+export type CustomProviderId = `custom:${string}`;
+export type ProviderId = BuiltinProviderId | CustomProviderId;
 
-export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'gemini', 'deepseek', 'mindgate'];
+export const PROVIDER_IDS: readonly BuiltinProviderId[] = ['anthropic', 'gemini', 'deepseek', 'mindgate'];
 
-export function isProviderId(value: string): value is ProviderId {
+export function isProviderId(value: string): value is BuiltinProviderId {
   return (PROVIDER_IDS as readonly string[]).includes(value);
 }
 
+export function isCustomProviderId(value: string): value is CustomProviderId {
+  return value.startsWith('custom:');
+}
+
+export interface CustomModelDef {
+  /** Model id as the upstream API knows it (e.g. "meta-llama/llama-4-maverick"). */
+  id: string;
+  label?: string;
+  supportsImages?: boolean;
+  toolSchemaMode?: 'full' | 'flat' | 'none';
+  /** USD per million tokens; omitted = unpriced (counted as 0, flagged). */
+  pricing?: { input: number; output: number } | null;
+}
+
+export interface CustomProviderDef {
+  /** Slug: [a-z0-9-]; provider id is `custom:<slug>`, model ids are `@<slug>/<model>`. */
+  slug: string;
+  label: string;
+  baseUrl: string;
+  /** Local servers often need no key. */
+  keyOptional: boolean;
+  models: CustomModelDef[];
+}
+
+let customProviders: CustomProviderDef[] = [];
+
+/** Kept in sync with the custom_providers table by the router. */
+export function setCustomProviders(defs: CustomProviderDef[]): void {
+  customProviders = defs;
+}
+
+export function getCustomProvider(slug: string): CustomProviderDef | undefined {
+  return customProviders.find(p => p.slug === slug);
+}
+
+/** `@slug/upstream-model` → { slug, upstream } */
+export function parseCustomModelId(modelId: string): { slug: string; upstream: string } | null {
+  const m = /^@([a-z0-9-]+)\/(.+)$/.exec(modelId);
+  return m ? { slug: m[1]!, upstream: m[2]! } : null;
+}
+
 export interface ProviderDef {
-  id: ProviderId;
+  id: BuiltinProviderId;
   label: string;
   /** Anthropic only: an env var that may supply the key when the vault has none (back-compat with the pre-Phase-3 .env setup). */
   envKeyFallback?: string;
@@ -26,7 +70,7 @@ export interface ProviderDef {
   keyHint: string;
 }
 
-export const PROVIDERS: Record<ProviderId, ProviderDef> = {
+export const PROVIDERS: Record<BuiltinProviderId, ProviderDef> = {
   anthropic: {
     id: 'anthropic',
     label: 'Anthropic',
@@ -242,7 +286,7 @@ function loadOverrides(env: NodeJS.ProcessEnv): Record<string, Partial<Pricing>>
 }
 
 /** Best-effort provider guess for a model id that isn't in the catalog. Unknown → anthropic, matching pre-Phase-3 behaviour. */
-export function guessProvider(modelId: string): ProviderId {
+export function guessProvider(modelId: string): BuiltinProviderId {
   const id = modelId.toLowerCase();
   if (['flash', 'chat', 'reasoning', 'coding-fast', 'coding-hard', 'extreme'].includes(id) || id.startsWith('mindgate') || id.startsWith('pipeline:')) return 'mindgate';
   if (id.startsWith('gemini')) return 'gemini';
@@ -250,7 +294,27 @@ export function guessProvider(modelId: string): ProviderId {
   return 'anthropic';
 }
 
+function customModelInfo(modelId: string): ModelInfo | null {
+  const parsed = parseCustomModelId(modelId);
+  if (!parsed) return null;
+  const def = getCustomProvider(parsed.slug);
+  const model = def?.models.find(m => m.id === parsed.upstream);
+  const p = model?.pricing;
+  return {
+    id: modelId,
+    provider: `custom:${parsed.slug}`,
+    label: `${model?.label || parsed.upstream} (${def?.label ?? parsed.slug})`,
+    pricing: p ? { input: p.input, output: p.output, cacheWrite: p.input, cacheRead: p.input / 10 } : null,
+    supportsImages: model?.supportsImages ?? false,
+    supportsWebSearch: false,
+    supportsBatch: false,
+    toolSchemaMode: model?.toolSchemaMode,
+  };
+}
+
 export function getModelInfo(modelId: string, env: NodeJS.ProcessEnv = process.env): ModelInfo {
+  const custom = customModelInfo(modelId);
+  if (custom) return custom;
   const found = CATALOG.find(m => m.id === modelId);
   const provider = found?.provider ?? guessProvider(modelId);
   const base: ModelInfo = found ?? {
@@ -278,5 +342,6 @@ export function getModelInfo(modelId: string, env: NodeJS.ProcessEnv = process.e
 }
 
 export function listCatalog(env: NodeJS.ProcessEnv = process.env): ModelInfo[] {
-  return CATALOG.map(m => getModelInfo(m.id, env));
+  const custom = customProviders.flatMap(p => p.models.map(m => customModelInfo(`@${p.slug}/${m.id}`)!));
+  return [...CATALOG.map(m => getModelInfo(m.id, env)), ...custom];
 }

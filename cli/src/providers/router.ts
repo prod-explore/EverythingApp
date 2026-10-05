@@ -5,7 +5,7 @@ import type { LlmClient } from '../anthropic-loop.js';
 import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { KeyVault } from './key-vault.js';
 import { OpenAiCompatClient, ProviderHttpError, type CompatFlavor } from './openai-compat.js';
-import { PROVIDERS, PROVIDER_IDS, getModelInfo, listCatalog, type ModelInfo, type ProviderId } from './registry.js';
+import { PROVIDERS, PROVIDER_IDS, getCustomProvider, getModelInfo, isCustomProviderId, listCatalog, parseCustomModelId, type ModelInfo, type ProviderId } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
   constructor(
@@ -76,10 +76,19 @@ export class ProviderRouter {
       this.keyCache.set(provider, fromVault.key);
       return { key: fromVault.key, source: 'vault' };
     }
+    if (isCustomProviderId(provider)) {
+      // Keyless local servers (LM Studio, vLLM on the LAN) are allowed when the provider says so.
+      return getCustomProvider(provider.slice(7))?.keyOptional ? { key: '', source: 'vault' } : null;
+    }
     const envName = PROVIDERS[provider].envKeyFallback;
     const envKey = envName ? this.env[envName] : undefined;
     if (envKey) return { key: envKey, source: 'env' };
     return null;
+  }
+
+  /** Drops cached keys (e.g. after a custom provider is removed). */
+  forgetKey(provider: ProviderId): void {
+    this.keyCache.delete(provider);
   }
 
   saveKey(provider: ProviderId, apiKey: string): { last4: string } {
@@ -118,16 +127,15 @@ export class ProviderRouter {
   /** Removes the key (and anything that looks like it) from an error message before it can reach a log or the UI. */
   redact(message: string): string {
     let out = message;
-    for (const id of PROVIDER_IDS) {
-      const key = this.keyCache.get(id) ?? (id === 'anthropic' ? this.env['ANTHROPIC_API_KEY'] : undefined);
-      if (key) out = out.split(key).join('[redacted]');
-    }
+    const keys = new Set<string>([...this.keyCache.values()]);
+    if (this.env['ANTHROPIC_API_KEY']) keys.add(this.env['ANTHROPIC_API_KEY']);
+    for (const key of keys) if (key) out = out.split(key).join('[redacted]');
     return out;
   }
 
   private notConfigured(provider: ProviderId): ProviderNotConfiguredError {
     const stored = this.vault.hasKey(provider);
-    const label = PROVIDERS[provider].label;
+    const label = isCustomProviderId(provider) ? (getCustomProvider(provider.slice(7))?.label ?? provider) : PROVIDERS[provider].label;
     if (stored.present) {
       return new ProviderNotConfiguredError(
         provider,
@@ -159,6 +167,24 @@ export class ProviderRouter {
 
     const resolved = this.resolveKey(info.provider);
     if (!resolved) throw this.notConfigured(info.provider);
+    if (isCustomProviderId(info.provider)) {
+      const custom = getCustomProvider(info.provider.slice(7));
+      if (!custom) throw new ProviderNotConfiguredError(info.provider, `Custom provider "${info.provider.slice(7)}" no longer exists — pick another model.`);
+      const provider = info.provider;
+      const client = new OpenAiCompatClient({
+        flavor: 'generic',
+        baseUrl: custom.baseUrl.replace(/\/+$/, ''),
+        apiKey: resolved.key,
+        fetchImpl: this.opts.fetchImpl,
+        modelInfo: id => getModelInfo(id, this.env),
+        upstreamModel: id => parseCustomModelId(id)?.upstream ?? id,
+        meta: {
+          get: id => getToolCallMeta(this.opts.db, id, provider),
+          set: (id, meta) => setToolCallMeta(this.opts.db, id, provider, meta),
+        },
+      });
+      return { provider, info, client };
+    }
     const def = PROVIDERS[info.provider];
     const client = new OpenAiCompatClient({
       flavor: info.provider as CompatFlavor,
@@ -176,8 +202,11 @@ export class ProviderRouter {
 
   /** Model catalog annotated with whether the model's provider currently has a key. */
   models(): Array<ModelInfo & { available: boolean }> {
-    const configured = new Map(this.status().map(s => [s.id, s.configured]));
-    return listCatalog(this.env).map(m => ({ ...m, available: configured.get(m.provider) ?? false }));
+    const configured = new Map<string, boolean>(this.status().map(s => [s.id, s.configured]));
+    return listCatalog(this.env).map(m => ({
+      ...m,
+      available: isCustomProviderId(m.provider) ? this.resolveKey(m.provider) !== null : (configured.get(m.provider) ?? false),
+    }));
   }
 
   // ── key testing ───────────────────────────────────────────────────────────
@@ -196,10 +225,11 @@ export class ProviderRouter {
         });
         if (!res.ok) throw new ProviderHttpError('anthropic', res.status, (await res.text()).slice(0, 300));
       } else {
-        const def = PROVIDERS[provider];
+        const custom = isCustomProviderId(provider) ? getCustomProvider(provider.slice(7)) : undefined;
+        const def = isCustomProviderId(provider) ? undefined : PROVIDERS[provider];
         const client = new OpenAiCompatClient({
-          flavor: provider as CompatFlavor,
-          baseUrl: (def.baseUrlEnv ? this.env[def.baseUrlEnv] : undefined) ?? def.baseUrl!,
+          flavor: custom ? 'generic' : (provider as CompatFlavor),
+          baseUrl: custom ? custom.baseUrl.replace(/\/+$/, '') : ((def!.baseUrlEnv ? this.env[def!.baseUrlEnv] : undefined) ?? def!.baseUrl!),
           apiKey: resolved!.key,
           fetchImpl: this.opts.fetchImpl,
           modelInfo: id => getModelInfo(id, this.env),

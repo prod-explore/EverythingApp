@@ -12,7 +12,8 @@ import type { ModelInfo } from './registry.js';
  * the database or the loop except through MetaStore.
  */
 
-export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate';
+/** 'generic' = any OpenAI-compatible endpoint added by the user (N5): no provider-specific quirks. */
+export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
 
 /**
  * Provider state that has no slot in the Anthropic message shape but that the
@@ -39,6 +40,8 @@ export interface OpenAiCompatOptions {
   flavor: CompatFlavor;
   baseUrl: string;
   apiKey: string;
+  /** Maps our model id to the upstream one (custom providers: `@slug/x` → `x`). */
+  upstreamModel?: (modelId: string) => string;
   meta: MetaStore;
   modelInfo: (modelId: string) => ModelInfo;
   fetchImpl?: typeof fetch;
@@ -535,7 +538,7 @@ export class OpenAiCompatClient implements LlmClient {
 
       const tools = toChatTools(params.tools, ctx);
       const body = {
-        model: params.model,
+        model: this.opts.upstreamModel?.(params.model) ?? params.model,
         messages: toChatMessages(params, ctx),
         max_tokens: Math.max(params.max_tokens, info.minOutputTokens ?? 0),
         stream: false,
@@ -572,7 +575,7 @@ export class OpenAiCompatClient implements LlmClient {
   /** Cheap authenticated call used by "Test key" in Settings. */
   async ping(): Promise<void> {
     const res = await this.fetchImpl(`${this.opts.baseUrl}/models`, {
-      headers: { Authorization: `Bearer ${this.opts.apiKey}` },
+      headers: this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {},
     });
     if (!res.ok) throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 300)));
   }
@@ -588,7 +591,7 @@ export class OpenAiCompatClient implements LlmClient {
       try {
         const res = await this.fetchImpl(`${this.opts.baseUrl}${path}`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.opts.apiKey}` },
+          headers: { 'Content-Type': 'application/json', ...(this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {}) },
           body: JSON.stringify(body),
           signal,
         });
