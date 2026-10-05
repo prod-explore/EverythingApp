@@ -13,9 +13,9 @@ export type { GazetaItem };
 export const REQUEST_HUMAN_INPUT_TOOL = {
   name: 'request_human_input',
   description:
-    "Request input from the user that can be answered at their convenience via the Gazeta inbox. " +
-    "Use when the question is not urgent and can wait for the user's next review session. " +
-    "Do NOT use for urgent clarifications needed to complete the current task — ask inline instead.",
+    "Ask the user a question as a form. It appears both in this chat and in the Gazeta inbox; the user answers once. " +
+    "By default you wait for the answer (wait=true). With wait=false you continue immediately and the answer arrives " +
+    "later as a message. Set urgent=true ONLY when the matter is genuinely time-critical — it pins the item and alerts the user.",
   input_schema: {
     type: 'object' as const,
     properties: {
@@ -49,10 +49,39 @@ export const REQUEST_HUMAN_INPUT_TOOL = {
         type: 'number',
         description: 'Optional: seconds to wait before timing out. Default: wait indefinitely.',
       },
+      wait: { type: 'boolean', description: 'true (default): block until answered. false: continue; the answer comes later as a message.' },
+      urgent: { type: 'boolean', description: 'Only for genuinely time-critical questions. Default false.' },
     },
     required: ['title', 'description'],
   },
 } as const;
+
+/** Agent → user report in the Gazeta inbox (markdown, optional pinned workspace files). */
+export const POST_REPORT_TOOL = {
+  name: 'post_report',
+  description:
+    "Post a report to the user's Gazeta inbox" +
+    ' (status update, findings, finished work). Markdown body. ' +
+    'Optionally pin workspace files (paths under /workspace): a snapshot is stored with the report so it does not change when the file is edited later. ' +
+    'Set urgent=true only for genuinely time-critical reports. Does not wait for a reply.',
+  input_schema: {
+    type: 'object' as const,
+    properties: {
+      title: { type: 'string', description: 'Short title (max 80 chars).' },
+      body: { type: 'string', description: 'Markdown report.' },
+      files: { type: 'array', items: { type: 'string' }, description: 'Optional workspace file paths to pin (max 5).' },
+      urgent: { type: 'boolean' },
+    },
+    required: ['title', 'body'],
+  },
+} as const;
+
+/** Who asked and in which context — stored with every Gazeta item. */
+export interface GazetaOrigin {
+  projectId?: string | null;
+  runId?: string | null;
+  agent?: string | null;
+}
 
 export interface GazetaField {
   name: string;
@@ -68,7 +97,8 @@ export interface GazetaField {
 export function handleRequestHumanInput(
   db: Database.Database,
   conversationId: string,
-  args: { title: string; description: string; choices?: string[]; fields?: GazetaField[]; timeout_seconds?: number },
+  args: { title: string; description: string; choices?: string[]; fields?: GazetaField[]; timeout_seconds?: number; urgent?: boolean },
+  origin: GazetaOrigin = {},
 ): { itemId: string; message: string } {
   const inputSchema = args.fields?.length
     ? { type: 'fields', fields: args.fields }
@@ -79,9 +109,11 @@ export function handleRequestHumanInput(
   const itemId = createGazetaItem(db, {
     type: 'agent_question',
     conversationId,
-    title: args.title,
+    title: args.title.slice(0, 200),
     description: args.description,
     inputSchema,
+    urgent: args.urgent === true,
+    ...origin,
   });
 
   return {

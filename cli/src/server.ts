@@ -16,9 +16,13 @@ import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
+import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import { parseCommandPolicy } from './command-policy.js';
+import { AgentManager } from './agents.js';
+import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
+import { OrchestratorSupervisorClient, guessMime } from './supervisor-client.js';
+import { createHash } from 'node:crypto';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
@@ -43,6 +47,9 @@ import {
   listGazetaItems,
   respondToGazetaItem,
   dismissGazetaItem,
+  getGazetaItem,
+  expireGazetaItem,
+  createGazetaItem,
   createBatchJob,
   listBatchJobs,
   resolveBatchJob,
@@ -226,6 +233,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const approvalGate = new WebApprovalGate(db);
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
+  const supervisor = new OrchestratorSupervisorClient();
 
   // web_search is executed on Anthropic's side, so it only exists for Anthropic
   // models. request_human_input / spawn_subagent are orchestrator-executed
@@ -234,35 +242,119 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   const isString = (v: unknown): v is string => typeof v === 'string';
 
-  function buildVirtualTools(convId: string): VirtualTool[] {
-    return [
-      {
-        definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.Tool,
-        handler: async (input, ctx) => {
-          const title = isString(input.title) ? input.title.trim() : '';
-          const description = isString(input.description) ? input.description.trim() : '';
-          if (!title || !description) {
-            return { text: 'request_human_input needs non-empty "title" and "description" strings.', isError: true };
-          }
-          const timeoutSeconds = typeof input.timeout_seconds === 'number' && input.timeout_seconds > 0
-            ? input.timeout_seconds
-            : undefined;
-          const { itemId, message } = handleRequestHumanInput(db, convId, {
-            title,
-            description,
-            choices: Array.isArray(input.choices) ? input.choices.filter(isString) : undefined,
-            fields: Array.isArray(input.fields) ? (input.fields as GazetaField[]) : undefined,
-            timeout_seconds: timeoutSeconds,
-          });
-          sse.emitAll('gazeta:new', { type: 'agent_question', itemId });
-          // Block the agent turn until the user responds (or timeout/abort).
+  // ─── Agents-lite (N7) + durable runs (N6) ────────────────────────────────
+  interruptOrphanedRuns(db);
+  const agents = new AgentManager({
+    db, router, registry, approval: approvalGate, sse,
+    recordUsage: ({ conversationId, provider, model, usage }) => {
+      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage });
+      if (warning) sse.emitAll('usage:warning', warning);
+      return costUsd;
+    },
+    workerExtraTools: (run, signal) => [
+      humanInputTool({ convId: run.conversationId ?? '', projectId: run.projectId, runId: run.id, agent: run.label }, signal),
+      reportTool({ convId: run.conversationId ?? '', projectId: run.projectId, runId: run.id, agent: run.label }),
+    ],
+  });
+  /** Active root run per conversation — async Gazeta answers are delivered into it while a turn runs. */
+  const activeRootRun = new Map<string, string>();
+
+  interface Origin { convId: string; projectId: string | null; runId: string | null; agent: string }
+
+  /**
+   * Report pins: snapshot workspace files at report time (path + sha256 + a copy as an artifact) so the
+   * report never changes when the file is edited later. Reads go through the supervisor's byte-only
+   * file endpoint — nothing is executed on the host.
+   */
+  async function snapshotFiles(origin: Origin, paths: string[]): Promise<Array<{ path: string; sha256?: string; artifactId?: string; error?: string }>> {
+    const owner = origin.projectId ?? origin.convId;
+    const out: Array<{ path: string; sha256?: string; artifactId?: string; error?: string }> = [];
+    for (const raw of paths) {
+      const p = raw.startsWith('/workspace') ? raw : `/workspace/${raw.replace(/^\/+/, '')}`;
+      try {
+        const bytes = await supervisor.readFile(owner, p);
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        const filename = sanitizeFilename(p.split('/').pop() ?? 'file');
+        const artifact = createArtifact(db, { conversationId: origin.convId || null, filename, mimeType: guessMime(filename), sizeBytes: bytes.length, source: 'report-pin' });
+        fs.mkdirSync(artifactsDir, { recursive: true });
+        fs.writeFileSync(artifactPath(artifact), bytes);
+        out.push({ path: p, sha256, artifactId: artifact.id });
+      } catch (err) {
+        out.push({ path: p, error: (err as Error).message });
+      }
+    }
+    return out;
+  }
+
+  function humanInputTool(origin: Origin, _signal?: AbortSignal): VirtualTool {
+    return {
+      definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.Tool,
+      handler: async (input, ctx) => {
+        const title = isString(input.title) ? input.title.trim() : '';
+        const description = isString(input.description) ? input.description.trim() : '';
+        if (!title || !description) {
+          return { text: 'request_human_input needs non-empty "title" and "description" strings.', isError: true };
+        }
+        const timeoutSeconds = typeof input.timeout_seconds === 'number' && input.timeout_seconds > 0
+          ? input.timeout_seconds
+          : undefined;
+        const blocking = input.wait !== false;
+        const { itemId } = handleRequestHumanInput(db, origin.convId || (undefined as unknown as string), {
+          title,
+          description,
+          choices: Array.isArray(input.choices) ? input.choices.filter(isString) : undefined,
+          fields: Array.isArray(input.fields) ? (input.fields as GazetaField[]) : undefined,
+          timeout_seconds: timeoutSeconds,
+          urgent: input.urgent === true,
+        }, { projectId: origin.projectId, runId: origin.runId, agent: origin.agent });
+        sse.emitAll('gazeta:new', { type: 'agent_question', itemId, item: getGazetaItem(db, itemId) });
+        if (!blocking) {
+          return { text: `Question queued (id ${itemId}). Continue with your work; the answer will arrive later as a message.` };
+        }
+        // Block until the user responds (or timeout/abort). Worker runs show as waiting_input meanwhile.
+        if (origin.runId && origin.agent !== 'assistant') setRunStatus(db, origin.runId, 'waiting_input');
+        try {
           const response = await awaitHumanInput(itemId, ctx.signal, timeoutSeconds);
           if (response === null) {
+            expireGazetaItem(db, itemId);
+            sse.emitAll('gazeta:dismissed', { id: itemId, status: 'expired' });
             return { text: `No response received within the ${timeoutSeconds}s timeout. Continue without the answer or ask again later.` };
           }
           return { text: `User responded: ${JSON.stringify(response)}` };
-        },
+        } finally {
+          if (origin.runId && origin.agent !== 'assistant' && !ctx.signal?.aborted) setRunStatus(db, origin.runId, 'running');
+        }
       },
+    };
+  }
+
+  function reportTool(origin: Origin): VirtualTool {
+    return {
+      definition: POST_REPORT_TOOL as unknown as Anthropic.Tool,
+      handler: async input => {
+        const title = isString(input.title) ? input.title.trim() : '';
+        const body = isString(input.body) ? input.body.trim() : '';
+        if (!title || !body) return { text: 'post_report needs "title" and "body".', isError: true };
+        const files = Array.isArray(input.files) ? input.files.filter(isString).slice(0, 5) : [];
+        const attachments = await snapshotFiles(origin, files);
+        const itemId = createGazetaItem(db, {
+          type: 'report', conversationId: origin.convId || undefined, title: title.slice(0, 200), description: body,
+          projectId: origin.projectId, runId: origin.runId, agent: origin.agent, urgent: input.urgent === true, attachments,
+        });
+        sse.emitAll('gazeta:new', { type: 'report', itemId, item: getGazetaItem(db, itemId) });
+        const failed = attachments.filter(a => a.error);
+        return { text: `Report posted (id ${itemId}).${failed.length ? ` Could not pin: ${failed.map(f => `${f.path} (${f.error})`).join(', ')}` : ''}` };
+      },
+    };
+  }
+
+  function buildVirtualTools(convId: string, rootRunId: string, signal: AbortSignal): VirtualTool[] {
+    const conv = getConversation(db, convId);
+    const origin: Origin = { convId, projectId: conv?.projectId ?? null, runId: rootRunId, agent: 'assistant' };
+    return [
+      humanInputTool(origin, signal),
+      reportTool(origin),
+      ...agents.agentTools(rootRunId, signal),
       {
         definition: SPAWN_SUBAGENT_TOOL as unknown as Anthropic.Tool,
         handler: async (input, ctx) => {
@@ -584,6 +676,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
     void (async () => {
       const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
+      const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
+      const unregisterRoot = agents.registerRoot(rootRun.id, controller);
+      activeRootRun.set(convId, rootRun.id);
       // `||` not `??`: an empty-string setting (e.g. global_system_prompt
       // saved as "" from the Settings UI) must fall through to the default
       // too — `??` only catches null/undefined, and Anthropic's API rejects
@@ -620,7 +716,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             tools: registry,
             systemPrompt: effectiveSystem,
             serverTools,
-            virtualTools: buildVirtualTools(convId),
+            virtualTools: buildVirtualTools(convId, rootRun.id, controller.signal),
+            drainInbox: () => drainRunMessages(db, rootRun.id).map(m => `[message from ${m.fromLabel}]
+${m.body}`),
+            onStep: () => heartbeatRun(db, rootRun.id),
             signal: controller.signal,
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
@@ -639,7 +738,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });
             },
             onUsage: usage => {
-              const { warning } = ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
+              const { costUsd, warning } = ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
+              addRunUsage(db, rootRun.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, costUsd });
               if (warning) sse.emitAll('usage:warning', warning);
             },
           },
@@ -664,6 +764,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           updateConversation(db, convId, { title: titleSource.slice(0, 60) });
         }
 
+        setRunStatus(db, rootRun.id, 'done');
         turnStates.set(convId, { id: turnId, status: 'done' });
         sse.emit(convId, 'turn:done', { turnId, usage: ledger.headline() });
       } catch (err) {
@@ -677,10 +778,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
         // assistant reply. The turn:error/aborted event below is what
         // tells the UI this turn didn't complete. (See retry, below, for
         // how this state gets resolved.)
+        setRunStatus(db, rootRun.id, aborted ? 'aborted' : 'error', { error });
         turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error });
         sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error });
       } finally {
         abortControllers.delete(convId);
+        // Workers belong to the turn that started them: when it ends, whatever is still running stops.
+        agents.stopTree(rootRun.id, 'the chat turn that started this agent ended', { includeRoot: false });
+        unregisterRoot();
+        if (activeRootRun.get(convId) === rootRun.id) activeRootRun.delete(convId);
       }
     })();
 
@@ -940,34 +1046,88 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     res.json({ ok: true });
   });
 
-  // ─── Gazeta ───────────────────────────────────────────────────────────────
+  // ─── Gazeta (N6: one inbox) ───────────────────────────────────────────────
   app.get('/api/gazeta', (req, res) => {
-    const status = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
-    res.json({ items: listGazetaItems(db, status) });
+    const q = (k: string) => (typeof req.query[k] === 'string' && req.query[k] ? (req.query[k] as string) : undefined);
+    const limit = Number(q('limit') ?? 0) || undefined;
+    res.json({
+      items: listGazetaItems(db, q('status'), {
+        conversationId: q('conversationId'), projectId: q('projectId'), type: q('type'), agent: q('agent'), before: q('before'), limit,
+      }),
+    });
   });
 
   app.post('/api/gazeta/:id/respond', (req, res) => {
     const id = req.params.id;
     const response = req.body?.response ?? null;
-
-    const items = listGazetaItems(db);
-    const item = items.find(i => i.id === id);
+    const item = getGazetaItem(db, id);
     if (!item) { res.status(404).json({ error: 'item not found' }); return; }
+    if (item.status !== 'pending') { res.status(409).json({ error: `item is already ${item.status}` }); return; }
 
-    const ok = respondToGazetaItem(db, id, response);
-    if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
-
-    // Wake up a blocking agent turn if one is waiting
-    resolveHumanInput(id, response);
-    // Emit SSE so the chat UI updates (the card changes from pending to responded)
-    sse.emit(item.conversationId ?? '', 'gazeta:responded', { id, response });
-
-    res.json({ ok: true });
+    respondToGazetaItem(db, id, response);
+    // Blocking mode: wake the agent waiting on this answer (it becomes the tool_result).
+    const wasBlocking = resolveHumanInput(id, response);
+    // Async mode (or an agent that is gone, e.g. after a restart): the answer comes back as a message.
+    if (!wasBlocking && item.type === 'agent_question' && item.conversationId) {
+      deliverAsyncAnswer(item, response);
+    }
+    // Both views (chat card + Gazeta) update from this one event.
+    sse.emitAll('gazeta:responded', { id, response, conversationId: item.conversationId });
+    res.json({ ok: true, delivered: wasBlocking ? 'tool_result' : 'message' });
   });
+
+  function deliverAsyncAnswer(item: NonNullable<ReturnType<typeof getGazetaItem>>, response: unknown): void {
+    const convId = item.conversationId!;
+    const text = `[Answer from the user to "${item.title}"${item.agent && item.agent !== 'assistant' ? ` (asked by ${item.agent})` : ''}]
+${typeof response === 'string' ? response : JSON.stringify(response)}`;
+    // The asking worker is still alive → its inbox; a turn is running in the chat → the root's inbox.
+    const asker = item.runId ? getRun(db, item.runId) : null;
+    if (asker && ACTIVE_STATUSES.includes(asker.status)) { postRunMessage(db, { runId: asker.id, fromRunId: null, fromLabel: 'user (Gazeta)', body: text }); return; }
+    const root = activeRootRun.get(convId);
+    if (root) { postRunMessage(db, { runId: root, fromRunId: null, fromLabel: 'user (Gazeta)', body: text }); return; }
+    // Idle chat: append as a user message and start a turn so the agent continues.
+    const conv = getConversation(db, convId);
+    if (!conv) return;
+    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const userMessageId = appendMessage(db, convId, 'user', text);
+    kickoffLiveTurn(convId, conv, historyBeforeTurn, text, userMessageId);
+  }
 
   app.post('/api/gazeta/:id/dismiss', (req, res) => {
     const ok = dismissGazetaItem(db, req.params.id);
     if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
+    sse.emitAll('gazeta:dismissed', { id: req.params.id, status: 'dismissed' });
+    res.json({ ok: true });
+  });
+
+  app.post('/api/gazeta/bulk-dismiss', (req, res) => {
+    const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).filter(isString) : [];
+    let n = 0;
+    for (const id of ids) if (dismissGazetaItem(db, id)) { n++; sse.emitAll('gazeta:dismissed', { id, status: 'dismissed' }); }
+    res.json({ ok: true, dismissed: n });
+  });
+
+  // ─── Runs / Agents (N6/N7) ────────────────────────────────────────────────
+  app.get('/api/conversations/:id/runs', (req, res) => {
+    res.json({ runs: listRuns(db, { conversationId: req.params.id, limit: 300 }) });
+  });
+
+  app.get('/api/runs/:id', (req, res) => {
+    const run = getRun(db, req.params.id);
+    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+    res.json({ run, children: listRuns(db, { parentRunId: run.id }) });
+  });
+
+  app.get('/api/runs/:id/transcript', (req, res) => {
+    const run = getRun(db, req.params.id);
+    if (!run?.transcriptConversationId) { res.status(404).json({ error: 'no transcript for this run' }); return; }
+    res.json({ messages: getMessages(db, run.transcriptConversationId) });
+  });
+
+  app.post('/api/runs/:id/stop', (req, res) => {
+    const run = getRun(db, req.params.id);
+    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+    agents.stop(run.id, 'stopped by the user');
     res.json({ ok: true });
   });
 

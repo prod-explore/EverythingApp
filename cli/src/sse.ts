@@ -14,6 +14,10 @@ export type SSEEventName =
   | 'batch:resolved'
   | 'gazeta:new'
   | 'gazeta:responded'
+  | 'gazeta:dismissed'
+  | 'agent:spawned'
+  | 'agent:finished'
+  | 'agent:budget_warning'
   | 'artifact:new'
   | 'usage:warning'
   | 'keepalive';

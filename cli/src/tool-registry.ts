@@ -60,6 +60,14 @@ export class ToolRegistry {
     return sub;
   }
 
+  /** Exposed name for any accepted spelling ("server__tool", "server/tool", bare "tool"), or undefined. */
+  resolveName(name: string): string | undefined {
+    for (const tool of this.tools.values()) {
+      if (name === tool.exposedName || name === `${tool.connection.name}/${tool.realName}` || name === tool.realName) return tool.exposedName;
+    }
+    return undefined;
+  }
+
   toAnthropicTools(): AnthropicToolDef[] {
     return [...this.tools.values()].map(t => ({
       name: t.exposedName,

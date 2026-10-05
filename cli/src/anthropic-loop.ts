@@ -97,6 +97,13 @@ export interface ConversationDeps {
    * in a project shares one sandbox and workspace. Standalone chats fall back to `_conversation_id`.
    */
   projectId?: string;
+  /**
+   * Agents-lite: messages addressed to this run by other agents, drained at every step boundary and
+   * appended to the latest user turn (so the alternation of roles stays valid). Each string is one message.
+   */
+  drainInbox?: () => string[];
+  /** Called at the start of every step (model round-trip) — run heartbeat. */
+  onStep?: (step: number) => void;
 }
 
 export class StepLimitError extends Error {
@@ -217,8 +224,17 @@ export async function runTurn(
   for (;;) {
     // Kill switch check before each API call
     if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
-    if (deps.maxSteps !== undefined && ++steps > deps.maxSteps) {
+    steps++;
+    if (deps.maxSteps !== undefined && steps > deps.maxSteps) {
       throw new StepLimitError(deps.maxSteps);
+    }
+    deps.onStep?.(steps);
+    const inbox = deps.drainInbox?.() ?? [];
+    const lastMsg = messages[messages.length - 1];
+    if (inbox.length > 0 && lastMsg?.role === 'user') {
+      const blocks = typeof lastMsg.content === 'string' ? [{ type: 'text' as const, text: lastMsg.content }] : [...lastMsg.content];
+      for (const text of inbox) blocks.push({ type: 'text', text });
+      messages[messages.length - 1] = { role: 'user', content: blocks };
     }
 
     const params: Anthropic.MessageCreateParamsNonStreaming = {

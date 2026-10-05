@@ -98,3 +98,84 @@ describe('request_human_input as an in-loop virtual tool', () => {
     }
   });
 });
+
+describe('Gazeta as one inbox (N6)', () => {
+  async function boot(script: (call: number, p: Anthropic.MessageCreateParamsNonStreaming) => Anthropic.Message) {
+    let call = 0;
+    const seen: Anthropic.MessageCreateParamsNonStreaming[] = [];
+    const client = {
+      messages: {
+        async create(p: Anthropic.MessageCreateParamsNonStreaming) { seen.push(JSON.parse(JSON.stringify(p))); return script(++call, p); },
+        batches: { create() { throw new Error('unused'); }, retrieve() { throw new Error('unused'); }, results() { throw new Error('unused'); } },
+      },
+    };
+    const db = openDb(':memory:');
+    runMigrations(db);
+    const built = await buildApp({ db, connections: [], anthropic: client as any, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false } });
+    const server = built.app.listen(0);
+    await new Promise<void>(r => server.once('listening', () => r()));
+    const port = (server.address() as AddressInfo).port;
+    return { db, port, seen, calls: () => call, close: () => { built.stop(); server.close(); db.close(); } };
+  }
+
+  it('async questions: the turn continues, the later answer arrives as a message and starts a new turn; urgent is pinned', async () => {
+    const t = await boot(call => {
+      if (call === 1) return msg([
+        { type: 'tool_use', id: 'a', name: 'request_human_input', input: { title: 'Later', description: 'd', wait: false } },
+        { type: 'tool_use', id: 'b', name: 'post_report', input: { title: 'Status', body: '**fine**', urgent: true } },
+      ], 'tool_use');
+      return msg([{ type: 'text', text: `reply ${call}`, citations: null }], 'end_turn');
+    });
+    try {
+      const conv = (await req(t.port, 'POST', '/api/conversations', {})).json.id as string;
+      await req(t.port, 'POST', `/api/conversations/${conv}/message`, { text: 'go' });
+      await waitFor(() => t.calls() >= 2); // did not block on the question
+      await waitFor(() => getMessages(t.db, conv).length >= 4);
+
+      const items = (await req(t.port, 'GET', `/api/gazeta?conversationId=${conv}`)).json.items as any[];
+      assert.deepEqual(items.map(i => [i.type, i.urgent, i.agent]), [['report', true, 'assistant'], ['agent_question', false, 'assistant']]);
+      assert.ok(items[0].runId, 'items carry the run that created them');
+
+      const question = items.find(i => i.type === 'agent_question');
+      const r = await req(t.port, 'POST', `/api/gazeta/${question.id}/respond`, { response: 'blue' });
+      assert.equal(r.json.delivered, 'message');
+      await waitFor(() => t.calls() >= 3);
+      const lastUser = t.seen[2]!.messages.at(-1)!;
+      assert.match(JSON.stringify(lastUser.content), /Answer from the user to \\"Later\\".*blue/);
+      assert.equal((await req(t.port, 'POST', `/api/gazeta/${question.id}/respond`, { response: 'again' })).status, 409);
+
+      const runs = (await req(t.port, 'GET', `/api/conversations/${conv}/runs`)).json.runs as any[];
+      await waitFor(() => (runs.length >= 1));
+      assert.ok(runs.every(x => x.label === 'assistant'));
+    } finally {
+      t.close();
+    }
+  });
+
+  it('orchestrator spawns a worker via spawn_agent and waits for it; runs endpoint shows the tree', async () => {
+    const t = await boot((call, p) => {
+      const worker = JSON.stringify(p.system).includes('worker agent');
+      if (worker) return msg([{ type: 'text', text: 'worker report', citations: null }], 'end_turn');
+      const last = JSON.stringify(p.messages.at(-1));
+      if (!last.includes('tool_result')) return msg([{ type: 'tool_use', id: 's1', name: 'spawn_agent', input: { goal: 'research', model: 'claude-sonnet-5', label: 'r' } }], 'tool_use');
+      const spawned = /Spawned (\w+)/.exec(last);
+      if (spawned) return msg([{ type: 'tool_use', id: 'w1', name: 'wait_agents', input: { run_ids: [spawned[1]] } }], 'tool_use');
+      return msg([{ type: 'text', text: 'final', citations: null }], 'end_turn');
+    });
+    try {
+      const conv = (await req(t.port, 'POST', '/api/conversations', {})).json.id as string;
+      await req(t.port, 'POST', `/api/conversations/${conv}/message`, { text: 'team up' });
+      await waitFor(() => getMessages(t.db, conv).some(m => m.role === 'assistant' && JSON.stringify(m.content).includes('final')));
+      const runs = (await req(t.port, 'GET', `/api/conversations/${conv}/runs`)).json.runs as any[];
+      const worker = runs.find(r => r.label === 'r');
+      assert.equal(worker.status, 'done');
+      assert.equal(worker.result, 'worker report');
+      const root = runs.find(r => r.id === worker.parentRunId);
+      assert.equal(root.status, 'done');
+      const transcript = (await req(t.port, 'GET', `/api/runs/${worker.id}/transcript`)).json.messages as any[];
+      assert.ok(transcript.length >= 2);
+    } finally {
+      t.close();
+    }
+  });
+});

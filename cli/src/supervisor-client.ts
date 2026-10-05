@@ -1,0 +1,85 @@
+/**
+ * The orchestrator's view of the sandbox-supervisor: byte-level reads of project workspaces (Explorer,
+ * report pins) and checkpoints. The host never executes anything on agent files — the supervisor
+ * reads via the Docker archive API and runs git only inside the sandbox.
+ */
+
+export interface WorkspaceEntry {
+  name: string;
+  path: string;
+  type: 'file' | 'dir' | 'symlink' | 'other';
+  size: number;
+  mtime?: string;
+}
+
+export interface Checkpoint {
+  id: string;
+  label: string;
+  createdAt: string;
+}
+
+const MAX_PIN_BYTES = 2 * 1024 * 1024;
+
+export class OrchestratorSupervisorClient {
+  constructor(private readonly baseUrl: string = process.env['SUPERVISOR_URL'] ?? 'http://sandbox-supervisor:3001') {}
+
+  private url(owner: string, suffix: string): string {
+    return `${this.baseUrl.replace(/\/$/, '')}/sandboxes/${encodeURIComponent(owner)}${suffix}`;
+  }
+
+  private async json<T>(res: Response): Promise<T> {
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      let msg = body;
+      try { msg = (JSON.parse(body) as { error?: string }).error ?? body; } catch { /* plain text */ }
+      throw new Error(msg || `supervisor returned ${res.status}`);
+    }
+    return (await res.json()) as T;
+  }
+
+  async listFiles(owner: string, path: string): Promise<{ path: string; entries: WorkspaceEntry[] }> {
+    return this.json(await fetch(this.url(owner, `/files?path=${encodeURIComponent(path)}`)));
+  }
+
+  async readFile(owner: string, path: string): Promise<Buffer> {
+    const res = await fetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
+    if (!res.ok) await this.json(res);
+    const buf = Buffer.from(await res.arrayBuffer());
+    if (buf.length > MAX_PIN_BYTES) throw new Error('file too large');
+    return buf;
+  }
+
+  /** Raw response for streaming a file to the browser (the caller sets safe headers). */
+  async fileResponse(owner: string, path: string): Promise<Response> {
+    return fetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
+  }
+
+  async checkpoint(owner: string, label: string): Promise<Checkpoint> {
+    return this.json(await fetch(this.url(owner, '/checkpoint'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }),
+    }));
+  }
+
+  async listCheckpoints(owner: string): Promise<{ checkpoints: Checkpoint[] }> {
+    return this.json(await fetch(this.url(owner, '/checkpoints')));
+  }
+
+  async rollback(owner: string, checkpointId: string): Promise<unknown> {
+    return this.json(await fetch(this.url(owner, '/rollback'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkpointId }),
+    }));
+  }
+}
+
+const MIME_BY_EXT: Record<string, string> = {
+  txt: 'text/plain', md: 'text/markdown', csv: 'text/csv', json: 'application/json', log: 'text/plain',
+  ts: 'text/plain', tsx: 'text/plain', js: 'text/plain', py: 'text/plain', sh: 'text/plain', yml: 'text/plain', yaml: 'text/plain',
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', pdf: 'application/pdf',
+  html: 'text/html', svg: 'image/svg+xml',
+};
+
+/** By extension only — the host never sniffs or parses agent files. */
+export function guessMime(filename: string): string {
+  const ext = filename.toLowerCase().split('.').pop() ?? '';
+  return MIME_BY_EXT[ext] ?? 'application/octet-stream';
+}

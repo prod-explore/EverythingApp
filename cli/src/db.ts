@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { migrateRuns } from './runs.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
@@ -270,6 +271,12 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_audit_tool ON approval_audit(tool_label, created_at);
   `);
 
+  // N6: Gazeta as the one inbox — who asked, from which run/project, and whether it's urgent.
+  for (const [col, def] of [['project_id', 'TEXT'], ['run_id', 'TEXT'], ['agent', 'TEXT'], ['urgent', 'INTEGER NOT NULL DEFAULT 0'], ['attachments', 'TEXT']] as const) {
+    if (!columnExists(db, 'gazeta_items', col)) db.exec(`ALTER TABLE gazeta_items ADD COLUMN ${col} ${def}`);
+  }
+  migrateRuns(db);
+
   // Seed default settings
   const seedSetting = db.prepare(
     `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
@@ -530,6 +537,13 @@ export interface GazetaItem {
   id: string;
   type: string;
   conversationId: string | null;
+  projectId: string | null;
+  runId: string | null;
+  /** Who asked: "assistant" for the chat agent, or a worker's label. */
+  agent: string | null;
+  urgent: boolean;
+  /** Report pins: [{ path, sha256, artifactId? }] snapshots. */
+  attachments: unknown[] | null;
   title: string;
   description: string | null;
   inputSchema: unknown | null;
@@ -541,12 +555,15 @@ export interface GazetaItem {
 
 export function createGazetaItem(
   db: Database.Database,
-  item: { type: string; conversationId?: string; title: string; description?: string; inputSchema?: unknown },
+  item: {
+    type: string; conversationId?: string; title: string; description?: string; inputSchema?: unknown;
+    projectId?: string | null; runId?: string | null; agent?: string | null; urgent?: boolean; attachments?: unknown[];
+  },
 ): string {
   const row = db
     .prepare(
-      `INSERT INTO gazeta_items (type, conversation_id, title, description, input_schema)
-       VALUES (?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO gazeta_items (type, conversation_id, title, description, input_schema, project_id, run_id, agent, urgent, attachments)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       item.type,
@@ -554,19 +571,41 @@ export function createGazetaItem(
       item.title,
       item.description ?? null,
       item.inputSchema !== undefined ? JSON.stringify(item.inputSchema) : null,
+      item.projectId ?? null,
+      item.runId ?? null,
+      item.agent ?? null,
+      item.urgent ? 1 : 0,
+      item.attachments ? JSON.stringify(item.attachments) : null,
     ) as { id: string };
   return row.id;
 }
 
-export function listGazetaItems(db: Database.Database, status?: string): GazetaItem[] {
-  const sql = status
-    ? `SELECT * FROM gazeta_items WHERE status = ? ORDER BY created_at DESC`
-    : `SELECT * FROM gazeta_items ORDER BY created_at DESC`;
-  const rows = db.prepare(sql).all(...(status ? [status] : [])) as Array<Record<string, unknown>>;
+export function listGazetaItems(
+  db: Database.Database,
+  status?: string,
+  filter: { conversationId?: string; projectId?: string; type?: string; agent?: string; limit?: number; before?: string } = {},
+): GazetaItem[] {
+  const where: string[] = [];
+  const args: unknown[] = [];
+  if (status) { where.push('status = ?'); args.push(status); }
+  if (filter.conversationId) { where.push('conversation_id = ?'); args.push(filter.conversationId); }
+  if (filter.projectId) { where.push('project_id = ?'); args.push(filter.projectId); }
+  if (filter.type) { where.push('type = ?'); args.push(filter.type); }
+  if (filter.agent) { where.push('agent = ?'); args.push(filter.agent); }
+  if (filter.before) { where.push('created_at < ?'); args.push(filter.before); }
+  // Urgent open items are pinned on top; everything else newest first.
+  const sql = `SELECT * FROM gazeta_items ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY (urgent = 1 AND status = 'pending') DESC, created_at DESC, rowid DESC ${filter.limit ? 'LIMIT ' + Math.floor(filter.limit) : ''}`;
+  const rows = db.prepare(sql).all(...args) as Array<Record<string, unknown>>;
   return rows.map(r => ({
     id: r['id'] as string,
     type: r['type'] as string,
     conversationId: r['conversation_id'] as string | null,
+    projectId: (r['project_id'] as string | null) ?? null,
+    runId: (r['run_id'] as string | null) ?? null,
+    agent: (r['agent'] as string | null) ?? null,
+    urgent: r['urgent'] === 1,
+    attachments: r['attachments'] ? JSON.parse(r['attachments'] as string) : null,
     title: r['title'] as string,
     description: r['description'] as string | null,
     inputSchema: r['input_schema'] ? JSON.parse(r['input_schema'] as string) : null,
@@ -584,6 +623,16 @@ export function respondToGazetaItem(db: Database.Database, id: string, response:
     )
     .run(JSON.stringify(response), id);
   return result.changes > 0;
+}
+
+export function getGazetaItem(db: Database.Database, id: string): GazetaItem | null {
+  const row = db.prepare(`SELECT created_at FROM gazeta_items WHERE id = ?`).get(id) as { created_at: string } | undefined;
+  if (!row) return null;
+  return listGazetaItems(db).find(i => i.id === id) ?? null;
+}
+
+export function expireGazetaItem(db: Database.Database, id: string): boolean {
+  return db.prepare(`UPDATE gazeta_items SET status = 'expired' WHERE id = ? AND status = 'pending'`).run(id).changes > 0;
 }
 
 export function dismissGazetaItem(db: Database.Database, id: string): boolean {
