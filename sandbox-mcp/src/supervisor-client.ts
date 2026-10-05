@@ -22,11 +22,37 @@ export interface TerminalInfo {
   ageMs: number;
 }
 
+export interface CheckpointInfo {
+  id: string;
+  label: string;
+  commit: string;
+  createdAt: string;
+}
+
+export interface SandboxWarning {
+  type: 'cpu_high' | 'cpu_stopped';
+  at: string;
+  message: string;
+  cpuPercent: number;
+}
+
 export interface HealthResult {
   status: string;
   maxRunning: number;
   running: number;
-  sandboxes: Array<{ ownerId: string; containerId: string; running: boolean; idleMs: number; terminals: TerminalInfo[] }>;
+  warnings: Array<SandboxWarning & { ownerId: string }>;
+  sandboxes: Array<{
+    ownerId: string;
+    containerId: string;
+    running: boolean;
+    idleMs: number;
+    agentIdleMs: number;
+    stoppedAt: string | null;
+    cpuPercent: number | null;
+    cpuHot: boolean;
+    warnings: SandboxWarning[];
+    terminals: TerminalInfo[];
+  }>;
 }
 
 /**
@@ -76,6 +102,18 @@ export class SupervisorClient {
   /** One-shot command in a running sandbox (git_op, read_log). Not a terminal: no shell state carries over. */
   exec(containerId: string, command: string, timeoutMs: number): Promise<{ stdout: string; stderr: string; exitCode: number }> {
     return this.post(`/exec/${encodeURIComponent(containerId)}`, { command, timeoutMs });
+  }
+
+  /** Checkpoints of the owner's /workspace, newest first. */
+  async listCheckpoints(ownerId: string): Promise<CheckpointInfo[]> {
+    const res = await fetch(`${this.baseUrl}/sandboxes/${encodeURIComponent(ownerId)}/checkpoints`);
+    if (!res.ok) throw new Error(`Supervisor /checkpoints failed (${res.status}): ${await res.text()}`);
+    return ((await res.json()) as { checkpoints: CheckpointInfo[] }).checkpoints;
+  }
+
+  /** Restore /workspace to a checkpoint (tracked files reset, untracked non-ignored files removed). */
+  rollback(ownerId: string, checkpointId: string): Promise<{ ok: boolean; checkpointId: string; commit: string }> {
+    return this.post(`/sandboxes/${encodeURIComponent(ownerId)}/rollback`, { checkpointId });
   }
 
   async health(): Promise<HealthResult> {

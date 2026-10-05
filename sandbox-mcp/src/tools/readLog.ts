@@ -25,7 +25,7 @@ export function registerReadLog(server: McpServer, { supervisor }: ToolContext):
 
         const result = await supervisor.exec(
           claimed.containerId,
-          `tail -n ${lines} /var/log/sandbox-actions.log`,
+          `tail -n ${lines} /workspace/.ea-checkpoints/actions.log 2>/dev/null || true`,
           5_000,
         );
 

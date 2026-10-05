@@ -1,8 +1,11 @@
 import express from 'express';
-import { SandboxManager } from './sandboxes.js';
+import { HttpError, SandboxManager } from './sandboxes.js';
 import { TerminalManager } from './terminals.js';
 
 const MAX_TIMEOUT_MS = 30 * 60_000;
+
+const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
+const statusOf = (err: unknown, fallback: number) => (err instanceof HttpError ? err.status : fallback);
 
 export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs = 30_000): express.Express {
   const app = express();
@@ -25,7 +28,7 @@ export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs 
     try {
       res.json(await sandboxes.claim(ownerId));
     } catch (err) {
-      res.status(503).json({ error: err instanceof Error ? err.message : String(err) });
+      res.status(statusOf(err, 503)).json({ error: messageOf(err) });
     }
   });
 
@@ -55,7 +58,8 @@ export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs 
     try {
       res.json(await sandboxes.run(ownerId, terminal as string | undefined, command, timeout));
     } catch (err) {
-      res.status(503).json({ error: err instanceof Error ? err.message : String(err) });
+      // 429 = terminal limit reached (close one first), 503 = sandbox capacity / docker trouble.
+      res.status(statusOf(err, 503)).json({ error: messageOf(err) });
     }
   });
 
@@ -92,10 +96,92 @@ export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs 
     try {
       res.json(await sandboxes.exec(req.params['containerId']!, command, timeout));
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(/Unknown or stopped/.test(message) ? 404 : 500).json({ error: message });
+      res.status(statusOf(err, 500)).json({ error: messageOf(err) });
     }
   });
+
+  // ─── /sandboxes/:owner/* — per-project resources (explorer, checkpoints, lifecycle) ───────────────
+
+  const owners = express.Router({ mergeParams: true });
+  app.use('/sandboxes/:owner', (req, res, next) => {
+    if (!SandboxManager.validOwner(req.params['owner'] ?? '')) {
+      res.status(400).json({ error: 'invalid owner id (letters, digits, _ and -, max 64)' });
+      return;
+    }
+    next();
+  }, owners);
+
+  type Handler = (req: express.Request<{ owner: string }>, res: express.Response) => Promise<void> | void;
+  const wrap = (fn: Handler): express.RequestHandler<{ owner: string }> => async (req, res) => {
+    try {
+      await fn(req, res);
+    } catch (err) {
+      const status = statusOf(err, 500);
+      if (status >= 500) console.error(`[api] ${req.method} ${req.originalUrl}:`, err);
+      if (!res.headersSent) res.status(status).json({ error: messageOf(err) });
+    }
+  };
+
+  // GET /sandboxes/:owner — status of one sandbox (running, idle, cpu, warnings, terminals). sandbox=null if unknown.
+  owners.get('/', wrap((req, res) => void res.json({ sandbox: sandboxes.sandboxStatus(req.params.owner) })));
+
+  // GET /sandboxes/:owner/files?path=/workspace/sub — directory listing (read-only, does not start the sandbox).
+  owners.get(
+    '/files',
+    wrap(async (req, res) => {
+      res.json(await sandboxes.listFiles(req.params.owner, req.query['path']));
+    }),
+  );
+
+  // GET /sandboxes/:owner/file?path=/workspace/a.txt — raw bytes, capped (413 above the cap).
+  owners.get(
+    '/file',
+    wrap(async (req, res) => {
+      const f = await sandboxes.readFile(req.params.owner, req.query['path']);
+      res.setHeader('Content-Type', f.mime);
+      res.setHeader('Content-Length', String(f.data.length));
+      res.setHeader('X-File-Path', encodeURIComponent(f.path));
+      res.setHeader('X-File-Size', String(f.size));
+      // Agent-written content: never let a browser sniff or run it if this response is ever opened directly.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+      res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(f.name)}`);
+      res.setHeader('Cache-Control', 'no-store');
+      res.end(f.data);
+    }),
+  );
+
+  // POST /sandboxes/:owner/checkpoint { label } — git snapshot of /workspace, taken inside the sandbox.
+  owners.post(
+    '/checkpoint',
+    wrap(async (req, res) => {
+      res.json(await sandboxes.checkpoint(req.params.owner, (req.body ?? {}).label));
+    }),
+  );
+
+  // GET /sandboxes/:owner/checkpoints — newest first.
+  owners.get(
+    '/checkpoints',
+    wrap(async (req, res) => {
+      res.json({ checkpoints: await sandboxes.listCheckpoints(req.params.owner) });
+    }),
+  );
+
+  // POST /sandboxes/:owner/rollback { checkpointId }
+  owners.post(
+    '/rollback',
+    wrap(async (req, res) => {
+      res.json({ ok: true, ...(await sandboxes.rollback(req.params.owner, (req.body ?? {}).checkpointId)) });
+    }),
+  );
+
+  // DELETE /sandboxes/:owner/volume — project deletion: removes the container AND the workspace volume.
+  owners.delete(
+    '/volume',
+    wrap(async (req, res) => {
+      res.json({ ok: true, ...(await sandboxes.destroy(req.params.owner)) });
+    }),
+  );
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', ...sandboxes.status() });
