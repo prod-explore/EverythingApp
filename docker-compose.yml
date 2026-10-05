@@ -63,9 +63,9 @@ services:
     networks:
       - sandbox-internal
 
-  # Playwright browser tool — controlled web browsing with dual-LLM quarantine.
-  # Raw page content NEVER reaches the agent: it's filtered through the local
-  # quarantine model (QUARANTINE_MODEL_URL) before being returned.
+  # Playwright browser tool — controlled web browsing. Observations are built deterministically
+  # (sanitised, length-bounded, wrapped as untrusted data, injection heuristically flagged); the
+  # local quarantine model (QUARANTINE_MODEL_URL) is optional and only used for browse_url extraction.
   # Network: public internet allowed; private networks are NOT (see deploy/egress-guard.sh
   # for the network layer and playwright-mcp/src/urlSafety.ts for the application layer).
   # No docker.sock. Lives on its own `browser-egress` bridge — it shares NO network with the
@@ -93,6 +93,15 @@ services:
       # SSRF guard: the browser may only reach the PUBLIC internet. Comma-separated private
       # hostnames/IPs to allow on purpose (default none), e.g. a NAS you want the agent to read.
       BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-}
+      # N3b browser policy (operator layer; the cli's per-project `_policy` can only tighten it).
+      # Comma-separated globs like *.example.com. Empty allowlist = any public domain.
+      BROWSER_DOMAIN_ALLOW: ${BROWSER_DOMAIN_ALLOW:-}
+      BROWSER_DOMAIN_DENY: ${BROWSER_DOMAIN_DENY:-}
+      BROWSER_JS_POLICY: ${BROWSER_JS_POLICY:-allowed}   # disabled | review | allowed
+      # Observation v2: deterministic observations; the quarantine model is optional.
+      QUARANTINE_EXTRACT_ENABLED: ${QUARANTINE_EXTRACT_ENABLED:-true}
+      OBSERVATION_QUARANTINE_ENABLED: ${OBSERVATION_QUARANTINE_ENABLED:-false}
+      OBSERVATION_MAX_TEXT_CHARS: ${OBSERVATION_MAX_TEXT_CHARS:-12000}
     # No volumes on purpose: browser profiles are EPHEMERAL (no persistent logins). A leftover
     # `playwright_profiles` volume from older versions can be deleted:
     #   docker volume rm <project>_playwright_profiles
