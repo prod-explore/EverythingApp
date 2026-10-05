@@ -16,7 +16,7 @@ import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
+import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
 import { parseCommandPolicy } from './command-policy.js';
 import { AgentManager } from './agents.js';
@@ -348,7 +348,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             sse.emitAll('gazeta:dismissed', { id: itemId, status: 'expired' });
             return { text: `No response received within the ${timeoutSeconds}s timeout. Continue without the answer or ask again later.` };
           }
-          return { text: `User responded: ${JSON.stringify(response)}` };
+          return { text: `The user answered:
+${formatHumanResponse(response)}` };
         } finally {
           if (origin.runId && origin.agent !== 'assistant' && !ctx.signal?.aborted) setRunStatus(db, origin.runId, 'running');
         }
@@ -1177,7 +1178,7 @@ ${m.body}`),
   function deliverAsyncAnswer(item: NonNullable<ReturnType<typeof getGazetaItem>>, response: unknown): void {
     const convId = item.conversationId!;
     const text = `[Answer from the user to "${item.title}"${item.agent && item.agent !== 'assistant' ? ` (asked by ${item.agent})` : ''}]
-${typeof response === 'string' ? response : JSON.stringify(response)}`;
+${formatHumanResponse(response)}`;
     // The asking worker is still alive → its inbox; a turn is running in the chat → the root's inbox.
     const asker = item.runId ? getRun(db, item.runId) : null;
     if (asker && ACTIVE_STATUSES.includes(asker.status)) { postRunMessage(db, { runId: asker.id, fromRunId: null, fromLabel: 'user (Gazeta)', body: text }); return; }

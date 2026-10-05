@@ -77,7 +77,15 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
         });
       }
     }
-    result.push({ id: String(msg.id), role: 'assistant', content: parts });
+    // One turn = one assistant message: a turn with several tool rounds is stored as
+    // assistant → tool_result → assistant …, but reads as a single response (like Claude/ChatGPT).
+    // The tool_result-only user messages were skipped above, so the previous entry is the same turn.
+    const prev = result[result.length - 1];
+    if (prev && prev.role === 'assistant' && Array.isArray(prev.content)) {
+      result[result.length - 1] = { ...prev, content: [...(prev.content as ThreadAssistantMessagePart[]), ...parts] };
+    } else {
+      result.push({ id: String(msg.id), role: 'assistant', content: parts });
+    }
   }
 
   return result;

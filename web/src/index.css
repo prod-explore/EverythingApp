@@ -98,3 +98,15 @@ body {
   background: var(--color-border-hover);
   border-radius: 8px;
 }
+
+/* Markdown polish: no typographic backticks/quotes from the typography plugin, calmer headings. */
+.prose :where(code):not(:where(pre code))::before,
+.prose :where(code):not(:where(pre code))::after { content: none; }
+.prose :where(blockquote p:first-of-type)::before,
+.prose :where(blockquote p:last-of-type)::after { content: none; }
+.prose :where(blockquote) { font-style: normal; color: var(--color-fg-secondary); }
+.prose :where(h1) { font-size: 1.35em; margin-top: 1em; margin-bottom: 0.5em; }
+.prose :where(h2) { font-size: 1.18em; margin-top: 1em; margin-bottom: 0.4em; }
+.prose :where(h3) { font-size: 1.05em; }
+.prose :where(h1, h2, h3):first-child { margin-top: 0; }
+input[type="radio"], input[type="checkbox"] { accent-color: var(--color-fg); }

@@ -104,6 +104,7 @@ const SIDE_EVENTS = [
   'agent:spawned',
   'agent:finished',
   'agent:budget_warning',
+  'turn:done',
 ] as const;
 
 export type SideEvent = (typeof SIDE_EVENTS)[number];

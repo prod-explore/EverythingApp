@@ -67,7 +67,7 @@ export function Composer({
       </ComposerPrimitive.Attachments>
 
       <ComposerPrimitive.Root
-        className="flex items-end gap-2 p-3"
+        className="mx-auto flex w-full max-w-3xl items-end gap-2 p-3"
         onSubmit={async e => {
           if (!batchMode) return; // let assistant-ui's normal onNew flow handle it
           e.preventDefault();
@@ -95,7 +95,7 @@ export function Composer({
             hide the button rather than let someone attach an image batch
             mode will silently drop. */}
         {!batchMode && (
-          <ComposerPrimitive.AddAttachment className="shrink-0 rounded-button border border-border p-2.5 text-fg-tertiary transition-colors hover:text-fg-secondary disabled:opacity-30">
+          <ComposerPrimitive.AddAttachment aria-label="Attach image" title="Attach image" className="shrink-0 rounded-button border border-border p-2.5 text-fg-tertiary transition-colors hover:text-fg-secondary disabled:opacity-30">
             <Paperclip size={16} />
           </ComposerPrimitive.AddAttachment>
         )}
@@ -108,7 +108,7 @@ export function Composer({
         />
 
         <ThreadPrimitive.If running={false}>
-          <ComposerPrimitive.Send className="shrink-0 rounded-button bg-fg p-2.5 text-bg transition-opacity disabled:opacity-30">
+          <ComposerPrimitive.Send aria-label="Send message" className="shrink-0 rounded-button bg-fg p-2.5 text-bg transition-opacity disabled:opacity-30">
             <Send size={16} />
           </ComposerPrimitive.Send>
         </ThreadPrimitive.If>

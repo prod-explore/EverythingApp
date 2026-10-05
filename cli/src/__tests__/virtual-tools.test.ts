@@ -84,7 +84,7 @@ describe('request_human_input as an in-loop virtual tool', () => {
       const toolResult = (seen[1]!.at(-1)!.content as Anthropic.ToolResultBlockParam[])[0]!;
       assert.equal(toolResult.tool_use_id, 'toolu_1');
       assert.notEqual(toolResult.is_error, true);
-      assert.match(String(toolResult.content), /User responded.*yes/);
+      assert.match(String(toolResult.content), /The user answered:\s*yes/);
 
       // A second, unrelated turn must not re-create the item from old history.
       await req(port, 'POST', `/api/conversations/${conv}/message`, { text: 'another message' });

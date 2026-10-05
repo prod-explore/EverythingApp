@@ -130,7 +130,7 @@ function CommentBox({ onSubmit, placeholder = 'Leave a comment' }: { onSubmit: (
     <div className="space-y-1.5 p-3">
       <textarea value={body} onChange={e => setBody(e.target.value)} placeholder={placeholder} aria-label={placeholder} className="h-16 w-full resize-y rounded-button border border-border bg-bg px-2 py-1.5 text-xs text-fg outline-none" />
       <div className="flex justify-end">
-        <button disabled={!body.trim() || busy} onClick={async () => { setBusy(true); try { await onSubmit(body); setBody(''); } finally { setBusy(false); } }} className="rounded-button bg-accent px-3 py-1 text-xs text-white disabled:opacity-50">Comment</button>
+        <button disabled={!body.trim() || busy} onClick={async () => { setBusy(true); try { await onSubmit(body); setBody(''); } finally { setBusy(false); } }} className="rounded-button bg-fg px-3 py-1 text-xs text-bg font-medium disabled:opacity-50">Comment</button>
       </div>
     </div>
   );
@@ -192,7 +192,7 @@ function PullDetail({ projectId, base, number, onBack }: { projectId: string; ba
           <CommentBox onSubmit={async body => { await githubApi(projectId, `${base}/issues/${number}/comments`, { method: 'POST', body: { body } }); await comments.reload(); }} />
           {p.state === 'open' && !p.merged && (
             <div className="flex gap-2 border-t border-border p-3 text-xs">
-              <button onClick={() => void merge('squash')} className="rounded-button bg-success px-2 py-1 text-white">Squash & merge</button>
+              <button onClick={() => void merge('squash')} className="rounded-button bg-success px-2 py-1 text-black font-medium">Squash & merge</button>
               <button onClick={() => void merge('merge')} className="rounded-button border border-border px-2 py-1 text-fg">Merge commit</button>
               <button onClick={() => void merge('rebase')} className="rounded-button border border-border px-2 py-1 text-fg">Rebase</button>
             </div>

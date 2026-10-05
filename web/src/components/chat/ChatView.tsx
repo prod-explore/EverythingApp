@@ -12,13 +12,15 @@ export function ChatView({ conversationId }: { conversationId: string }) {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <ThreadPrimitive.Root className="flex h-full flex-col">
-        <ThreadPrimitive.Viewport className="flex flex-1 flex-col gap-3 overflow-y-auto p-4">
+        <ThreadPrimitive.Viewport autoScroll className="flex flex-1 flex-col overflow-y-auto px-4 py-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-5">
           <ThreadPrimitive.Empty>
             <EmptyState icon={MessageSquare} message="Say something to get started." />
           </ThreadPrimitive.Empty>
           <ThreadPrimitive.Messages>
             {({ message }) => (message.role === 'user' ? <UserBubble key={message.id} /> : <AssistantBubble key={message.id} />)}
           </ThreadPrimitive.Messages>
+          </div>
         </ThreadPrimitive.Viewport>
         <ChatQuestions conversationId={conversationId} />
         <Composer conversationId={conversationId} error={error} onRetry={retry} />

@@ -42,6 +42,7 @@ function MainApp() {
     createConversation,
     renameConversation,
     deleteConversation,
+    refresh: refreshConversations,
   } = useConversations();
   const gazeta = useGazetaStore();
   const [dockTool, setDockTool] = useState<DockTool | null>(null);
@@ -149,6 +150,8 @@ function MainApp() {
   // side-channel.
   useSSE(selectedId, (event, data) => {
     if (event.startsWith('gazeta:')) gazeta.handleEvent(event, data);
+    // The first turn auto-titles the chat server-side — pick the new title up.
+    if (event === 'turn:done') void refreshConversations();
     if (event === 'agent:spawned' || event === 'agent:finished') setAgentsRefresh(r => r + 1);
     if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);

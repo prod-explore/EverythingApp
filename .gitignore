@@ -23,3 +23,8 @@ google api.txt
 anthropic.txt
 .playwright-mcp/
 .claude/worktrees/
+
+# local E2E artifacts
+.e2e/
+.playwright-mcp/
+/*.png

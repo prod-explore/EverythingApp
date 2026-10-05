@@ -20,6 +20,19 @@ export interface Checkpoint {
 
 const MAX_PIN_BYTES = 2 * 1024 * 1024;
 
+export const SANDBOX_UNREACHABLE = 'The sandbox service is not reachable — start sandbox-supervisor (docker compose up sandbox-supervisor) and try again.';
+
+/** fetch() that turns "connection refused / DNS" into a message a person can act on. */
+async function sfetch(url: string, init?: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(15 * 60_000) });
+  } catch (err) {
+    const e = err as Error & { cause?: { code?: string } };
+    if (e.name === 'TimeoutError') throw new Error('The sandbox service did not answer in time.');
+    throw new Error(SANDBOX_UNREACHABLE);
+  }
+}
+
 export class OrchestratorSupervisorClient {
   constructor(private readonly baseUrl: string = process.env['SUPERVISOR_URL'] ?? 'http://sandbox-supervisor:3001') {}
 
@@ -38,11 +51,11 @@ export class OrchestratorSupervisorClient {
   }
 
   async listFiles(owner: string, path: string): Promise<{ path: string; entries: WorkspaceEntry[] }> {
-    return this.json(await fetch(this.url(owner, `/files?path=${encodeURIComponent(path)}`)));
+    return this.json(await sfetch(this.url(owner, `/files?path=${encodeURIComponent(path)}`)));
   }
 
   async readFile(owner: string, path: string): Promise<Buffer> {
-    const res = await fetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
+    const res = await sfetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
     if (!res.ok) await this.json(res);
     const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > MAX_PIN_BYTES) throw new Error('file too large');
@@ -51,21 +64,21 @@ export class OrchestratorSupervisorClient {
 
   /** Raw response for streaming a file to the browser (the caller sets safe headers). */
   async fileResponse(owner: string, path: string): Promise<Response> {
-    return fetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
+    return sfetch(this.url(owner, `/file?path=${encodeURIComponent(path)}`));
   }
 
   async checkpoint(owner: string, label: string): Promise<Checkpoint> {
-    return this.json(await fetch(this.url(owner, '/checkpoint'), {
+    return this.json(await sfetch(this.url(owner, '/checkpoint'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }),
     }));
   }
 
   async listCheckpoints(owner: string): Promise<{ checkpoints: Checkpoint[] }> {
-    return this.json(await fetch(this.url(owner, '/checkpoints')));
+    return this.json(await sfetch(this.url(owner, '/checkpoints')));
   }
 
   async rollback(owner: string, checkpointId: string): Promise<unknown> {
-    return this.json(await fetch(this.url(owner, '/rollback'), {
+    return this.json(await sfetch(this.url(owner, '/rollback'), {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ checkpointId }),
     }));
   }
@@ -99,7 +112,7 @@ export class SupervisorExec implements SandboxExec {
   constructor(private readonly baseUrl: string = process.env['SUPERVISOR_URL'] ?? 'http://sandbox-supervisor:3001') {}
 
   private async post<T>(path: string, body: unknown): Promise<T> {
-    const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
+    const res = await sfetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const json = (await res.json().catch(() => ({}))) as T & { error?: string };

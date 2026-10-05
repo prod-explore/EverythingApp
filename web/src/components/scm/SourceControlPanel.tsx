@@ -85,7 +85,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
         <div className="space-y-2 p-3 text-xs">
           <PanelMessage>/workspace/{dir} is not a git repository yet.</PanelMessage>
           {repoForDir && (
-            <button onClick={() => void act('clone', () => scm.sync(projectId, '', 'clone', repoForDir.id))} disabled={!!busy} className="w-full rounded-button bg-accent px-3 py-1.5 text-white disabled:opacity-50">
+            <button onClick={() => void act('clone', () => scm.sync(projectId, '', 'clone', repoForDir.id))} disabled={!!busy} className="w-full rounded-button bg-fg px-3 py-1.5 text-bg font-medium disabled:opacity-50">
               {busy === 'clone' ? 'Cloning…' : `Clone ${repoForDir.owner}/${repoForDir.repo}`}
             </button>
           )}
@@ -185,7 +185,7 @@ function CommitBox({ busy, hasStaged, onCommit }: { busy: string | null; hasStag
       <div className="flex items-center gap-2 text-xs">
         <label className="flex items-center gap-1 text-fg-secondary"><input type="checkbox" checked={amend} onChange={e => setAmend(e.target.checked)} /> Amend</label>
         <span className="flex-1" />
-        <button onClick={() => void submit()} disabled={!!busy || !message.trim() || (!hasStaged && !amend)} className="flex items-center gap-1 rounded-button bg-accent px-3 py-1 text-white disabled:opacity-50">
+        <button onClick={() => void submit()} disabled={!!busy || !message.trim() || (!hasStaged && !amend)} className="flex items-center gap-1 rounded-button bg-fg px-3 py-1 text-bg font-medium disabled:opacity-50">
           <GitCommitHorizontal size={13} /> {busy === 'Commit' ? 'Committing…' : 'Commit'}
         </button>
       </div>
@@ -358,7 +358,7 @@ function ConflictEditor({ projectId, dir, path, onDone }: { projectId: string; d
         <button
           disabled={text === null || remaining > 0}
           onClick={() => void scm.resolve(projectId, dir, path, text ?? '').then(onDone).catch(e => setError((e as Error).message))}
-          className="rounded-button bg-accent px-2 py-0.5 text-white disabled:opacity-50"
+          className="rounded-button bg-fg px-2 py-0.5 text-bg font-medium disabled:opacity-50"
         >
           Mark resolved
         </button>
@@ -463,7 +463,7 @@ function BranchesView({ projectId, dir, onChanged, onOutput }: { projectId: stri
     <div>
       <div className="flex gap-2 border-b border-border p-3">
         <input value={name} onChange={e => setName(e.target.value)} placeholder="new-branch-name" aria-label="New branch name" className="min-w-0 flex-1 rounded-button border border-border bg-bg px-2 py-1 text-xs text-fg outline-none" />
-        <button disabled={!/^[\w./-]+$/.test(name)} onClick={() => void checkout(name, true)} className="rounded-button bg-accent px-2 py-1 text-xs text-white disabled:opacity-50">Create</button>
+        <button disabled={!/^[\w./-]+$/.test(name)} onClick={() => void checkout(name, true)} className="rounded-button bg-fg px-2 py-1 text-xs text-bg font-medium disabled:opacity-50">Create</button>
       </div>
       {error && <PanelMessage tone="error">{error}</PanelMessage>}
       <ul className="py-1">

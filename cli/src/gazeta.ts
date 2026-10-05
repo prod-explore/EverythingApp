@@ -255,3 +255,17 @@ export function awaitHumanInput(
     });
   });
 }
+
+/** Human-readable form of a Gazeta answer ({text}, {choice}, {fields}) — what the agent and the chat see. */
+export function formatHumanResponse(response: unknown): string {
+  if (typeof response === 'string') return response;
+  if (response && typeof response === 'object') {
+    const r = response as Record<string, unknown>;
+    if (typeof r['text'] === 'string') return r['text'];
+    if (typeof r['choice'] === 'string') return r['choice'];
+    if (r['fields'] && typeof r['fields'] === 'object') {
+      return Object.entries(r['fields'] as Record<string, unknown>).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n');
+    }
+  }
+  return JSON.stringify(response);
+}

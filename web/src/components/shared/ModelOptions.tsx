@@ -1,4 +1,4 @@
-import { PROVIDER_LABELS } from '../../hooks/useModels';
+import { providerLabel } from '../../hooks/useModels';
 import type { ModelOption } from '../../types';
 
 /** <option>s grouped by provider; models whose provider has no key are shown but disabled. */
@@ -10,7 +10,7 @@ export function ModelOptions({ models, current }: { models: ModelOption[]; curre
       {/* A conversation can carry a model that isn't in the catalog (older/custom id) — keep it selectable. */}
       {current && !known && <option value={current}>{current}</option>}
       {groups.map(g => (
-        <optgroup key={g} label={PROVIDER_LABELS[g] ?? g.replace(/^custom:/, '@')}>
+        <optgroup key={g} label={providerLabel(g, models)}>
           {models
             .filter(m => m.provider === g)
             .map(m => (

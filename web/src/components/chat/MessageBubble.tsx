@@ -88,12 +88,12 @@ function EditComposer() {
 export function UserBubble() {
   const isEditing = useAuiState(s => s.composer.isEditing);
   return (
-    <MessagePrimitive.Root className="group ml-auto flex max-w-[75%] flex-col items-end gap-1">
+    <MessagePrimitive.Root className="group ml-auto flex max-w-[85%] flex-col items-end gap-1">
       {isEditing ? (
         <EditComposer />
       ) : (
         <>
-          <div className="rounded-message bg-fg px-4 py-2.5 text-sm text-bg">
+          <div className="whitespace-pre-wrap break-words rounded-message bg-bg-tertiary px-4 py-2.5 text-sm text-fg">
             <MessagePrimitive.Parts components={{ Text: PlainText }} />
           </div>
           <ActionBarPrimitive.Root
@@ -121,8 +121,8 @@ export function UserBubble() {
 
 export function AssistantBubble() {
   return (
-    <MessagePrimitive.Root className="group mr-auto flex max-w-[85%] flex-col gap-1">
-      <div className="prose prose-invert prose-sm max-w-none rounded-message border border-border bg-bg-secondary px-4 py-2.5 text-fg [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-bg [&_pre]:p-3">
+    <MessagePrimitive.Root className="group flex w-full flex-col gap-1">
+      <div className="prose prose-invert prose-sm max-w-none py-1 text-fg [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:border [&_pre]:border-border [&_pre]:bg-bg-secondary [&_pre]:p-3">
         <MessagePrimitive.GroupedParts groupBy={GROUP_STEPS}>
           {({ part, children }) => {
             switch (part.type) {
