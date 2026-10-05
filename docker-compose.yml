@@ -121,6 +121,31 @@ services:
     networks:
       - sandbox-internal
 
+  # N4: git smart-HTTP proxy to github.com. Sandboxes push/pull through it with short-lived proxy
+  # tokens; the real GitHub credential (from the orchestrator, or GITHUB_PAT as fallback) is injected
+  # here and never reaches the sandbox. Pushes become approval cards unless the repo's pushMode allows.
+  # Reachability from the sandbox bridge (br-ea-sandbox has ICC disabled, so it can't share that bridge):
+  # publish the port on the sandbox bridge gateway via GIT_PROXY_BIND and allow it in deploy/egress-guard.sh
+  # (EGRESS_ALLOW="<gateway-ip>:8080"); the default only binds loopback.
+  git-proxy:
+    build:
+      context: ./git-proxy
+      dockerfile: Dockerfile
+    environment:
+      GIT_PROXY_PORT: 8080
+      GIT_PROXY_ADMIN_TOKEN: ${GIT_PROXY_ADMIN_TOKEN:?GIT_PROXY_ADMIN_TOKEN is required}
+      ORCHESTRATOR_URL: ${GIT_PROXY_ORCHESTRATOR_URL:-http://everythingapp-web:3000}
+      GITHUB_PAT: ${GITHUB_PAT:-}
+      PUSH_APPROVAL_TIMEOUT_MS: ${PUSH_APPROVAL_TIMEOUT_MS:-600000}   # 10 min
+      GIT_PROXY_PROTECTED_BRANCHES: ${GIT_PROXY_PROTECTED_BRANCHES:-main,master}
+      GIT_PROXY_DEFAULT_TOKEN_TTL_SECONDS: ${GIT_PROXY_DEFAULT_TOKEN_TTL_SECONDS:-3600}
+      GIT_PROXY_MAX_TOKEN_TTL_SECONDS: ${GIT_PROXY_MAX_TOKEN_TTL_SECONDS:-86400}
+    ports:
+      - "${GIT_PROXY_BIND:-127.0.0.1}:8080:8080"
+    restart: unless-stopped
+    networks:
+      - sandbox-internal
+
   # Core EverythingApp web server
   everythingapp-web:
     build:
