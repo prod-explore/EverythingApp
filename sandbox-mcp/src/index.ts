@@ -10,7 +10,7 @@ async function main(): Promise<void> {
   // rather than discovering the problem on the first tool call.
   try {
     const health = await supervisor.health();
-    console.log(`[sandbox-mcp] supervisor reachable — pool: ${JSON.stringify(health.pool)}`);
+    console.log(`[sandbox-mcp] supervisor reachable — ${health.running}/${health.maxRunning} sandboxes running`);
   } catch (err) {
     // Non-fatal: supervisor may still be starting up. We log a warning and proceed.
     // The first tool call will surface a clean error if it's still unreachable.

@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ok, fail, ToolContext } from './types.js';
+import { ok, fail, ownerIds, ownerOf, ToolContext } from './types.js';
 import { checkApprovalGate } from '../approval.js';
 
 // Whitelist: only subcommands useful for coding agent work.
@@ -39,17 +39,13 @@ export function registerGitOp(server: McpServer, { config, supervisor }: ToolCon
         .array(z.string())
         .optional()
         .describe('Additional arguments (e.g. ["-m", "my commit message"]).'),
-      // Injected by the orchestrator — not intended for the model to supply.
-      _conversation_id: z
-        .string()
-        .optional()
-        .describe('Internal: conversation ID for workspace isolation. Set by the orchestrator.'),
+      ...ownerIds,
     },
-    async ({ subcommand, args = [], _conversation_id }: { subcommand: GitSubcommand; args?: string[]; _conversation_id?: string }) => {
+    async ({ subcommand, args = [], ...ids }: { subcommand: GitSubcommand; args?: string[]; _conversation_id?: string; _project_id?: string }) => {
       const gate = checkApprovalGate('git_op', config.autoApproveTools);
       if (gate.decision === 'deny') return fail(gate.reason);
 
-      const convId = _conversation_id ?? 'default';
+      const owner = ownerOf(ids);
 
       // Shell-escape each argument to prevent injection via args array.
       const escapedArgs = [subcommand, ...args]
@@ -58,13 +54,13 @@ export function registerGitOp(server: McpServer, { config, supervisor }: ToolCon
 
       let containerId: string | null = null;
       try {
-        const claimed = await supervisor.claim(convId);
+        const claimed = await supervisor.claim(owner);
         containerId = claimed.containerId;
 
         // Run git in the conversation's workspace subdirectory.
         const command = `cd ${claimed.workspacePath} && git ${escapedArgs}`;
 
-        const result = await supervisor.exec(containerId, command, config.sandboxTimeoutMs, convId);
+        const result = await supervisor.exec(containerId, command, config.sandboxTimeoutMs);
 
         const output = [
           result.stdout && `stdout:\n${result.stdout}`,

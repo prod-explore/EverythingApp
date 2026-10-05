@@ -1,14 +1,14 @@
 {
   "name": "sandbox-supervisor",
   "version": "0.1.0",
-  "description": "Host-side Docker container pool manager for EverythingApp agent sandbox",
+  "description": "Host-side Docker sandbox manager (per-project persistent workspaces, terminals) for EverythingApp agent sandbox",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc --watch & node --watch dist/index.js",
-    "test": "npm run build && node --test dist/__tests__/pool.test.js"
+    "test": "rm -rf dist && npm run build && node --test dist/__tests__/*.test.js"
   },
   "dependencies": {
     "dockerode": "^4.0.2",

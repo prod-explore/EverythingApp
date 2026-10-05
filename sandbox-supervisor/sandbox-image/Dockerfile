@@ -3,22 +3,21 @@ FROM ubuntu:24.04
 # Non-interactive apt
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Only whitelisted tools — no apt/pip/npm install available to the agent.
-# The agent can use what's here; it cannot expand the surface.
+# A normal dev environment: the agent has internet and may install what it needs (apt, npm, pip).
+# procps is required: the supervisor's terminal kill-tree uses pgrep.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    bash \
-    git \
-    curl \
-    ca-certificates \
-    nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    bash git curl wget ca-certificates openssh-client \
+    nodejs npm python3 python3-pip python3-venv build-essential \
+    procps jq ripgrep unzip less \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /usr/lib/python3*/EXTERNALLY-MANAGED
 
 # Git identity for commits made inside the sandbox
 RUN git config --global user.email "sandbox@everythingapp" \
   && git config --global user.name "EverythingApp Sandbox"
 
 # Workspace dir — this is the agent's working directory.
-# The supervisor's releaseContainer() wipes this between sessions.
+# Mounted from a named Docker volume per project/chat; never wiped by the supervisor.
 RUN mkdir -p /workspace
 WORKDIR /workspace
 

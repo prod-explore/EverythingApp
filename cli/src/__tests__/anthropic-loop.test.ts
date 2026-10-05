@@ -500,3 +500,70 @@ describe('runTurn — streaming text deltas (N2b)', () => {
     assert.equal(streamed, false);
   });
 });
+
+describe('runTurn — _project_id injection (N3: one sandbox per project)', () => {
+  async function runWith(toolName: string, modelArgs: Record<string, unknown>, deps: { projectId?: string }) {
+    const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
+    const registry = new ToolRegistry([toolName]);
+    await registry.loadFrom([
+      {
+        name: 'sandbox',
+        async listTools() {
+          return [{ name: toolName, description: toolName, inputSchema: { type: 'object' } }];
+        },
+        async callTool(name, args) {
+          calls.push({ tool: name, args: args ?? {} });
+          return { text: 'ok', isError: false };
+        },
+      } as McpConnectionLike,
+    ]);
+    await runTurn(
+      {
+        anthropic: scriptedAnthropic([
+          fakeMessage([toolUseBlock('t1', `sandbox__${toolName}`, modelArgs)], 'tool_use'),
+          fakeMessage([textBlock('done')], 'end_turn'),
+        ]),
+        model: 'claude-sonnet-5',
+        tools: registry,
+        systemPrompt: 'sys',
+        confirm: async () => true,
+        conversationId: 'conv-1',
+        ...deps,
+      },
+      [],
+      'go',
+    );
+    return calls[0]!.args;
+  }
+
+  it('sandbox tools get the conversation id and the project id', async () => {
+    const args = await runWith('run_bash', { command: 'ls' }, { projectId: 'proj-9' });
+    assert.equal(args['_conversation_id'], 'conv-1');
+    assert.equal(args['_project_id'], 'proj-9');
+    assert.equal(args['command'], 'ls');
+  });
+
+  it('a standalone chat sends no _project_id, so its own sandbox is used', async () => {
+    const args = await runWith('run_bash', { command: 'ls' }, {});
+    assert.equal('_project_id' in args, false);
+  });
+
+  it("a model-supplied _project_id is overwritten, so one project's agent cannot reach another's sandbox", async () => {
+    const withProject = await runWith('run_bash', { command: 'ls', _project_id: 'someone-elses' }, { projectId: 'mine' });
+    assert.equal(withProject['_project_id'], 'mine');
+    const standalone = await runWith('terminal_list', { _project_id: 'someone-elses' }, {});
+    assert.equal('_project_id' in standalone, false);
+  });
+
+  it('terminal tools are scoped like run_bash', async () => {
+    const args = await runWith('terminal_close', { terminal: 'dev' }, { projectId: 'p' });
+    assert.equal(args['_project_id'], 'p');
+    assert.equal(args['_conversation_id'], 'conv-1');
+  });
+
+  it('browser tools keep a per-chat session and never receive a project id', async () => {
+    const args = await runWith('browser_act', { action: 'click' }, { projectId: 'p' });
+    assert.equal(args['_conversation_id'], 'conv-1');
+    assert.equal('_project_id' in args, false);
+  });
+});

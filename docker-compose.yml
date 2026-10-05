@@ -24,11 +24,21 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      POOL_SIZE: ${POOL_SIZE:-2}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-everything-sandbox:latest}
       SUPERVISOR_PORT: ${SUPERVISOR_PORT:-3001}
+      # One sandbox per project (or standalone chat); idle ones are STOPPED, never deleted, workspace volumes are kept.
+      MAX_RUNNING_SANDBOXES: ${MAX_RUNNING_SANDBOXES:-2}
       SANDBOX_IDLE_TIMEOUT_MS: ${SANDBOX_IDLE_TIMEOUT_MS:-1800000}   # 30 min
       SANDBOX_WATCHDOG_INTERVAL_MS: ${SANDBOX_WATCHDOG_INTERVAL_MS:-120000} # 2 min
+      TERMINAL_IDLE_TIMEOUT_MS: ${TERMINAL_IDLE_TIMEOUT_MS:-900000}  # 15 min
+      MAX_TERMINALS_PER_SANDBOX: ${MAX_TERMINALS_PER_SANDBOX:-4}
+      SANDBOX_MEMORY_MB: ${SANDBOX_MEMORY_MB:-1024}
+      SANDBOX_CPUS: ${SANDBOX_CPUS:-2}
+      # Sandboxes live on their own bridge (created by the supervisor); fence it off from the LAN with
+      # deploy/egress-guard.sh (EGRESS_BRIDGES must include br-ea-sandbox).
+      SANDBOX_NETWORK: ${SANDBOX_NETWORK:-ea-sandbox-egress}
+      SANDBOX_BRIDGE_NAME: ${SANDBOX_BRIDGE_NAME:-br-ea-sandbox}
+      # SANDBOX_RUNTIME: runsc   # optional gVisor
     ports:
       - "127.0.0.1:3001:3001"
     restart: unless-stopped

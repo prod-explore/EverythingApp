@@ -609,6 +609,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             virtualTools: buildVirtualTools(convId),
             signal: controller.signal,
             conversationId: convId,
+            projectId: conv.projectId ?? undefined,
             confirm: async (label, args) => {
               const approved = await approvalGate.confirm(convId, label, args, controller.signal, {
                 projectId: conv.projectId ?? undefined,

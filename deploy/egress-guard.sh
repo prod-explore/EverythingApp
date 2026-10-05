@@ -14,8 +14,9 @@
 #   DRY_RUN=1 deploy/egress-guard.sh apply print the commands instead of running them
 #
 # Environment:
-#   EGRESS_BRIDGES  space-separated bridge names to guard   (default: "br-ea-browser")
+#   EGRESS_BRIDGES  space-separated bridge names to guard   (default: "br-ea-browser br-ea-sandbox")
 #                   br-ea-browser = browser-egress network in docker-compose.yml
+#                   br-ea-sandbox = the code-sandbox network the supervisor creates (N3)
 #   EGRESS_ALLOW    space-separated "IP" or "IP:PORT" exceptions reachable from the guarded bridges,
 #                   e.g. the quarantine model on your PC:  EGRESS_ALLOW="192.168.1.50:11434"
 #
@@ -30,7 +31,7 @@
 set -euo pipefail
 
 CHAIN="EA-EGRESS"
-BRIDGES=(${EGRESS_BRIDGES:-br-ea-browser})
+BRIDGES=(${EGRESS_BRIDGES:-br-ea-browser br-ea-sandbox})
 ALLOW=(${EGRESS_ALLOW:-})
 PRIVATE=(0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4)
 

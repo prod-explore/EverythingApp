@@ -1,97 +1,104 @@
 import express from 'express';
-import {
-  claimForConversation,
-  releaseConversation,
-  touchConversation,
-  getPoolStatus,
-  isClaimedContainer,
-} from './pool.js';
-import { execInContainer, ensureConvWorkspace } from './docker.js';
+import { SandboxManager } from './sandboxes.js';
+import { TerminalManager } from './terminals.js';
 
-export function createSupervisorApp(): express.Express {
+const MAX_TIMEOUT_MS = 30 * 60_000;
+
+export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs = 30_000): express.Express {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
 
-  // POST /claim { conversationId }
-  // MCP server calls this before each tool execution.
-  // Returns the same container for the same conversationId (sticky lease).
+  const ownerOf = (body: { ownerId?: unknown; conversationId?: unknown }): string | undefined => {
+    // `conversationId` is the pre-N3 name; a chat without a project is its own owner.
+    const v = body.ownerId ?? body.conversationId;
+    return typeof v === 'string' && SandboxManager.validOwner(v) ? v : undefined;
+  };
+
+  // POST /claim { ownerId } — make sure the owner's sandbox is running. Sticky: same owner, same container.
   app.post('/claim', async (req, res) => {
-    const { conversationId } = req.body as { conversationId?: string };
-    if (!conversationId || typeof conversationId !== 'string') {
-      res.status(400).json({ error: 'conversationId is required' });
+    const ownerId = ownerOf(req.body ?? {});
+    if (!ownerId) {
+      res.status(400).json({ error: 'ownerId is required (letters, digits, _ and -, max 64)' });
       return;
     }
-
     try {
-      const { containerId, isNew } = claimForConversation(conversationId);
-
-      // Ensure per-conversation workspace directory exists (idempotent).
-      const workspacePath = await ensureConvWorkspace(containerId, conversationId);
-
-      res.json({ containerId, workspacePath, isNew });
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      res.status(503).json({ error: message });
+      res.json(await sandboxes.claim(ownerId));
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : String(err) });
     }
   });
 
-  // POST /release { conversationId }
-  // Explicitly release a conversation's lease. The container is reset async;
-  // we respond immediately so the caller doesn't wait for the scrub.
-  app.post('/release', (req, res) => {
-    const { conversationId } = req.body as { conversationId?: string };
-    if (!conversationId || typeof conversationId !== 'string') {
-      res.status(400).json({ error: 'conversationId is required' });
+  // POST /release { ownerId } — stop the sandbox now. The workspace volume is never deleted.
+  app.post('/release', async (req, res) => {
+    const ownerId = ownerOf(req.body ?? {});
+    if (!ownerId) {
+      res.status(400).json({ error: 'ownerId is required' });
       return;
     }
-    releaseConversation(conversationId).catch(err =>
-      console.error('[api] release error:', err),
-    );
-    res.json({ ok: true });
+    res.json({ ok: true, stopped: await sandboxes.stop(ownerId) });
   });
 
-  // POST /exec/:containerId — run a command inside a claimed container.
-  // This is the critical security boundary: sandbox-mcp never holds docker.sock.
-  // It sends commands here; we validate the container is known before executing.
+  // POST /terminal/run { ownerId, terminal?, command, timeoutMs? }
+  app.post('/terminal/run', async (req, res) => {
+    const { terminal, command, timeoutMs } = (req.body ?? {}) as { terminal?: unknown; command?: unknown; timeoutMs?: unknown };
+    const ownerId = ownerOf(req.body ?? {});
+    if (!ownerId || typeof command !== 'string' || !command.trim()) {
+      res.status(400).json({ error: 'ownerId and a non-empty command are required' });
+      return;
+    }
+    if (terminal !== undefined && (typeof terminal !== 'string' || !TerminalManager.validName(terminal))) {
+      res.status(400).json({ error: 'invalid terminal name (letters, digits, _ and -, max 32)' });
+      return;
+    }
+    const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? Math.min(timeoutMs, MAX_TIMEOUT_MS) : defaultTimeoutMs;
+    try {
+      res.json(await sandboxes.run(ownerId, terminal as string | undefined, command, timeout));
+    } catch (err) {
+      res.status(503).json({ error: err instanceof Error ? err.message : String(err) });
+    }
+  });
+
+  // GET /terminals?ownerId=
+  app.get('/terminals', (req, res) => {
+    const ownerId = typeof req.query['ownerId'] === 'string' ? req.query['ownerId'] : '';
+    if (!SandboxManager.validOwner(ownerId)) {
+      res.status(400).json({ error: 'ownerId is required' });
+      return;
+    }
+    res.json({ terminals: sandboxes.listTerminals(ownerId) });
+  });
+
+  // POST /terminal/close { ownerId, terminal }
+  app.post('/terminal/close', async (req, res) => {
+    const ownerId = ownerOf(req.body ?? {});
+    const terminal = (req.body ?? {}).terminal;
+    if (!ownerId || typeof terminal !== 'string') {
+      res.status(400).json({ error: 'ownerId and terminal are required' });
+      return;
+    }
+    res.json({ closed: await sandboxes.closeTerminal(ownerId, terminal) });
+  });
+
+  // POST /exec/:containerId — one-shot command (git_op, read_log). Only reaches a RUNNING, supervisor-managed
+  // sandbox, so nothing that can reach this port can run commands in an arbitrary container.
   app.post('/exec/:containerId', async (req, res) => {
-    const { containerId } = req.params;
-    const { command, timeoutMs, conversationId } = req.body as {
-      command?: string;
-      timeoutMs?: number;
-      conversationId?: string;
-    };
-
-    if (!containerId || !command) {
-      res.status(400).json({ error: 'containerId and command are required' });
+    const { command, timeoutMs } = (req.body ?? {}) as { command?: unknown; timeoutMs?: unknown };
+    if (typeof command !== 'string' || !command) {
+      res.status(400).json({ error: 'command is required' });
       return;
     }
-
-    // The container must be in a claimed state — this prevents anything that can
-    // reach 127.0.0.1:3001 from running commands in an arbitrary/unclaimed container.
-    if (!isClaimedContainer(containerId)) {
-      res.status(404).json({ error: 'Unknown or unclaimed containerId' });
-      return;
-    }
-
-    const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 30_000;
-
+    const timeout = typeof timeoutMs === 'number' && timeoutMs > 0 ? Math.min(timeoutMs, MAX_TIMEOUT_MS) : defaultTimeoutMs;
     try {
-      const result = await execInContainer(containerId, command, timeout);
-
-      // Record activity to keep the idle watchdog from reclaiming this container.
-      if (conversationId) touchConversation(conversationId);
-
-      res.json(result);
-    } catch (err: unknown) {
+      res.json(await sandboxes.exec(req.params['containerId']!, command, timeout));
+    } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      res.status(500).json({ error: message });
+      res.status(/Unknown or stopped/.test(message) ? 404 : 500).json({ error: message });
     }
   });
 
-  // GET /health — used by docker-compose healthcheck and the MCP server's health endpoint.
   app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', pool: getPoolStatus() });
+    res.json({ status: 'ok', ...sandboxes.status() });
   });
 
   return app;

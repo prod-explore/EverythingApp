@@ -91,6 +91,11 @@ export interface ConversationDeps {
    * The model never needs to supply this; the orchestrator sets it.
    */
   conversationId?: string;
+  /**
+   * The conversation's project, if it has one — injected as `_project_id` into sandbox tools so every chat
+   * in a project shares one sandbox and workspace. Standalone chats fall back to `_conversation_id`.
+   */
+  projectId?: string;
 }
 
 export class StepLimitError extends Error {
@@ -114,11 +119,25 @@ const STATEFUL_TOOL_NAMES = new Set([
   'run_bash',
   'git_op',
   'read_log',
+  'terminal_list',
+  'terminal_close',
   'browser_open',
   'browser_observe',
   'browser_act',
   'browser_close',
 ]);
+
+/** The subset of the above that lives in the project-scoped sandbox (the browser tools are per chat). */
+const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log', 'terminal_list', 'terminal_close']);
+
+function realToolName(exposedName: string): string {
+  const parts = exposedName.split('__');
+  return parts[parts.length - 1] ?? '';
+}
+
+function needsProjectId(exposedName: string): boolean {
+  return SANDBOX_TOOL_NAMES.has(realToolName(exposedName));
+}
 
 function needsConversationId(exposedName: string): boolean {
   const parts = exposedName.split('__');
@@ -290,10 +309,16 @@ export async function runTurn(
         // Inject _conversation_id for tools that need a sticky per-conversation
         // lease (sandbox container, or — since §6b — a browser session). The
         // model never provides this — the orchestrator owns it.
-        const enrichedArgs =
+        let enrichedArgs: Record<string, unknown> =
           deps.conversationId && needsConversationId(use.name)
             ? { ...args, _conversation_id: deps.conversationId }
             : args;
+        // Set unconditionally (never trusted from the model): without it a model could pass a project id
+        // of its own and reach another project's sandbox.
+        if (needsProjectId(use.name)) {
+          const { _project_id: _ignored, ...rest } = enrichedArgs;
+          enrichedArgs = deps.projectId ? { ...rest, _project_id: deps.projectId } : rest;
+        }
         result = await deps.tools.call(use.name, enrichedArgs);
       }
       const isError = result.isError === true;

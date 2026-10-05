@@ -1,163 +1,217 @@
 import Docker from 'dockerode';
-import { PassThrough } from 'stream';
+import { PassThrough, type Duplex } from 'node:stream';
+import type { DockerOps, ExecResult, SandboxSpec } from './sandboxes.js';
+import type { ShellFactory, ShellProcess } from './terminals.js';
 
-export const docker = new Docker();
+export const LABEL = 'everythingapp.sandbox';
+const OWNER_LABEL = 'everythingapp.owner';
 
-/** Volume name for a conversation's persistent workspace. */
-export function convVolumeName(convId: string): string {
-  // Sanitise convId → only alphanumeric and dash (Docker volume name rules).
-  return `everything-workspace-${convId.replace(/[^a-z0-9-]/gi, '-').toLowerCase()}`;
+export interface DockerConfig {
+  image: string;
+  /** Dedicated bridge for sandboxes (created on demand). Isolation between sandboxes: no inter-container traffic. */
+  network: string;
+  /** Host bridge interface name, so deploy/egress-guard.sh can fence the network off from the LAN. */
+  bridgeName: string;
+  memoryMb: number;
+  cpus: number;
+  pidsLimit: number;
+  /** Optional OCI runtime, e.g. "runsc" for gVisor. Empty = Docker's default. */
+  runtime: string;
 }
 
-export async function createAndStartContainer(image: string, name: string): Promise<string> {
-  const container = await docker.createContainer({
-    Image: image,
-    name,
-    Tty: false,
-    // No network access from the sandbox container itself.
-    // Playwright browsing uses a separate sidecar (playwright-mcp) with controlled HTTP.
-    NetworkDisabled: true,
-    HostConfig: {
-      // Resource caps — the Pi has limited RAM, Skarpa Bytom needs headroom.
-      Memory: 512 * 1024 * 1024, // 512 MB
-      CpuShares: 512,            // ~50% weight relative to other containers
-      AutoRemove: false,         // we manage lifecycle manually
-    },
-  });
-  await container.start();
-  return container.id;
+export function configFromEnv(env: NodeJS.ProcessEnv = process.env): DockerConfig {
+  return {
+    image: env['SANDBOX_IMAGE'] ?? 'everything-sandbox:latest',
+    network: env['SANDBOX_NETWORK'] ?? 'ea-sandbox-egress',
+    bridgeName: env['SANDBOX_BRIDGE_NAME'] ?? 'br-ea-sandbox',
+    memoryMb: parseInt(env['SANDBOX_MEMORY_MB'] ?? '1024', 10),
+    cpus: parseFloat(env['SANDBOX_CPUS'] ?? '2'),
+    pidsLimit: parseInt(env['SANDBOX_PIDS_LIMIT'] ?? '512', 10),
+    runtime: env['SANDBOX_RUNTIME'] ?? '',
+  };
 }
 
-/**
- * Mount a named volume for a conversation into a running container so that
- * `/workspace` is backed by a persistent Docker volume for the life of the
- * conversation's sandbox session.
- *
- * We cannot mount volumes to an already-running container via the Docker API
- * directly (Docker doesn't support hot-attaching volumes). Instead the pattern
- * is: copy files into a bind-mountable path using `exec` into the container,
- * then ensure the named volume is created. The actual persistent workspace is
- * at `/workspace/<convId>/` *inside* the container's ephemeral filesystem —
- * this is sufficient because the container is never reset between calls in the
- * same conversation (sticky lease), and is wiped as a whole on lease release.
- *
- * For a future migration to volume-per-conversation on fresh containers,
- * `docker.createContainer` would include `HostConfig.Binds`.
- *
- * For now: we create the per-conversation subdirectory and return its path.
- */
-export async function ensureConvWorkspace(containerId: string, convId: string): Promise<string> {
-  // Sanitise convId for use as a directory name.
-  const safeConvId = convId.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
-  const workspacePath = `/workspace/${safeConvId}`;
-  await execInContainer(containerId, `mkdir -p ${workspacePath}`, 5_000);
-  return workspacePath;
+/** Shell snippet that kills a process and all its descendants (needs procps' pgrep in the image). */
+function killTreeCommand(pid: number): string {
+  return `kt(){ for c in $(pgrep -P "$1" 2>/dev/null); do kt "$c"; done; kill -9 "$1" 2>/dev/null; }; kt ${pid}`;
 }
 
-/**
- * Prune the conversation's workspace directory from the container.
- * Called when the lease is released (idle timeout or explicit release).
- * Non-fatal if the container is already gone.
- */
-export async function pruneConvVolume(convId: string): Promise<void> {
-  // Volume name kept for potential future use with actual named volumes.
-  const name = convVolumeName(convId);
-  try {
-    const volume = docker.getVolume(name);
-    await volume.remove();
-    console.log(`[docker] pruned volume ${name}`);
-  } catch {
-    // Volume may not exist — this is fine.
-  }
-}
+export class DockerodeOps implements DockerOps {
+  constructor(
+    private readonly cfg: DockerConfig,
+    private readonly docker = new Docker(),
+  ) {}
 
-export async function execInContainer(
-  containerId: string,
-  command: string,
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const container = docker.getContainer(containerId);
-
-  // Log the command to the append-only action log before executing.
-  // This runs even if the main command times out or errors.
-  const logEntry = `[${new Date().toISOString()}] $ ${command}\n`;
-  const logExec = await container.exec({
-    Cmd: ['bash', '-c', `echo ${JSON.stringify(logEntry)} >> /var/log/sandbox-actions.log`],
-    AttachStdout: false,
-    AttachStderr: false,
-  });
-  const logStream = await logExec.start({ hijack: false, stdin: false });
-  logStream.destroy();
-
-  const exec = await container.exec({
-    Cmd: ['bash', '-c', command],
-    AttachStdout: true,
-    AttachStderr: true,
-  });
-
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
-    }, timeoutMs);
-
-    exec.start({ hijack: true, stdin: false }, (err, stream) => {
-      if (err || !stream) {
-        clearTimeout(timer);
-        reject(err ?? new Error('No stream returned from exec'));
-        return;
-      }
-
-      const stdout = new PassThrough();
-      const stderr = new PassThrough();
-      docker.modem.demuxStream(stream, stdout, stderr);
-
-      const stdoutChunks: Buffer[] = [];
-      const stderrChunks: Buffer[] = [];
-      stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
-      stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
-
-      stream.on('end', () => {
-        clearTimeout(timer);
-        exec.inspect((inspectErr, data) => {
-          if (inspectErr || !data) {
-            resolve({
-              stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-              stderr: Buffer.concat(stderrChunks).toString('utf8'),
-              exitCode: -1,
-            });
-            return;
-          }
-          resolve({
-            stdout: Buffer.concat(stdoutChunks).toString('utf8'),
-            stderr: Buffer.concat(stderrChunks).toString('utf8'),
-            exitCode: data.ExitCode ?? -1,
-          });
-        });
-      });
-
-      stream.on('error', (streamErr) => {
-        clearTimeout(timer);
-        reject(streamErr);
-      });
+  /** The sandbox network: a plain user-defined bridge, with container-to-container traffic switched off. */
+  async ensureNetwork(): Promise<void> {
+    try {
+      await this.docker.getNetwork(this.cfg.network).inspect();
+      return;
+    } catch {
+      /* not there yet */
+    }
+    await this.docker.createNetwork({
+      Name: this.cfg.network,
+      Driver: 'bridge',
+      Options: {
+        'com.docker.network.bridge.name': this.cfg.bridgeName,
+        'com.docker.network.bridge.enable_icc': 'false',
+      },
+      Labels: { [LABEL]: '1' },
     });
-  });
-}
-
-export async function resetContainer(containerId: string): Promise<void> {
-  // Wipe entire workspace and clear action log — safe to reassign to a new conversation.
-  await execInContainer(
-    containerId,
-    'rm -rf /workspace/* /workspace/.[!.]* 2>/dev/null; truncate -s 0 /var/log/sandbox-actions.log',
-    10_000,
-  );
-}
-
-export async function removeContainer(containerId: string): Promise<void> {
-  const container = docker.getContainer(containerId);
-  try {
-    await container.stop({ t: 5 });
-  } catch {
-    // Already stopped — fine
+    console.log(`[docker] created network ${this.cfg.network} (bridge ${this.cfg.bridgeName})`);
   }
-  await container.remove({ force: true });
+
+  async ensureVolume(volume: string, ownerId: string): Promise<void> {
+    try {
+      await this.docker.getVolume(volume).inspect();
+    } catch {
+      await this.docker.createVolume({ Name: volume, Labels: { [LABEL]: '1', [OWNER_LABEL]: ownerId } });
+    }
+  }
+
+  async createContainer(spec: SandboxSpec): Promise<string> {
+    const container = await this.docker.createContainer({
+      Image: this.cfg.image,
+      name: spec.name,
+      Labels: { [LABEL]: '1', [OWNER_LABEL]: spec.ownerId },
+      WorkingDir: '/workspace',
+      Tty: false,
+      HostConfig: {
+        Binds: [`${spec.volume}:/workspace`],
+        NetworkMode: this.cfg.network,
+        // Standard Docker hardening, nothing exotic: resource caps, no swap, a pid cap against fork bombs,
+        // and Docker's default capability set minus the ones a coding agent has no use for.
+        Memory: this.cfg.memoryMb * 1024 * 1024,
+        MemorySwap: this.cfg.memoryMb * 1024 * 1024,
+        NanoCpus: Math.round(this.cfg.cpus * 1e9),
+        PidsLimit: this.cfg.pidsLimit,
+        CapDrop: ['NET_RAW', 'MKNOD', 'AUDIT_WRITE', 'SETFCAP'],
+        SecurityOpt: ['no-new-privileges:true'],
+        RestartPolicy: { Name: 'no' },
+        ...(this.cfg.runtime ? { Runtime: this.cfg.runtime } : {}),
+      },
+    });
+    await container.start();
+    return container.id;
+  }
+
+  async startContainer(id: string): Promise<void> {
+    await this.docker.getContainer(id).start();
+  }
+
+  async stopContainer(id: string): Promise<void> {
+    try {
+      await this.docker.getContainer(id).stop({ t: 5 });
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode !== 304) throw err; // 304 = already stopped
+    }
+  }
+
+  async listManaged(): Promise<Array<{ id: string; ownerId: string; running: boolean }>> {
+    const list = await this.docker.listContainers({ all: true, filters: { label: [`${LABEL}=1`] } });
+    return list.map(c => ({ id: c.Id, ownerId: c.Labels[OWNER_LABEL] ?? '', running: c.State === 'running' }));
+  }
+
+  /** One-shot `bash -c` in the container, output captured. Used for git_op, read_log and the action log. */
+  exec(id: string, command: string, timeoutMs: number): Promise<ExecResult> {
+    return new Promise((resolve, reject) => {
+      const container = this.docker.getContainer(id);
+      container
+        .exec({ Cmd: ['bash', '-c', command], AttachStdout: true, AttachStderr: true, WorkingDir: '/workspace' })
+        .then(exec => {
+          const timer = setTimeout(() => reject(new Error(`Command timed out after ${timeoutMs}ms`)), timeoutMs);
+          exec.start({ hijack: true, stdin: false }, (err, stream) => {
+            if (err || !stream) {
+              clearTimeout(timer);
+              reject(err ?? new Error('No stream returned from exec'));
+              return;
+            }
+            const out = new PassThrough();
+            const errOut = new PassThrough();
+            this.docker.modem.demuxStream(stream, out, errOut);
+            const so: Buffer[] = [];
+            const se: Buffer[] = [];
+            out.on('data', (c: Buffer) => so.push(c));
+            errOut.on('data', (c: Buffer) => se.push(c));
+            stream.on('error', e => {
+              clearTimeout(timer);
+              reject(e);
+            });
+            stream.on('end', () => {
+              clearTimeout(timer);
+              exec.inspect((e, data) =>
+                resolve({
+                  stdout: Buffer.concat(so).toString('utf8'),
+                  stderr: Buffer.concat(se).toString('utf8'),
+                  exitCode: e || !data ? -1 : (data.ExitCode ?? -1),
+                }),
+              );
+            });
+          });
+        })
+        .catch(reject);
+    });
+  }
+
+  /** A persistent interactive-ish bash via `docker exec` with stdin attached. */
+  shellFactory(id: string): ShellFactory {
+    return async () => {
+      const container = this.docker.getContainer(id);
+      const exec = await container.exec({
+        // First line is the shell's pid (needed to kill the tree later); `nice` keeps a runaway build from starving the Pi.
+        Cmd: ['bash', '-c', 'echo $$; exec nice -n 10 bash --noprofile --norc'],
+        AttachStdin: true,
+        AttachStdout: true,
+        AttachStderr: true,
+        Tty: false,
+        WorkingDir: '/workspace',
+      });
+      const stream = (await exec.start({ hijack: true, stdin: true })) as Duplex;
+
+      const out = new PassThrough();
+      const err = new PassThrough();
+      this.docker.modem.demuxStream(stream, out, err);
+
+      const dataCbs: Array<(c: string) => void> = [];
+      const exitCbs: Array<() => void> = [];
+      let pid: number | null = null;
+      let pidBuf = '';
+      const emit = (text: string) => {
+        if (pid === null) {
+          pidBuf += text;
+          const nl = pidBuf.indexOf('\n');
+          if (nl === -1) return;
+          pid = parseInt(pidBuf.slice(0, nl), 10) || null;
+          text = pidBuf.slice(nl + 1);
+          pidBuf = '';
+          if (!text) return;
+        }
+        dataCbs.forEach(cb => cb(text));
+      };
+      out.on('data', (b: Buffer) => emit(b.toString('utf8')));
+      err.on('data', (b: Buffer) => emit(b.toString('utf8')));
+      let exited = false;
+      const onEnd = () => {
+        if (exited) return;
+        exited = true;
+        exitCbs.forEach(cb => cb());
+      };
+      stream.on('end', onEnd);
+      stream.on('close', onEnd);
+      stream.on('error', onEnd);
+
+      const shell: ShellProcess = {
+        write: d => void stream.write(d),
+        onData: cb => void dataCbs.push(cb),
+        onExit: cb => void exitCbs.push(cb),
+        kill: async () => {
+          if (pid !== null) await this.exec(id, killTreeCommand(pid), 5_000).catch(() => undefined);
+          stream.end();
+          onEnd();
+        },
+      };
+      return shell;
+    };
+  }
 }

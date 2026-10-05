@@ -2,6 +2,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { McpServerConfig } from './config.js';
 
+const TOOL_CALL_TIMEOUT_MS = parseInt(process.env['MCP_TOOL_TIMEOUT_MS'] ?? '330000', 10);
+
 export interface McpToolInfo {
   name: string;
   description: string;
@@ -58,7 +60,9 @@ export class McpConnection {
 
   async callTool(name: string, args: Record<string, unknown>): Promise<McpToolCallResult> {
     if (!this.client) throw new Error(`MCP connection '${this.cfg.name}' is not connected`);
-    const result = await this.client.callTool({ name, arguments: args });
+    // The SDK's default request timeout is 60s, which would cut off a long `npm install` that the sandbox
+    // itself is still happily running. Sandbox commands cap at 280s; leave headroom above that.
+    const result = await this.client.callTool({ name, arguments: args }, undefined, { timeout: TOOL_CALL_TIMEOUT_MS });
     const content = (result.content ?? []) as Array<{ type: string; text?: string }>;
     const text = content
       .filter(block => block.type === 'text' && typeof block.text === 'string')

@@ -1,6 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { ok, fail, ToolContext } from './types.js';
+import { ok, fail, ownerIds, ownerOf, ToolContext } from './types.js';
 
 export function registerReadLog(server: McpServer, { supervisor }: ToolContext): void {
   server.tool(
@@ -17,23 +17,16 @@ export function registerReadLog(server: McpServer, { supervisor }: ToolContext):
         .max(500)
         .optional()
         .describe('Number of most recent log lines to return. Defaults to 50, max 500.'),
-      // Injected by the orchestrator — not intended for the model to supply.
-      _conversation_id: z
-        .string()
-        .optional()
-        .describe('Internal: conversation ID for workspace isolation. Set by the orchestrator.'),
+      ...ownerIds,
     },
-    async ({ lines = 50, _conversation_id }) => {
-      const convId = _conversation_id ?? 'default';
-
+    async ({ lines = 50, ...ids }) => {
       try {
-        const claimed = await supervisor.claim(convId);
+        const claimed = await supervisor.claim(ownerOf(ids));
 
         const result = await supervisor.exec(
           claimed.containerId,
           `tail -n ${lines} /var/log/sandbox-actions.log`,
           5_000,
-          convId,
         );
 
         const content = result.stdout.trim();

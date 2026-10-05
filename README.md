@@ -87,7 +87,7 @@ Copy `.env.example` to `.env` and fill in values before running.
 | `DOCKER_GID` | `999` | Build-time gid of the host's docker group, so the non-root supervisor container can reach `docker.sock` — get it with `stat -c '%g' /var/run/docker.sock` |
 | `SUPERVISOR_PORT` | `3001` | Port for the local supervisor HTTP API |
 | `MCP_PORT` | `3002` | Port for the MCP server |
-| `POOL_SIZE` | `2` | Number of pre-warmed sandbox containers |
+| `MAX_RUNNING_SANDBOXES` | `2` | Sandboxes running at once (one per project/chat; idle ones are stopped, workspaces are kept) |
 | `SANDBOX_IMAGE` | `everything-sandbox:latest` | Docker image for sandbox containers |
 | `SANDBOX_TIMEOUT_MS` | `30000` | Max execution time per `run_bash` call |
 | `AUTO_APPROVE_TOOLS` | *(empty)* | Comma-separated list of tools to auto-approve (leave empty in production) |
