@@ -3,6 +3,7 @@ import { FolderOpen, MessageSquarePlus, Newspaper, PanelLeftOpen, Settings } fro
 /** Desktop-only icon strip shown instead of the full sidebar while it is collapsed (Ctrl+B expands). */
 export function SidebarRail({
   gazetaCount,
+  gazetaUrgent = 0,
   onExpand,
   onCreate,
   onOpenProjects,
@@ -10,6 +11,7 @@ export function SidebarRail({
   onOpenSettings,
 }: {
   gazetaCount: number;
+  gazetaUrgent?: number;
   onExpand: () => void;
   onCreate: () => void;
   onOpenProjects: () => void;
@@ -28,11 +30,13 @@ export function SidebarRail({
         <FolderOpen size={18} />
       </RailButton>
       <div className="flex-1" />
-      <RailButton label="Gazeta" onClick={onOpenGazeta}>
+      <RailButton label={gazetaUrgent > 0 ? `Gazeta (${gazetaUrgent} urgent)` : 'Gazeta'} onClick={onOpenGazeta}>
         <span className="relative">
           <Newspaper size={18} />
           {gazetaCount > 0 && (
-            <span className="absolute -right-2 -top-2 min-w-4 rounded-full bg-fg px-1 text-center text-[10px] leading-4 text-bg">
+            <span
+              className={`absolute -right-2 -top-2 min-w-4 rounded-full px-1 text-center text-[10px] leading-4 text-bg ${gazetaUrgent > 0 ? 'bg-danger' : 'bg-fg'}`}
+            >
               {gazetaCount > 99 ? '99+' : gazetaCount}
             </span>
           )}

@@ -93,7 +93,20 @@ function reducer(state: LiveTurnState, action: Action): LiveTurnState {
   }
 }
 
-export type SideEvent = 'gazeta:new' | 'gazeta:responded' | 'batch:resolved' | 'approval:resolved' | 'usage:warning' | 'artifact:new';
+const SIDE_EVENTS = [
+  'gazeta:new',
+  'gazeta:responded',
+  'gazeta:dismissed',
+  'batch:resolved',
+  'approval:resolved',
+  'usage:warning',
+  'artifact:new',
+  'agent:spawned',
+  'agent:finished',
+  'agent:budget_warning',
+] as const;
+
+export type SideEvent = (typeof SIDE_EVENTS)[number];
 
 /**
  * Subscribes to a conversation's SSE stream. Reconnects automatically on
@@ -171,7 +184,7 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
         dispatch({ type: 'finish', error: data.error });
       });
 
-      for (const evt of ['gazeta:new', 'gazeta:responded', 'batch:resolved', 'approval:resolved', 'usage:warning', 'artifact:new'] as const) {
+      for (const evt of SIDE_EVENTS) {
         source.addEventListener(evt, e => {
           const data = JSON.parse((e as MessageEvent).data ?? '{}');
           onSideEventRef.current?.(evt, data);

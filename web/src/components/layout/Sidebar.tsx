@@ -23,6 +23,7 @@ export function Sidebar({
   onSelectProject,
   onEditProject,
   gazetaCount,
+  gazetaUrgent = 0,
 }: {
   conversations: ConversationSummary[];
   projects: ProjectListItem[];
@@ -40,6 +41,7 @@ export function Sidebar({
   onSelectProject: (id: string) => void;
   onEditProject: (id: string) => void;
   gazetaCount: number;
+  gazetaUrgent?: number;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState('');
@@ -206,7 +208,7 @@ export function Sidebar({
         >
           <Newspaper size={16} />
           Gazeta
-          {gazetaCount > 0 && <GazetaCounter count={gazetaCount} />}
+          {gazetaCount > 0 && <GazetaCounter count={gazetaCount} urgent={gazetaUrgent} />}
         </button>
         <button
           onClick={onOpenSettings}
