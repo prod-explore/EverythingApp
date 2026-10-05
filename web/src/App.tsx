@@ -38,6 +38,14 @@ function MainApp() {
   const [gazetaOpen, setGazetaOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Desktop-only: hides the left rail entirely. Remembered across reloads; storage can be unavailable.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('sidebarCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false);
   const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
@@ -169,7 +177,8 @@ function MainApp() {
       }
       if (mod && e.key === 'b') {
         e.preventDefault();
-        setSidebarOpen(o => !o);
+        if (window.matchMedia('(min-width: 768px)').matches) toggleSidebarCollapsed();
+        else setSidebarOpen(o => !o);
         return;
       }
       if (e.key === 'Escape') {
@@ -192,6 +201,18 @@ function MainApp() {
     return () => window.removeEventListener('keydown', onKey);
   }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen, browserPanelOpen, artifactsPanelOpen]);
 
+  function toggleSidebarCollapsed() {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('sidebarCollapsed', next ? '1' : '0');
+      } catch {
+        // not persisted; the toggle still works for this session
+      }
+      return next;
+    });
+  }
+
   if (loading || !selectedId) {
     return <div className="flex h-full items-center justify-center text-fg-tertiary">Loading…</div>;
   }
@@ -201,6 +222,7 @@ function MainApp() {
       conversations={conversations}
       selectedId={selectedId}
       sidebarOpen={sidebarOpen}
+      sidebarCollapsed={sidebarCollapsed}
       projects={projects}
       selectedProjectId={selectedProjectId}
       onSelect={id => {
@@ -226,7 +248,8 @@ function MainApp() {
         sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
         onSandboxToggle={handleSandboxToggle}
-        onToggleSidebar={() => setSidebarOpen(o => !o)}
+        sidebarCollapsed={sidebarCollapsed}
+        onToggleSidebar={() => (window.matchMedia('(min-width: 768px)').matches ? toggleSidebarCollapsed() : setSidebarOpen(o => !o))}
         onOpenBrowser={() => setBrowserPanelOpen(o => !o)}
         onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
         browserPanelOpen={browserPanelOpen}
@@ -240,28 +263,28 @@ function MainApp() {
           <button onClick={() => setSpendWarning(null)} className="shrink-0 underline">Dismiss</button>
         </div>
       )}
-      <div className="relative flex-1 overflow-hidden">
-        <ChatView conversationId={selectedId} />
-        <ApprovalBanner conversationId={selectedId} />
+      <div className="flex flex-1 overflow-hidden">
+        <div className="relative min-w-0 flex-1 overflow-hidden">
+          <ChatView conversationId={selectedId} />
+          <ApprovalBanner conversationId={selectedId} />
+        </div>
 
-        {/* §6b Chunk B: floating overlays anchored to the chat area */}
+        {/* Right dock: browser on top, artifacts below. Side column on desktop, full-screen sheet on mobile. */}
         {(browserPanelOpen || artifactsPanelOpen) && (
-          <div className="pointer-events-none absolute bottom-16 right-4 z-20 flex max-h-[calc(100%-5rem)] flex-col items-end gap-3 overflow-y-auto">
-            {browserPanelOpen && (
-              <div className="pointer-events-auto shadow-2xl">
+          <aside className="fixed inset-0 z-40 flex flex-col bg-bg md:static md:inset-auto md:z-auto md:w-[420px] md:shrink-0 md:border-l md:border-border lg:w-[480px]">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              {browserPanelOpen && (
                 <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
-              </div>
-            )}
-            {artifactsPanelOpen && (
-              <div className="pointer-events-auto shadow-2xl">
+              )}
+              {artifactsPanelOpen && (
                 <ArtifactsPanel
                   conversationId={selectedId}
                   onClose={() => setArtifactsPanelOpen(false)}
                   refreshTrigger={artifactRefresh}
                 />
-              </div>
-            )}
-          </div>
+              )}
+            </div>
+          </aside>
         )}
       </div>
 

@@ -11,6 +11,7 @@ export function Header({
   sandboxEnabled,
   onModelChange,
   onSandboxToggle,
+  sidebarCollapsed,
   onToggleSidebar,
   onOpenBrowser,
   onOpenArtifacts,
@@ -26,6 +27,7 @@ export function Header({
   sandboxEnabled: boolean | undefined;
   onModelChange: (model: string) => void;
   onSandboxToggle: (enabled: boolean) => void;
+  sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
   onOpenBrowser: () => void;
   onOpenArtifacts: () => void;
@@ -34,7 +36,7 @@ export function Header({
 }) {
   return (
     <header className="flex items-center gap-3 border-b border-border px-4 py-3">
-      <button onClick={onToggleSidebar} className="text-fg-secondary hover:text-fg md:hidden" aria-label="Toggle sidebar">
+      <button onClick={onToggleSidebar} className={`text-fg-secondary hover:text-fg ${sidebarCollapsed ? '' : 'md:hidden'}`} aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)">
         <Menu size={20} />
       </button>
       <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{title}</h1>
@@ -89,7 +91,7 @@ export function Header({
           value={model}
           onChange={e => onModelChange(e.target.value)}
           title="Model for this conversation"
-          className="shrink-0 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover"
+          className="max-w-[11rem] shrink-0 truncate rounded-full border border-border bg-bg-secondary px-3 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover"
         >
           <ModelOptions models={models} current={model} />
         </select>

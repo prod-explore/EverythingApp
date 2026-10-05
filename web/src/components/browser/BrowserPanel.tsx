@@ -142,7 +142,7 @@ export function BrowserPanel({
   }, [takeover, sendEvent]);
 
   return (
-    <div className="flex flex-col bg-bg border border-border rounded-lg overflow-hidden shadow-xl" style={{ minWidth: 360, maxWidth: 700 }}>
+    <div className="flex w-full shrink-0 flex-col overflow-hidden border-b border-border bg-bg">
       {/* Toolbar */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-secondary">
         <Monitor size={14} className="text-fg-secondary shrink-0" />

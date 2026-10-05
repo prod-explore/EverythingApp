@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, Maximize2, TriangleAlert, Wrench } from 'lucide-react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
+import { useLatestStepId } from './stepContext';
 import { FileViewer } from '../files/FileViewer';
 
 const VIEWER_THRESHOLD = 500; // characters — past this, the inline preview clips and "View full" opens FileViewer
@@ -18,8 +19,12 @@ const VIEWER_THRESHOLD = 500; // characters — past this, the inline preview cl
  * preview), not the portion the backend itself removed. There's currently
  * no endpoint that returns the original, pre-truncation text.
  */
-export function ToolCallCard({ toolName, args, result, isError }: ToolCallMessagePartProps) {
-  const [open, setOpen] = useState(false);
+export function ToolCallCard({ toolCallId, toolName, args, result, isError }: ToolCallMessagePartProps) {
+  // null = the user never touched this step, so it follows the default: open only while it is the newest running step.
+  const [override, setOverride] = useState<boolean | null>(null);
+  const latestId = useLatestStepId();
+  const open = override ?? latestId === toolCallId;
+  const setOpen = (fn: (o: boolean) => boolean) => setOverride(fn(open));
   const [viewerOpen, setViewerOpen] = useState(false);
   const running = result === undefined;
   const resultText = typeof result === 'string' ? result : result !== undefined ? JSON.stringify(result, null, 2) : undefined;

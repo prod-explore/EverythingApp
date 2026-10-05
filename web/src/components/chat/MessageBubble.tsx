@@ -1,17 +1,16 @@
-import { ActionBarPrimitive, MessagePrimitive, useAui, useAuiState } from '@assistant-ui/react';
+import { ActionBarPrimitive, MessagePrimitive, groupPartByType, useAui, useAuiState } from '@assistant-ui/react';
 import { ComposerPrimitive } from '@assistant-ui/react';
 import type { TextMessagePartComponent } from '@assistant-ui/react';
 import { Check, Copy, Pencil, Quote, RotateCw, Trash2, X } from 'lucide-react';
 import type { ComponentProps } from 'react';
 import { MarkdownText } from './MarkdownText';
 import { ToolCallCard } from './ToolCallCard';
+import { StepGroup } from './StepGroup';
 
 const PlainText: TextMessagePartComponent = ({ text }) => <span>{text}</span>;
 
-const ASSISTANT_PARTS_COMPONENTS = {
-  Text: MarkdownText,
-  tools: { Fallback: ToolCallCard },
-};
+// Adjacent tool calls collapse into one "N steps" block; text parts stay outside it.
+const GROUP_STEPS = groupPartByType({ 'tool-call': ['group-steps'] });
 
 /** Small icon button shared by both bubbles' action bars — kept local since it's only ever used here. */
 function ActionButton({ children, ...rest }: ComponentProps<'button'>) {
@@ -124,7 +123,24 @@ export function AssistantBubble() {
   return (
     <MessagePrimitive.Root className="group mr-auto flex max-w-[85%] flex-col gap-1">
       <div className="prose prose-invert prose-sm max-w-none rounded-message border border-border bg-bg-secondary px-4 py-2.5 text-fg [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-bg [&_pre]:p-3">
-        <MessagePrimitive.Parts components={ASSISTANT_PARTS_COMPONENTS} />
+        <MessagePrimitive.GroupedParts groupBy={GROUP_STEPS}>
+          {({ part, children }) => {
+            switch (part.type) {
+              case 'group-steps':
+                return (
+                  <StepGroup indices={part.indices} running={part.status.type === 'running'}>
+                    {children}
+                  </StepGroup>
+                );
+              case 'text':
+                return <MarkdownText {...part} />;
+              case 'tool-call':
+                return part.toolUI ?? <ToolCallCard {...part} />;
+              default:
+                return null;
+            }
+          }}
+        </MessagePrimitive.GroupedParts>
       </div>
       <ActionBarPrimitive.Root
         hideWhenRunning

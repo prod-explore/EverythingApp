@@ -77,7 +77,7 @@ export function ArtifactsPanel({
   }
 
   return (
-    <div className="flex flex-col bg-bg border border-border rounded-lg shadow-xl overflow-hidden" style={{ minWidth: 320, maxWidth: 600, maxHeight: '80vh' }}>
+    <div className="flex min-h-0 w-full flex-1 flex-col overflow-hidden bg-bg">
       {/* Header */}
       <div className="flex items-center gap-2 px-4 py-3 border-b border-border bg-bg-secondary">
         <FolderOpen size={15} className="text-fg-secondary shrink-0" />

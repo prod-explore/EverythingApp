@@ -8,6 +8,7 @@ export function Layout({
   selectedId,
   selectedProjectId,
   sidebarOpen,
+  sidebarCollapsed,
   onSelect,
   onCreate,
   onRename,
@@ -24,6 +25,8 @@ export function Layout({
   selectedId: string | null;
   selectedProjectId: string | null;
   sidebarOpen: boolean;
+  /** Desktop only: hides the rail completely (mobile uses sidebarOpen). */
+  sidebarCollapsed: boolean;
   onSelect: (id: string) => void;
   onCreate: (projectId?: string) => void;
   onRename: (id: string, title: string) => void;
@@ -36,7 +39,7 @@ export function Layout({
 }>) {
   return (
     <div className="relative flex h-full">
-      <div className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} md:block`}>
+      <div className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} ${sidebarCollapsed ? 'md:hidden' : 'md:block'}`}>
         <Sidebar
           conversations={conversations}
           projects={projects}
