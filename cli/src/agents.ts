@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type Anthropic from '@anthropic-ai/sdk';
-import { runTurn, StepLimitError, type LlmClient, type VirtualTool } from './anthropic-loop.js';
+import { runTurn, StepLimitError, type LlmClient, type VirtualTool, type ConversationDeps } from './anthropic-loop.js';
+
+type ConversationBrowserPolicy = NonNullable<ConversationDeps['browserPolicy']>;
 import type { ToolRegistry } from './tool-registry.js';
 import type { WebApprovalGate } from './web-approval.js';
 import type { SSEManager, SSEEventName } from './sse.js';
@@ -97,6 +99,8 @@ export interface AgentManagerDeps {
   limits?: AgentLimits;
   /** Usage of every worker API call → the usage ledger; returns its cost. */
   recordUsage: (u: { conversationId: string | null; provider: ProviderId; model: string; usage: Anthropic.Usage }) => number;
+  /** The project's browser policy for worker browser calls. */
+  browserPolicyOf?: (projectId: string | null) => ConversationBrowserPolicy | undefined;
   /** Extra virtual tools every worker gets (e.g. request_human_input wired to Gazeta with the run's label). */
   workerExtraTools?: (run: RunRow, signal: AbortSignal) => VirtualTool[];
 }
@@ -218,13 +222,15 @@ export class AgentManager {
           projectId: run.projectId ?? undefined,
           drainInbox: () => drainRunMessages(db, run.id).map(m => `[message from ${m.fromLabel}]\n${m.body}`),
           onStep: () => heartbeatRun(db, run.id),
-          confirm: async (label, args) => {
+          browserPolicy: this.deps.browserPolicyOf?.(run.projectId),
+          confirm: async (label, args, opts) => {
             const toolLabel = `[agent ${run.label}] ${label}`;
             setRunStatus(db, run.id, 'waiting_input');
             try {
               return await approval.confirmDetailed(run.conversationId ?? run.id, toolLabel, args, signal, {
                 projectId: run.projectId ?? undefined,
                 modelId: run.model,
+                forcePrompt: opts?.forcePrompt,
               });
             } finally {
               if (!signal.aborted) setRunStatus(db, run.id, 'running');

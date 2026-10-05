@@ -65,7 +65,11 @@ export interface ConversationDeps {
   virtualTools?: VirtualTool[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
   /** `{ approved:false, reason }` = refused by policy rather than by a human; the reason is shown to the model. */
-  confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean | { approved: boolean; reason?: string }>;
+  confirm: (
+    toolLabel: string,
+    args: Record<string, unknown>,
+    opts?: { forcePrompt?: string },
+  ) => Promise<boolean | { approved: boolean; reason?: string }>;
   /** Called for every text block the model produces, in order. Always fires, with the complete block. */
   onAssistantText?: (text: string) => void;
   /**
@@ -102,6 +106,8 @@ export interface ConversationDeps {
    * appended to the latest user turn (so the alternation of roles stays valid). Each string is one message.
    */
   drainInbox?: () => string[];
+  /** Project browser policy, injected as `_policy` into every browser tool call (never taken from the model). */
+  browserPolicy?: { domainAllow?: string[]; domainDeny?: string[]; js?: 'disabled' | 'review' | 'allowed' };
   /** Called at the start of every step (model round-trip) — run heartbeat. */
   onStep?: (step: number) => void;
 }
@@ -134,6 +140,24 @@ const STATEFUL_TOOL_NAMES = new Set([
   'browser_act',
   'browser_close',
 ]);
+
+/** Browser tools: get the orchestrator's `_policy`; model-supplied hidden args are stripped. */
+const BROWSER_TOOL_NAMES = new Set(['browser_open', 'browser_observe', 'browser_act', 'browser_close', 'browse_url']);
+/** Read-only tools that stay unprompted even after a page looked like a prompt injection. */
+const READ_ONLY_AFTER_INJECTION = new Set(['browser_observe', 'browser_close', 'read_log', 'terminal_list']);
+const BROWSER_META_PREFIX = '[browser-meta] ';
+
+/** playwright-mcp puts `[browser-meta] {json}` on the first line of every observation (Observation v2). */
+export function browserInjectionSignal(text: string): { suspected: boolean; reasons: string[] } {
+  if (!text.startsWith(BROWSER_META_PREFIX)) return { suspected: false, reasons: [] };
+  const nl = text.indexOf('\n');
+  try {
+    const meta = JSON.parse(text.slice(BROWSER_META_PREFIX.length, nl === -1 ? undefined : nl)) as { injection_suspected?: boolean; injection_reasons?: string[] };
+    return { suspected: meta.injection_suspected === true, reasons: Array.isArray(meta.injection_reasons) ? meta.injection_reasons.map(String) : [] };
+  } catch {
+    return { suspected: false, reasons: [] };
+  }
+}
 
 /** The subset of the above that lives in the project-scoped sandbox (the browser tools are per chat). */
 const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log', 'terminal_list', 'terminal_close']);
@@ -221,6 +245,9 @@ export async function runTurn(
   ];
 
   let steps = 0;
+  // Set once a browser observation looked like a prompt injection: from then on every tool call with an
+  // effect needs a fresh human approval (grants and auto-approve don't apply) — Plan v3 §6 step 3.
+  let injectionWarning: string | null = null;
   for (;;) {
     // Kill switch check before each API call
     if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
@@ -297,7 +324,8 @@ export async function runTurn(
       }
 
       const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
-      const decision = needsApproval ? await deps.confirm(label, args) : true;
+      const forcePrompt = injectionWarning && !READ_ONLY_AFTER_INJECTION.has(realToolName(use.name)) ? injectionWarning : undefined;
+      const decision = needsApproval || forcePrompt ? await deps.confirm(label, args, forcePrompt ? { forcePrompt } : undefined) : true;
       const approved = typeof decision === 'boolean' ? decision : decision.approved;
       const denyReason = typeof decision === 'boolean' ? undefined : decision.reason;
       // Re-check AFTER the (possibly long) human wait: a kill switch pressed while this
@@ -338,7 +366,19 @@ export async function runTurn(
           const { _project_id: _ignored, ...rest } = enrichedArgs;
           enrichedArgs = deps.projectId ? { ...rest, _project_id: deps.projectId } : rest;
         }
+        if (BROWSER_TOOL_NAMES.has(realToolName(use.name))) {
+          // Hidden policy args belong to the orchestrator: a model could otherwise widen its own policy
+          // or allow downloads. Downloads stay blocked (playwright-mcp default).
+          const { _policy: _p, _allow_downloads: _d, ...rest } = enrichedArgs;
+          enrichedArgs = deps.browserPolicy ? { ...rest, _policy: deps.browserPolicy } : rest;
+        }
         result = await deps.tools.call(use.name, enrichedArgs);
+        if (BROWSER_TOOL_NAMES.has(realToolName(use.name))) {
+          const signal = browserInjectionSignal(result.text);
+          if (signal.suspected && !injectionWarning) {
+            injectionWarning = `A web page in this turn looked like a prompt injection${signal.reasons.length ? ` (${signal.reasons.slice(0, 3).join('; ')})` : ''}. Check that this action is what you asked for.`;
+          }
+        }
       }
       const isError = result.isError === true;
 

@@ -246,6 +246,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   interruptOrphanedRuns(db);
   const agents = new AgentManager({
     db, router, registry, approval: approvalGate, sse,
+    browserPolicyOf: projectId => browserPolicyOf(projectId),
     recordUsage: ({ conversationId, provider, model, usage }) => {
       const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage });
       if (warning) sse.emitAll('usage:warning', warning);
@@ -258,6 +259,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
   /** Active root run per conversation — async Gazeta answers are delivered into it while a turn runs. */
   const activeRootRun = new Map<string, string>();
+
+  /** Project browser policy (Plan v3 §6) → playwright-mcp `_policy`; it can only tighten the operator's env policy. */
+  function browserPolicyOf(projectId: string | null | undefined): { domainAllow?: string[]; domainDeny?: string[]; js?: 'disabled' | 'review' | 'allowed' } | undefined {
+    const raw = projectId ? getProject(db, projectId)?.policy?.['browser'] : undefined;
+    if (!raw || typeof raw !== 'object') return undefined;
+    const b = raw as Record<string, unknown>;
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter(isString).map(x => x.trim()).filter(Boolean) : undefined);
+    const js = b['js'] === 'disabled' || b['js'] === 'review' || b['js'] === 'allowed' ? b['js'] : undefined;
+    return { domainAllow: list(b['domainAllow']), domainDeny: list(b['domainDeny']), js };
+  }
 
   interface Origin { convId: string; projectId: string | null; runId: string | null; agent: string }
 
@@ -723,10 +734,12 @@ ${m.body}`),
             signal: controller.signal,
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
-            confirm: async (label, args) => {
+            browserPolicy: browserPolicyOf(conv.projectId),
+            confirm: async (label, args, opts) => {
               const decision = await approvalGate.confirmDetailed(convId, label, args, controller.signal, {
                 projectId: conv.projectId ?? undefined,
                 modelId: effectiveModel,
+                forcePrompt: opts?.forcePrompt,
               });
               sse.emit(convId, 'approval:resolved', { toolLabel: label, approved: decision.approved, reason: decision.reason });
               return decision;

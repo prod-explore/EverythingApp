@@ -77,6 +77,8 @@ export interface PendingApproval {
   timeoutMs?: number; // undefined = no timeout
   /** Shell tools: the per-sub-command verdicts (what the card shows, and which prefixes a non-once approval grants). */
   commands?: SubcommandVerdict[];
+  /** Why this call must be approved by hand even though a grant/policy might cover it. */
+  warning?: string;
 }
 
 export interface ApprovalDecision {
@@ -85,7 +87,11 @@ export interface ApprovalDecision {
   reason?: string;
 }
 
-type ConfirmCtx = { projectId?: string; modelId?: string; skillId?: string; timeoutSeconds?: number };
+type ConfirmCtx = {
+  projectId?: string; modelId?: string; skillId?: string; timeoutSeconds?: number;
+  /** Always prompt (once only), with this warning — e.g. after a suspected prompt injection. */
+  forcePrompt?: string;
+};
 
 export class WebApprovalGate {
   private readonly db: Database.Database;
@@ -116,7 +122,7 @@ export class WebApprovalGate {
     ctx?: ConfirmCtx,
   ): Promise<ApprovalDecision> {
     if (signal?.aborted) return { approved: false };
-    const dangerous = looksDangerous(args);
+    const dangerous = looksDangerous(args) || !!ctx?.forcePrompt;
     const grantCtx = { conversationId, projectId: ctx?.projectId, modelId: ctx?.modelId, skillId: ctx?.skillId };
     const audit = (action: string) => logApprovalAudit(this.db, { action, toolLabel, toolArgs: JSON.stringify(args), conversationId });
 
@@ -151,7 +157,7 @@ export class WebApprovalGate {
 
     const id = randomUUID();
     const timeoutMs = ctx?.timeoutSeconds ? ctx.timeoutSeconds * 1000 : undefined;
-    const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString(), timeoutMs, commands };
+    const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString(), timeoutMs, commands, warning: ctx?.forcePrompt };
 
     return new Promise<ApprovalDecision>(resolve => {
       const onAbort = () => settle(false);
