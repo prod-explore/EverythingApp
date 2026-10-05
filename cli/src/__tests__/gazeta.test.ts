@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type Database from 'better-sqlite3';
 import { openDb, runMigrations, createConversation, listGazetaItems, type BatchJob } from '../db.js';
-import { handleRequestHumanInput, createBatchResultItem } from '../gazeta.js';
+import { handleRequestHumanInput, createBatchResultItem, awaitHumanInput, resolveHumanInput } from '../gazeta.js';
 
 /**
  * Covers handleRequestHumanInput's three input-schema shapes (text, choice,
@@ -114,5 +114,33 @@ describe('gazeta', () => {
     createBatchResultItem(db, job);
     const item = listGazetaItems(db, 'pending').find(i => i.title === 'Batch result: no result yet')!;
     assert.equal(item.description, '*(no response text)*');
+  });
+});
+
+
+describe('awaitHumanInput (blocking mode)', () => {
+  it('resolves with the human response', async () => {
+    const waiting = awaitHumanInput('item-resolve');
+    assert.equal(resolveHumanInput('item-resolve', { choice: 'a' }), true);
+    assert.deepEqual(await waiting, { choice: 'a' });
+    assert.equal(resolveHumanInput('item-resolve', 'late'), false, 'a second answer must not find a waiter');
+  });
+
+  it('resolves null on timeout and leaves no waiter behind', async () => {
+    const result = await awaitHumanInput('item-timeout', undefined, 0.05);
+    assert.equal(result, null);
+    assert.equal(resolveHumanInput('item-timeout', 'late'), false);
+  });
+
+  it('rejects when the kill switch fires, before or during the wait', async () => {
+    const early = new AbortController();
+    early.abort();
+    await assert.rejects(awaitHumanInput('item-abort-early', early.signal), /aborted/);
+
+    const live = new AbortController();
+    const waiting = awaitHumanInput('item-abort-live', live.signal);
+    live.abort();
+    await assert.rejects(waiting, /aborted/);
+    assert.equal(resolveHumanInput('item-abort-live', 'late'), false);
   });
 });

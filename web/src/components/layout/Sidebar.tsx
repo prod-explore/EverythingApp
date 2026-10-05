@@ -26,7 +26,7 @@ export function Sidebar({
   selectedId: string | null;
   selectedProjectId: string | null;
   onSelect: (id: string) => void;
-  onCreate: () => void;
+  onCreate: (projectId?: string) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onOpenGazeta: () => void;
@@ -50,7 +50,7 @@ export function Sidebar({
   }
 
   // Conversations without a project (quick chats)
-  const quickChats = conversations.filter(c => !('projectId' in c) || (c as ConversationSummary & { projectId?: string | null }).projectId == null);
+  const quickChats = conversations.filter(c => c.projectId == null);
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-bg">
@@ -81,7 +81,7 @@ export function Sidebar({
       {view === 'chats' ? (
         <>
           <div className="p-3">
-            <Button variant="ghost" className="flex w-full items-center justify-center gap-2" onClick={onCreate}>
+            <Button variant="ghost" className="flex w-full items-center justify-center gap-2" onClick={() => onCreate()}>
               <MessageSquarePlus size={16} /> New conversation
             </Button>
           </div>
@@ -154,7 +154,7 @@ export function Sidebar({
                 {p.id === selectedProjectId && (
                   <div className="mb-2 ml-4 border-l border-border pl-2">
                     {conversations
-                      .filter(c => (c as ConversationSummary & { projectId?: string | null }).projectId === p.id)
+                      .filter(c => c.projectId === p.id)
                       .map(c => (
                         <button
                           key={c.id}
@@ -167,7 +167,7 @@ export function Sidebar({
                         </button>
                       ))}
                     <button
-                      onClick={onCreate}
+                      onClick={() => onCreate(p.id)}
                       className="mt-1 flex w-full items-center gap-1 rounded px-2 py-1 text-xs text-fg-tertiary hover:text-fg-secondary"
                     >
                       <Plus size={11} /> New chat in project

@@ -484,8 +484,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.post('/api/conversations', (req, res) => {
-    const { title, systemPrompt, model, sandboxEnabled } = req.body ?? {};
-    const { id } = createConversation(db, { title, systemPrompt, model, sandboxEnabled });
+    const { title, projectId, systemPrompt, model, sandboxEnabled } = req.body ?? {};
+    if (projectId !== undefined && projectId !== null) {
+      if (typeof projectId !== 'string' || !getProject(db, projectId)) {
+        res.status(400).json({ error: 'unknown projectId' });
+        return;
+      }
+    }
+    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, sandboxEnabled });
     res.status(201).json({ id });
   });
 

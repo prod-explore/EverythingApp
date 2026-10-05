@@ -68,6 +68,13 @@ describe('request_human_input as an in-loop virtual tool', () => {
     try {
       const conv = (await req(port, 'POST', '/api/conversations', {})).json.id as string;
       await req(port, 'POST', `/api/conversations/${conv}/message`, { text: 'ask me something' });
+      await waitFor(() => listGazetaItems(db).length === 1);
+
+      // Blocking mode (N1): the turn parks on the human's answer, so the model has not been called again yet.
+      assert.equal(call, 1);
+      const answered = await req(port, 'POST', `/api/gazeta/${listGazetaItems(db)[0]!.id}/respond`, { response: 'yes' });
+      assert.equal(answered.status, 200);
+
       await waitFor(() => call >= 2);
       await waitFor(() => getMessages(db, conv).length >= 4);
 
@@ -77,7 +84,7 @@ describe('request_human_input as an in-loop virtual tool', () => {
       const toolResult = (seen[1]!.at(-1)!.content as Anthropic.ToolResultBlockParam[])[0]!;
       assert.equal(toolResult.tool_use_id, 'toolu_1');
       assert.notEqual(toolResult.is_error, true);
-      assert.match(String(toolResult.content), /Gazeta/);
+      assert.match(String(toolResult.content), /User responded.*yes/);
 
       // A second, unrelated turn must not re-create the item from old history.
       await req(port, 'POST', `/api/conversations/${conv}/message`, { text: 'another message' });

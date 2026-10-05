@@ -3,6 +3,7 @@
 
 export interface ConversationSummary {
   id: string;
+  projectId?: string | null;
   title: string;
   updatedAt: string;
   messageCount: number;

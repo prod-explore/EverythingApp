@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { getConversation, getToken, getTurnStatus, updateConversation } from './api';
+import { useCallback, useEffect, useState } from 'react';
+import { createProject, getConversation, getToken, getTurnStatus, listProjects, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
@@ -14,7 +14,7 @@ import { useConversations } from './hooks/useConversations';
 import { useGazeta } from './hooks/useGazeta';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
-import type { Conversation, SpendWarning } from './types';
+import type { Conversation, ProjectListItem, SpendWarning } from './types';
 
 export default function App() {
   const [authed, setAuthed] = useState(() => getToken() !== null);
@@ -45,6 +45,48 @@ function MainApp() {
   const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
   const [usage, setUsage] = useState('—');
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
+  const [projects, setProjects] = useState<ProjectListItem[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+
+  const refreshProjects = useCallback(async () => {
+    try {
+      const { projects: list } = await listProjects();
+      setProjects(list);
+    } catch {
+      // Sidebar just keeps the last known list; the next refresh retries.
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshProjects();
+  }, [refreshProjects]);
+
+  async function handleCreateProject() {
+    const name = window.prompt('Project name')?.trim();
+    if (!name) return;
+    try {
+      const project = await createProject(name);
+      await refreshProjects();
+      setSelectedProjectId(project.id);
+    } catch {
+      // Best-effort, same as the other sidebar actions.
+    }
+  }
+
+  // Clicking the open project again collapses it.
+  function handleSelectProject(id: string) {
+    setSelectedProjectId(prev => (prev === id ? null : id));
+  }
+
+  async function handleCreate(projectId?: string) {
+    await createConversation(undefined, projectId);
+    if (projectId) void refreshProjects(); // conversationCount changed
+  }
+
+  async function handleDelete(id: string) {
+    await deleteConversation(id);
+    void refreshProjects();
+  }
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
 
@@ -84,7 +126,7 @@ function MainApp() {
   // but far simpler than lifting SSE state into a shared context for one
   // side-channel.
   useSSE(selectedId, (event, data) => {
-    if (event === 'gazeta:new') refreshGazeta();
+    if (event === 'gazeta:new' || event === 'gazeta:responded') refreshGazeta();
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
     if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
   });
@@ -159,13 +201,19 @@ function MainApp() {
       conversations={conversations}
       selectedId={selectedId}
       sidebarOpen={sidebarOpen}
+      projects={projects}
+      selectedProjectId={selectedProjectId}
       onSelect={id => {
         setSelectedId(id);
+        const owner = conversations.find(c => c.id === id)?.projectId;
+        if (owner) setSelectedProjectId(owner);
         setSidebarOpen(false);
       }}
-      onCreate={() => createConversation()}
+      onCreate={handleCreate}
       onRename={renameConversation}
-      onDelete={deleteConversation}
+      onDelete={handleDelete}
+      onCreateProject={handleCreateProject}
+      onSelectProject={handleSelectProject}
       onOpenGazeta={() => setGazetaOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)}
       gazetaCount={gazetaItems.length}

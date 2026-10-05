@@ -81,6 +81,7 @@ export function listConversations(): Promise<{ conversations: ConversationSummar
 
 export function createConversation(opts?: {
   title?: string;
+  projectId?: string;
   systemPrompt?: string;
   model?: string;
   sandboxEnabled?: boolean;

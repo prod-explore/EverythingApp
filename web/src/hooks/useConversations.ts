@@ -48,8 +48,8 @@ export function useConversations() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const createConversation = useCallback(async (title?: string) => {
-    const { id } = await apiCreateConversation({ title });
+  const createConversation = useCallback(async (title?: string, projectId?: string) => {
+    const { id } = await apiCreateConversation({ title, projectId });
     await refresh();
     setSelectedId(id);
     return id;

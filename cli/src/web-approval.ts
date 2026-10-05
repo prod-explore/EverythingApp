@@ -71,7 +71,8 @@ export interface PendingApproval {
 
 export class WebApprovalGate {
   private readonly db: Database.Database;
-  private readonly globalAllowed = new Set<string>();
+  // In-memory only: per-turn skill grants (grantChatScope). Persistent grants live in the DB and are
+  // looked up on every confirm() so revocation and model/skill scoping take effect immediately.
   private readonly chatAllowed = new Map<string, Set<string>>();
   private readonly pending = new Map<string, { entry: PendingApproval; resolve: (approved: boolean) => void; timer?: ReturnType<typeof setTimeout> }>();
 
@@ -89,12 +90,10 @@ export class WebApprovalGate {
     if (signal?.aborted) return false;
     const dangerous = looksDangerous(args);
     if (!dangerous) {
-      if (this.globalAllowed.has(toolLabel)) return true;
       const chatSet = this.chatAllowed.get(conversationId);
       if (chatSet?.has(toolLabel)) return true;
 
-      const match = findMatchingGrant(this.db, {
-        toolLabel,
+      const match = findMatchingGrant(this.db, toolLabel, {
         conversationId,
         projectId: ctx?.projectId,
         modelId: ctx?.modelId,
@@ -168,23 +167,22 @@ export class WebApprovalGate {
     const p = this.pending.get(id);
     if (!p) return false;
     if (approved && !p.entry.dangerous) {
-      if (scope === 'always' || scope === 'project' || scope === 'chat') {
-        // Persist to DB
+      if (scope !== 'once') {
+        const projectId = ctx?.projectId ?? null;
+        // A project grant without a project id can never match (findMatchingGrant compares ids),
+        // so narrow it to this chat instead of storing a dead row.
+        const effective = scope === 'project' && !projectId ? 'chat' : scope;
+        // A subject needs both halves; a half-filled one would never match either.
+        const scoped = ctx?.subjectType && ctx?.subjectId;
         createApprovalGrant(this.db, {
           toolLabel: p.entry.toolLabel,
-          scope: scope === 'once' ? 'always' : scope, // 'once' never reaches here
-          subjectType: ctx?.subjectType ?? null,
-          subjectId: ctx?.subjectId ?? null,
-          conversationId: scope === 'chat' ? (ctx?.conversationId ?? p.entry.conversationId) : null,
-          projectId: scope === 'project' ? (ctx?.projectId ?? null) : null,
+          scope: effective,
+          subjectType: scoped ? ctx.subjectType! : null,
+          subjectId: scoped ? ctx.subjectId! : null,
+          conversationId: effective === 'chat' ? (ctx?.conversationId ?? p.entry.conversationId) : null,
+          projectId: effective === 'project' ? projectId : null,
           expiresAt: null,
         });
-      }
-      // Keep in-memory cache too for performance (within the session)
-      if (scope === 'always') {
-        this.globalAllowed.add(p.entry.toolLabel);
-      } else if (scope === 'chat') {
-        this.grantChatScopeInMemory(p.entry.conversationId, p.entry.toolLabel);
       }
     }
     p.resolve(approved);

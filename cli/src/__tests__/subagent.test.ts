@@ -8,6 +8,11 @@ import { SSEManager } from '../sse.js';
 import { openDb, runMigrations, createConversation, listConversations, getMessages } from '../db.js';
 import type { McpConnectionLike } from '../mcp-client.js';
 import type { ProviderRouter } from '../providers/router.js';
+function freshDb() {
+  const db = openDb(':memory:');
+  runMigrations(db);
+  return db;
+}
 
 const usage = { input_tokens: 3, output_tokens: 2, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
 const message = (content: unknown[], stop: string) =>
@@ -34,7 +39,7 @@ function setup(autoApprove: string[] = []) {
     },
   };
   const registry = new ToolRegistry(autoApprove);
-  const gate = new WebApprovalGate();
+  const gate = new WebApprovalGate(freshDb());
   const requests: Anthropic.MessageCreateParamsNonStreaming[] = [];
   const makeRouter = (script: (n: number) => Anthropic.Message): ProviderRouter => {
     let n = 0;
@@ -140,7 +145,7 @@ describe('runSubagent', () => {
 
 describe('WebApprovalGate — abort signal', () => {
   it('resolves false and removes the pending entry when the signal aborts while waiting', async () => {
-    const gate = new WebApprovalGate();
+    const gate = new WebApprovalGate(freshDb());
     const c = new AbortController();
     const p = gate.confirm('conv', 'srv/x', {}, c.signal);
     assert.equal(gate.listPending().length, 1);
@@ -150,7 +155,7 @@ describe('WebApprovalGate — abort signal', () => {
   });
 
   it('returns false immediately for an already-aborted signal', async () => {
-    const gate = new WebApprovalGate();
+    const gate = new WebApprovalGate(freshDb());
     const c = new AbortController();
     c.abort();
     assert.equal(await gate.confirm('conv', 'srv/x', {}, c.signal), false);
