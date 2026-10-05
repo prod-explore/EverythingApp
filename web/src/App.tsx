@@ -5,6 +5,7 @@ import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
 import { GazetaView } from './components/gazeta/GazetaView';
 import { NewProjectModal } from './components/layout/NewProjectModal';
+import { ProjectSettingsModal } from './components/layout/ProjectSettingsModal';
 import { RightRail } from './components/layout/RightRail';
 import type { SidebarView } from './components/layout/Sidebar';
 import { Header } from './components/layout/Header';
@@ -58,6 +59,7 @@ function MainApp() {
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [editProjectId, setEditProjectId] = useState<string | null>(null);
   const [sidebarView, setSidebarView] = useState<SidebarView>('chats');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
 
@@ -246,6 +248,7 @@ function MainApp() {
       onExpandSidebar={toggleSidebarCollapsed}
       onOpenProjects={openProjectsView}
       onSelectProject={handleSelectProject}
+      onEditProject={setEditProjectId}
       onOpenGazeta={() => setGazetaOpen(true)}
       onOpenSettings={() => setSettingsOpen(true)}
       gazetaCount={gazetaItems.length}
@@ -303,6 +306,13 @@ function MainApp() {
         />
       </div>
 
+      {editProjectId && (
+        <ProjectSettingsModal
+          projectId={editProjectId}
+          onClose={() => setEditProjectId(null)}
+          onChanged={() => void refreshProjects()}
+        />
+      )}
       {newProjectOpen && <NewProjectModal onSubmit={submitNewProject} onClose={() => setNewProjectOpen(false)} />}
       {gazetaOpen && (
         <GazetaView onClose={() => setGazetaOpen(false)} onOpenConversation={id => setSelectedId(id)} />

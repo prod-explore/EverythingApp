@@ -22,6 +22,7 @@ export function Layout({
   onOpenSettings,
   onCreateProject,
   onSelectProject,
+  onEditProject,
   gazetaCount,
   children,
 }: PropsWithChildren<{
@@ -44,6 +45,7 @@ export function Layout({
   onOpenSettings: () => void;
   onCreateProject: () => void;
   onSelectProject: (id: string) => void;
+  onEditProject: (id: string) => void;
   gazetaCount: number;
 }>) {
   return (
@@ -64,6 +66,7 @@ export function Layout({
           onOpenSettings={onOpenSettings}
           onCreateProject={onCreateProject}
           onSelectProject={onSelectProject}
+          onEditProject={onEditProject}
           gazetaCount={gazetaCount}
         />
       </div>

@@ -21,6 +21,7 @@ export function Sidebar({
   onOpenSettings,
   onCreateProject,
   onSelectProject,
+  onEditProject,
   gazetaCount,
 }: {
   conversations: ConversationSummary[];
@@ -37,6 +38,7 @@ export function Sidebar({
   onOpenSettings: () => void;
   onCreateProject: () => void;
   onSelectProject: (id: string) => void;
+  onEditProject: (id: string) => void;
   gazetaCount: number;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -151,7 +153,18 @@ export function Sidebar({
                 >
                   <FolderOpen size={14} className="shrink-0" />
                   <span className="min-w-0 flex-1 truncate text-left">{p.name}</span>
-                  <span className="shrink-0 text-xs text-fg-tertiary">{p.conversationCount}</span>
+                  <span className="shrink-0 text-xs text-fg-tertiary group-hover:hidden">{p.conversationCount}</span>
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={`Project settings: ${p.name}`}
+                    title="Project settings"
+                    onClick={e => { e.stopPropagation(); onEditProject(p.id); }}
+                    onKeyDown={e => { if (e.key === 'Enter') { e.stopPropagation(); onEditProject(p.id); } }}
+                    className="hidden shrink-0 rounded p-0.5 text-fg-tertiary hover:text-fg group-hover:block"
+                  >
+                    <Settings size={13} />
+                  </span>
                 </button>
                 {/* Chats in selected project */}
                 {p.id === selectedProjectId && (

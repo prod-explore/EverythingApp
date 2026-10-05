@@ -63,6 +63,8 @@ export interface SubagentDeps {
   sse: SSEManager;
   /** The parent conversation id — approvals are filed under it so the UI shows them where the user is looking. */
   parentConvId: string;
+  /** The parent conversation's project — its command policy and project grants apply to the subagent too. */
+  projectId?: string;
   /** The SAME gate the parent turn uses (see header). */
   approval: WebApprovalGate;
   /** The parent turn's kill-switch signal. */
@@ -132,9 +134,9 @@ export async function runSubagent(input: SubagentInput, deps: SubagentDeps): Pro
         maxSteps: MAX_STEPS,
         confirm: async (label, args) => {
           const toolLabel = `[subagent] ${label}`;
-          const approved = await deps.approval.confirm(deps.parentConvId, toolLabel, args, deps.signal);
-          deps.sse.emit(deps.parentConvId, 'approval:resolved', { toolLabel, approved, subagentRunId: run.id });
-          return approved;
+          const decision = await deps.approval.confirmDetailed(deps.parentConvId, toolLabel, args, deps.signal, { projectId: deps.projectId, modelId: input.model });
+          deps.sse.emit(deps.parentConvId, 'approval:resolved', { toolLabel, approved: decision.approved, reason: decision.reason, subagentRunId: run.id });
+          return decision;
         },
         onUsage: usage => deps.onUsage?.({ provider, model: input.model, usage }),
       },

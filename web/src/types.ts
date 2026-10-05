@@ -87,6 +87,16 @@ export interface PendingApproval {
   args: Record<string, unknown>;
   dangerous: boolean;
   createdAt: string;
+  /** Shell tools: per-sub-command verdicts from the project command policy. */
+  commands?: { command: string; prefix: string; decision: 'allow' | 'ask' | 'deny'; reason: string }[];
+}
+
+export type CommandMode = 'strict' | 'auto' | 'allowlist';
+export interface CommandPolicy {
+  mode: CommandMode;
+  allow: string[];
+  deny: string[];
+  domains: string[];
 }
 
 export interface ConnectorInfo {

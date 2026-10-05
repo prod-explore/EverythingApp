@@ -70,9 +70,33 @@ export function ApprovalModal({
 
         {/* Tool label + args */}
         <div className="mb-2 font-mono text-sm text-fg">{approval.toolLabel}</div>
-        <pre className="mb-4 max-h-48 overflow-auto rounded-lg bg-bg p-3 font-mono text-xs text-fg-secondary">
-          {JSON.stringify(approval.args, null, 2)}
-        </pre>
+        {approval.commands ? (
+          /* Shell command: one row per sub-command, so a chained `&& rm …` can't hide behind an allowed prefix. */
+          <div className="mb-4 max-h-56 space-y-1 overflow-auto rounded-lg bg-bg p-2">
+            {approval.commands.map((c, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs">
+                <span className={`mt-0.5 shrink-0 rounded px-1.5 font-medium ${c.decision === 'allow' ? 'bg-success/15 text-success' : 'bg-accent/15 text-accent'}`}>
+                  {c.decision === 'allow' ? 'ok' : 'ask'}
+                </span>
+                <span className="min-w-0 flex-1">
+                  <code className="block whitespace-pre-wrap break-all font-mono text-fg">{c.command}</code>
+                  <span className="text-fg-tertiary">{c.reason}</span>
+                </span>
+              </div>
+            ))}
+            {scopePickerOpen && (
+              <p className="pt-1 text-xs text-fg-tertiary">
+                Remembering this grants the prefixes{' '}
+                {[...new Set(approval.commands.filter(c => c.decision === 'ask').map(c => c.prefix))].map(p => <code key={p} className="mr-1 font-mono text-fg">{p}</code>)}
+                — not the whole shell.
+              </p>
+            )}
+          </div>
+        ) : (
+          <pre className="mb-4 max-h-48 overflow-auto rounded-lg bg-bg p-3 font-mono text-xs text-fg-secondary">
+            {JSON.stringify(approval.args, null, 2)}
+          </pre>
+        )}
 
         {/* Action area */}
         {!scopePickerOpen ? (

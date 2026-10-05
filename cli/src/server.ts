@@ -18,6 +18,7 @@ import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
 import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
+import { parseCommandPolicy } from './command-policy.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
@@ -281,6 +282,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
               registry,
               sse,
               parentConvId: convId,
+              projectId: getConversation(db, convId)?.projectId ?? undefined,
               approval: approvalGate,
               signal: ctx.signal,
               onUsage: ({ provider, model, usage }) => {
@@ -448,7 +450,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   app.patch('/api/projects/:id', (req, res) => {
-    const ok = updateProject(db, req.params.id, req.body ?? {});
+    const existing = getProject(db, req.params.id);
+    if (!existing) { res.status(404).json({ error: 'project not found' }); return; }
+    const { name, description, policy } = req.body ?? {};
+    const patch: Parameters<typeof updateProject>[2] = {};
+    if (typeof name === 'string' && name.trim()) patch.name = name.trim();
+    if (typeof description === 'string') patch.description = description;
+    if (policy && typeof policy === 'object') {
+      // Merge section by section; the command policy is normalized so the gate never reads junk.
+      const merged = { ...existing.policy, ...(policy as Record<string, unknown>) };
+      if ('commands' in (policy as Record<string, unknown>)) merged['commands'] = parseCommandPolicy((policy as Record<string, unknown>)['commands']);
+      patch.policy = merged;
+    }
+    const ok = updateProject(db, req.params.id, patch);
     if (!ok) { res.status(404).json({ error: 'project not found' }); return; }
     res.json({ ok: true });
   });
@@ -611,12 +625,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
             confirm: async (label, args) => {
-              const approved = await approvalGate.confirm(convId, label, args, controller.signal, {
+              const decision = await approvalGate.confirmDetailed(convId, label, args, controller.signal, {
                 projectId: conv.projectId ?? undefined,
                 modelId: effectiveModel,
               });
-              sse.emit(convId, 'approval:resolved', { toolLabel: label, approved });
-              return approved;
+              sse.emit(convId, 'approval:resolved', { toolLabel: label, approved: decision.approved, reason: decision.reason });
+              return decision;
             },
             onAssistantText: text => sse.emit(convId, 'turn:text', { text }),
             onTextDelta: delta => sse.emit(convId, 'turn:text_delta', delta),

@@ -6,8 +6,16 @@ import {
   deleteApprovalGrant,
   listApprovalGrants,
   logApprovalAudit,
+  getProject,
   type ApprovalGrantRow,
 } from './db.js';
+import {
+  evaluateCommand,
+  extractCommand,
+  parseCommandPolicy,
+  commandGrantLabel,
+  type SubcommandVerdict,
+} from './command-policy.js';
 
 /**
  * Patterns that look potentially irreversible/destructive — §12 pt.5 of the
@@ -67,7 +75,17 @@ export interface PendingApproval {
   dangerous: boolean;
   createdAt: string;
   timeoutMs?: number; // undefined = no timeout
+  /** Shell tools: the per-sub-command verdicts (what the card shows, and which prefixes a non-once approval grants). */
+  commands?: SubcommandVerdict[];
 }
+
+export interface ApprovalDecision {
+  approved: boolean;
+  /** Set when the policy (not a human) refused — shown to the model so it doesn't retry blindly. */
+  reason?: string;
+}
+
+type ConfirmCtx = { projectId?: string; modelId?: string; skillId?: string; timeoutSeconds?: number };
 
 export class WebApprovalGate {
   private readonly db: Database.Database;
@@ -85,37 +103,57 @@ export class WebApprovalGate {
     toolLabel: string,
     args: Record<string, unknown>,
     signal?: AbortSignal,
-    ctx?: { projectId?: string; modelId?: string; skillId?: string; timeoutSeconds?: number },
+    ctx?: ConfirmCtx,
   ): Promise<boolean> {
-    if (signal?.aborted) return false;
+    return (await this.confirmDetailed(conversationId, toolLabel, args, signal, ctx)).approved;
+  }
+
+  async confirmDetailed(
+    conversationId: string,
+    toolLabel: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal,
+    ctx?: ConfirmCtx,
+  ): Promise<ApprovalDecision> {
+    if (signal?.aborted) return { approved: false };
     const dangerous = looksDangerous(args);
-    if (!dangerous) {
+    const grantCtx = { conversationId, projectId: ctx?.projectId, modelId: ctx?.modelId, skillId: ctx?.skillId };
+    const audit = (action: string) => logApprovalAudit(this.db, { action, toolLabel, toolArgs: JSON.stringify(args), conversationId });
+
+    // Shell commands: classified per sub-command by the project's command policy (Plan v3 §5).
+    // A tool-level grant on run_bash deliberately does NOT apply here — that was the hole.
+    const command = extractCommand(toolLabel, args);
+    let commands: SubcommandVerdict[] | undefined;
+    if (command !== null) {
+      const project = ctx?.projectId ? getProject(this.db, ctx.projectId) : null;
+      const policy = parseCommandPolicy(project?.policy?.['commands']);
       const chatSet = this.chatAllowed.get(conversationId);
-      if (chatSet?.has(toolLabel)) return true;
-
-      const match = findMatchingGrant(this.db, toolLabel, {
-        conversationId,
-        projectId: ctx?.projectId,
-        modelId: ctx?.modelId,
-        skillId: ctx?.skillId,
-      });
-
-      if (match) {
-        logApprovalAudit(this.db, {
-          action: 'auto_approved',
-          toolLabel,
-          toolArgs: JSON.stringify(args),
-          conversationId,
-        });
-        return true;
+      const verdict = evaluateCommand(command, policy, prefix =>
+        !!chatSet?.has(commandGrantLabel(prefix)) || !!findMatchingGrant(this.db, commandGrantLabel(prefix), grantCtx));
+      if (verdict.decision === 'deny') {
+        audit('policy_denied');
+        const blocked = verdict.subcommands.filter(s => s.decision === 'deny').map(s => s.command);
+        return { approved: false, reason: `blocked by the project command policy: ${blocked.join('; ')}` };
+      }
+      if (verdict.decision === 'allow' && !dangerous) {
+        audit('auto_approved');
+        return { approved: true };
+      }
+      commands = verdict.subcommands;
+    } else if (!dangerous) {
+      const chatSet = this.chatAllowed.get(conversationId);
+      if (chatSet?.has(toolLabel)) return { approved: true };
+      if (findMatchingGrant(this.db, toolLabel, grantCtx)) {
+        audit('auto_approved');
+        return { approved: true };
       }
     }
 
     const id = randomUUID();
     const timeoutMs = ctx?.timeoutSeconds ? ctx.timeoutSeconds * 1000 : undefined;
-    const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString(), timeoutMs };
+    const entry: PendingApproval = { id, conversationId, toolLabel, args, dangerous, createdAt: new Date().toISOString(), timeoutMs, commands };
 
-    return new Promise<boolean>(resolve => {
+    return new Promise<ApprovalDecision>(resolve => {
       const onAbort = () => settle(false);
       let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -129,7 +167,7 @@ export class WebApprovalGate {
           toolArgs: JSON.stringify(args),
           conversationId,
         });
-        resolve(approved);
+        resolve({ approved });
       };
 
       if (timeoutMs) {
@@ -174,8 +212,12 @@ export class WebApprovalGate {
         const effective = scope === 'project' && !projectId ? 'chat' : scope;
         // A subject needs both halves; a half-filled one would never match either.
         const scoped = ctx?.subjectType && ctx?.subjectId;
-        createApprovalGrant(this.db, {
-          toolLabel: p.entry.toolLabel,
+        // Shell tools grant the sub-command prefixes the human just saw (never the whole tool).
+        const labels = p.entry.commands
+          ? [...new Set(p.entry.commands.filter(c => c.decision === 'ask' && c.prefix && c.prefix !== '__SUBST__').map(c => commandGrantLabel(c.prefix)))]
+          : [p.entry.toolLabel];
+        for (const toolLabel of labels) createApprovalGrant(this.db, {
+          toolLabel,
           scope: effective,
           subjectType: scoped ? ctx.subjectType! : null,
           subjectId: scoped ? ctx.subjectId! : null,

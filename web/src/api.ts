@@ -312,7 +312,11 @@ export function createProject(name: string, description?: string): Promise<Proje
   return request('/api/projects', { method: 'POST', body: JSON.stringify({ name, description }) });
 }
 
-export function updateProject(id: string, patch: { name?: string; description?: string }): Promise<{ ok: boolean }> {
+export function getProject(id: string): Promise<ProjectRow> {
+  return request(`/api/projects/${id}`);
+}
+
+export function updateProject(id: string, patch: { name?: string; description?: string; policy?: Record<string, unknown> }): Promise<{ ok: boolean }> {
   return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
 

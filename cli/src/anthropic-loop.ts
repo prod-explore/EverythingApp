@@ -64,7 +64,8 @@ export interface ConversationDeps {
   /** Orchestrator-executed tools, run inside the loop (see VirtualTool). */
   virtualTools?: VirtualTool[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
-  confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean>;
+  /** `{ approved:false, reason }` = refused by policy rather than by a human; the reason is shown to the model. */
+  confirm: (toolLabel: string, args: Record<string, unknown>) => Promise<boolean | { approved: boolean; reason?: string }>;
   /** Called for every text block the model produces, in order. Always fires, with the complete block. */
   onAssistantText?: (text: string) => void;
   /**
@@ -280,7 +281,9 @@ export async function runTurn(
       }
 
       const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
-      const approved = !needsApproval || (await deps.confirm(label, args));
+      const decision = needsApproval ? await deps.confirm(label, args) : true;
+      const approved = typeof decision === 'boolean' ? decision : decision.approved;
+      const denyReason = typeof decision === 'boolean' ? undefined : decision.reason;
       // Re-check AFTER the (possibly long) human wait: a kill switch pressed while this
       // call was parked on the approval gate must stop it, even if "Approve" arrives late.
       if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
@@ -289,7 +292,7 @@ export async function runTurn(
         toolResults.push({
           type: 'tool_result',
           tool_use_id: use.id,
-          content: DENIED_MESSAGE,
+          content: denyReason ? `Not executed — ${denyReason}.` : DENIED_MESSAGE,
           is_error: true,
         });
         continue;
