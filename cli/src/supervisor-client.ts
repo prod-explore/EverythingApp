@@ -7,7 +7,7 @@
 export interface WorkspaceEntry {
   name: string;
   path: string;
-  type: 'file' | 'dir' | 'symlink' | 'other';
+  type: 'file' | 'directory' | 'symlink' | 'other';
   size: number;
   mtime?: string;
 }
@@ -82,4 +82,38 @@ const MIME_BY_EXT: Record<string, string> = {
 export function guessMime(filename: string): string {
   const ext = filename.toLowerCase().split('.').pop() ?? '';
   return MIME_BY_EXT[ext] ?? 'application/octet-stream';
+}
+
+export interface ExecResult {
+  stdout: string;
+  stderr: string;
+  exitCode: number;
+}
+
+export interface SandboxExec {
+  /** Runs `bash -c command` inside the owner's sandbox (started if needed) — never on the host. */
+  exec(owner: string, command: string, timeoutMs?: number): Promise<ExecResult>;
+}
+
+export class SupervisorExec implements SandboxExec {
+  constructor(private readonly baseUrl: string = process.env['SUPERVISOR_URL'] ?? 'http://sandbox-supervisor:3001') {}
+
+  private async post<T>(path: string, body: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl.replace(/\/$/, '')}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const json = (await res.json().catch(() => ({}))) as T & { error?: string };
+    if (!res.ok) throw new Error(json.error ?? `supervisor returned ${res.status}`);
+    return json;
+  }
+
+  async exec(owner: string, command: string, timeoutMs = 60_000): Promise<ExecResult> {
+    const { containerId } = await this.post<{ containerId: string }>('/claim', { ownerId: owner });
+    return this.post<ExecResult>(`/exec/${encodeURIComponent(containerId)}`, { command, timeoutMs });
+  }
+}
+
+/** POSIX single-quote a value for `bash -c`. */
+export function shq(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }

@@ -32,8 +32,8 @@ services:
       SANDBOX_WATCHDOG_INTERVAL_MS: ${SANDBOX_WATCHDOG_INTERVAL_MS:-120000} # 2 min
       TERMINAL_IDLE_TIMEOUT_MS: ${TERMINAL_IDLE_TIMEOUT_MS:-900000}  # 15 min
       MAX_TERMINALS_PER_SANDBOX: ${MAX_TERMINALS_PER_SANDBOX:-4}
-      SANDBOX_MEMORY_MB: ${SANDBOX_MEMORY_MB:-1024}
-      SANDBOX_CPUS: ${SANDBOX_CPUS:-2}
+      SANDBOX_MEMORY_MB: ${SANDBOX_MEMORY_MB:-512}
+      SANDBOX_CPUS: ${SANDBOX_CPUS:-1}
       # Sandboxes live on their own bridge (created by the supervisor); fence it off from the LAN with
       # deploy/egress-guard.sh (EGRESS_BRIDGES must include br-ea-sandbox).
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-ea-sandbox-egress}
@@ -180,6 +180,16 @@ services:
       # MCP_N8N_API_KEY: ${N8N_MCP_API_KEY:-}
       MCP_OBSIDIAN_URL: ${MCP_OBSIDIAN_URL:-}
       MCP_OBSIDIAN_API_KEY: ${MCP_OBSIDIAN_API_KEY:-}
+      # N3: workspace Explorer / checkpoints (byte reads + in-sandbox git only).
+      SUPERVISOR_URL: http://sandbox-supervisor:3001
+      # N4: git-proxy (orchestrator mints sandbox tokens; git-proxy calls back /internal/*).
+      GIT_PROXY_URL: http://git-proxy:8080
+      GIT_PROXY_ADMIN_TOKEN: ${GIT_PROXY_ADMIN_TOKEN:-}
+      # URL git INSIDE the sandbox uses for the proxy (sandbox bridge gateway + GIT_PROXY_BIND port).
+      GIT_PROXY_SANDBOX_URL: ${GIT_PROXY_SANDBOX_URL:-http://git-proxy:8080}
+      # GitHub App (device flow). Without it, connect with a fine-grained PAT in Settings → GitHub.
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -188,6 +198,7 @@ services:
       - sandbox-mcp
       - playwright-mcp
       - github-mcp
+      - git-proxy
     restart: unless-stopped
     networks:
       - sandbox-internal

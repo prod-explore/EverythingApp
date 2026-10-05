@@ -23,6 +23,9 @@ import { AgentManager } from './agents.js';
 import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
 import { OrchestratorSupervisorClient, guessMime } from './supervisor-client.js';
 import { createHash } from 'node:crypto';
+import { GitHubCredentials } from './github.js';
+import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
+import { SupervisorExec } from './supervisor-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
@@ -48,6 +51,7 @@ import {
   respondToGazetaItem,
   dismissGazetaItem,
   getGazetaItem,
+  logApprovalAudit,
   expireGazetaItem,
   createGazetaItem,
   createBatchJob,
@@ -234,6 +238,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
   const supervisor = new OrchestratorSupervisorClient();
+  /** Most recently active chat per project — where push approval cards from git-proxy are shown. */
+  const lastConvForProject = new Map<string, string>();
+  const github = createGithubRoutes({
+    db, approvalGate, credentials: new GitHubCredentials(router.vault), sandbox: new SupervisorExec(),
+    activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestProjectConversation(db, projectId),
+  });
 
   // web_search is executed on Anthropic's side, so it only exists for Anthropic
   // models. request_human_input / spawn_subagent are orchestrator-executed
@@ -494,12 +504,66 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     sse.addClient(req.params.id, res);
   });
 
+  // git-proxy → orchestrator (own bearer secret, GIT_PROXY_ADMIN_TOKEN) — must sit above the user auth.
+  app.use('/internal', github.internal);
+
   app.use('/api', (req, res, next) => {
     if (!isValidAuthHeader(req.headers.authorization, authToken)) {
       res.status(401).json({ error: 'unauthorized' });
       return;
     }
     next();
+  });
+
+  app.use('/api', github.api);
+
+  // ─── Workspace Explorer + checkpoints (N3) ────────────────────────────────
+  // `owner` = a project id, or a chat id for chats without a project (same rule as the sandbox tools).
+  const workspaceOwner = (id: string) => (getProject(db, id) || getConversation(db, id) ? id : null);
+
+  app.get('/api/workspace/:owner/files', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    try {
+      res.json(await supervisor.listFiles(owner, typeof req.query['path'] === 'string' ? req.query['path'] : '/workspace'));
+    } catch (err) { res.status(502).json({ error: (err as Error).message }); }
+  });
+
+  app.get('/api/workspace/:owner/file', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner || typeof req.query['path'] !== 'string') { res.status(400).json({ error: 'owner and path required' }); return; }
+    try {
+      const upstream = await supervisor.fileResponse(owner, req.query['path']);
+      if (!upstream.ok) { res.status(upstream.status).json(await upstream.json().catch(() => ({ error: 'read failed' }))); return; }
+      // Same rule as artifacts: never serve agent-chosen active content from the app origin.
+      const policy = servePolicy(upstream.headers.get('content-type') ?? 'application/octet-stream');
+      const name = req.query['path'].split('/').pop() || 'file';
+      res.setHeader('Content-Type', policy.contentType);
+      res.setHeader('Content-Disposition', contentDisposition(policy.inline && req.query['download'] !== '1' ? 'inline' : 'attachment', name));
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Cache-Control', 'no-store');
+      if (policy.sandbox) res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
+      const size = upstream.headers.get('x-file-size');
+      if (size) res.setHeader('X-File-Size', size);
+      res.send(Buffer.from(await upstream.arrayBuffer()));
+    } catch (err) { res.status(502).json({ error: (err as Error).message }); }
+  });
+
+  app.get('/api/workspace/:owner/checkpoints', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    try { res.json(await supervisor.listCheckpoints(owner)); } catch (err) { res.status(502).json({ error: (err as Error).message }); }
+  });
+
+  app.post('/api/workspace/:owner/rollback', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    const checkpointId = req.body?.checkpointId;
+    if (!owner || typeof checkpointId !== 'string') { res.status(400).json({ error: 'owner and checkpointId required' }); return; }
+    try {
+      const result = await supervisor.rollback(owner, checkpointId);
+      logApprovalAudit(db, { action: 'workspace_rollback', toolLabel: `rollback ${owner}`, toolArgs: JSON.stringify({ checkpointId }) });
+      res.json(result);
+    } catch (err) { res.status(502).json({ error: (err as Error).message }); }
   });
 
   // ─── Settings ─────────────────────────────────────────────────────────────
@@ -691,6 +755,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
       const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
       const unregisterRoot = agents.registerRoot(rootRun.id, controller);
       activeRootRun.set(convId, rootRun.id);
+      if (conv.projectId) lastConvForProject.set(conv.projectId, convId);
+      if (conv.sandboxEnabled) {
+        // Checkpoint the workspace before the turn (rollback point), and refresh sandbox git wiring.
+        // Best-effort and bounded: a supervisor hiccup must not block the chat.
+        const owner = conv.projectId ?? convId;
+        await Promise.race([
+          Promise.allSettled([
+            supervisor.checkpoint(owner, `before: ${goalText.slice(0, 60)}`),
+            conv.projectId ? github.ensureSandboxGit(conv.projectId) : Promise.resolve(),
+          ]),
+          new Promise(r => setTimeout(r, 15_000)),
+        ]);
+      }
       // `||` not `??`: an empty-string setting (e.g. global_system_prompt
       // saved as "" from the Settings UI) must fall through to the default
       // too — `??` only catches null/undefined, and Anthropic's API rejects
