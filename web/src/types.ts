@@ -252,6 +252,15 @@ export interface UsageReport {
   monthToDate: Array<{ provider: string; costUsd: number; warnUsd: number | null }>;
 }
 
+/** A provider answered 429/5xx (e.g. Gemini free tier at peak hours); the server is waiting and will retry on its own. */
+export interface ProviderRetry {
+  provider: string;
+  attempt: number;
+  status: number | 'network';
+  delayMs: number;
+  remainingMs: number;
+}
+
 export interface SpendWarning {
   provider: ProviderId;
   monthSpendUsd: number;

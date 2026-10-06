@@ -48,6 +48,46 @@ export interface OpenAiCompatOptions {
   sleep?: (ms: number) => Promise<void>;
   timeoutMs?: number;
   maxRetries?: number;
+  /**
+   * Keep retrying transient failures (429/5xx/network) for up to this long in total — for provider peak hours.
+   * When set it replaces the `maxRetries` count. The kill-switch signal interrupts the wait at any moment.
+   */
+  retryBudgetMs?: number;
+  /** Longest single pause between attempts. Default 5 min. */
+  retryMaxDelayMs?: number;
+  /** Called before every wait, so the UI/log can say "provider busy, retrying in …". */
+  onRetry?: (info: RetryInfo) => void;
+}
+
+export interface RetryInfo {
+  provider: string;
+  attempt: number;
+  status: number | 'network';
+  delayMs: number;
+  /** Time left before giving up. */
+  remainingMs: number;
+}
+
+/** Exponential backoff (1 s, 2 s, 4 s …) capped at `maxDelayMs`, with ±20 % jitter; a server `Retry-After` wins over the schedule. */
+export function retryDelayMs(attempt: number, retryAfterSec: number | undefined, maxDelayMs: number, rand: () => number = Math.random): number {
+  const base = retryAfterSec !== undefined && Number.isFinite(retryAfterSec) && retryAfterSec > 0
+    ? retryAfterSec * 1000
+    : 1000 * 2 ** Math.min(attempt, 30) * (0.8 + 0.4 * rand());
+  return Math.round(Math.min(Math.max(base, 1000), maxDelayMs));
+}
+
+/** Resolves after `ms`, or rejects as soon as `signal` aborts. */
+function abortableSleep(sleep: (ms: number) => Promise<void>, ms: number, signal?: AbortSignal): Promise<void> {
+  if (!signal) return sleep(ms);
+  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new Error('aborted'));
+    signal.addEventListener('abort', onAbort, { once: true });
+    sleep(ms).then(
+      () => { signal.removeEventListener('abort', onAbort); resolve(); },
+      e => { signal.removeEventListener('abort', onAbort); reject(e); },
+    );
+  });
 }
 
 /**
@@ -714,26 +754,60 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   private async post(path: string, body: unknown, external?: AbortSignal): Promise<unknown> {
+    const budget = this.opts.retryBudgetMs;
+    const maxDelay = this.opts.retryMaxDelayMs ?? 5 * 60_000;
     const maxRetries = this.opts.maxRetries ?? 2;
+    const startedAt = Date.now();
+    /** Decides whether another attempt is allowed; returns the pause, or null to give up. */
+    const nextPause = (attempt: number, status: number | 'network', retryAfterSec?: number): number | null => {
+      if (external?.aborted) return null;
+      if (budget !== undefined) {
+        const remaining = budget - (Date.now() - startedAt);
+        const delay = retryDelayMs(attempt, retryAfterSec, maxDelay);
+        if (remaining <= delay) return null;
+        this.opts.onRetry?.({ provider: this.opts.flavor, attempt: attempt + 1, status, delayMs: delay, remainingMs: remaining });
+        return delay;
+      }
+      if (attempt >= maxRetries) return null;
+      const delay = retryAfterSec && retryAfterSec > 0 ? Math.min(retryAfterSec, 30) * 1000 : 1000 * 2 ** attempt;
+      this.opts.onRetry?.({ provider: this.opts.flavor, attempt: attempt + 1, status, delayMs: delay, remainingMs: 0 });
+      return delay;
+    };
+
     for (let attempt = 0; ; attempt++) {
       const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? 180_000);
       try {
-        const res = await this.fetchImpl(`${this.opts.baseUrl}${path}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...(this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {}) },
-          body: JSON.stringify(body),
-          signal,
-        });
+        let res: Response;
+        try {
+          res = await this.fetchImpl(`${this.opts.baseUrl}${path}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', ...(this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {}) },
+            body: JSON.stringify(body),
+            signal,
+          });
+        } catch (err) {
+          // Network failure or our own request timeout — transient only in budget mode (peak hours / flaky link).
+          const pause = budget !== undefined ? nextPause(attempt, 'network') : null;
+          if (pause === null) throw err;
+          cleanup();
+          await abortableSleep(this.sleep, pause, external);
+          continue;
+        }
         if (res.ok) return await res.json();
 
         const errBody = await res.text();
         const status = effectiveStatus(this.opts.flavor, res.status, errBody);
-        if (RETRYABLE.has(status) && attempt < maxRetries && !external?.aborted) {
+        if (RETRYABLE.has(status)) {
           const retryAfter = Number(res.headers.get('retry-after'));
-          await this.sleep(Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter, 30) * 1000 : 1000 * 2 ** attempt);
-          continue;
+          const pause = nextPause(attempt, status, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
+          if (pause !== null) {
+            cleanup();
+            await abortableSleep(this.sleep, pause, external);
+            continue;
+          }
         }
-        throw new ProviderHttpError(this.opts.flavor, status, this.redact(errBody.slice(0, 500)));
+        const gaveUp = budget !== undefined && RETRYABLE.has(status) ? ` (retried for ${Math.round((Date.now() - startedAt) / 60_000)} min, then gave up)` : '';
+        throw new ProviderHttpError(this.opts.flavor, status, this.redact(errBody.slice(0, 500)) + gaveUp);
       } finally {
         cleanup();
       }

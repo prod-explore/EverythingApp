@@ -20,6 +20,7 @@ export type SSEEventName =
   | 'agent:budget_warning'
   | 'artifact:new'
   | 'usage:warning'
+  | 'provider:retry'
   | 'keepalive';
 
 export class SSEManager {

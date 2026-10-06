@@ -1,5 +1,4 @@
 import { useEffect, useReducer, useRef } from 'react';
-import { getToken } from '../api';
 
 /**
  * One entry per tool call made during the currently-running turn, in the
@@ -100,6 +99,7 @@ const SIDE_EVENTS = [
   'batch:resolved',
   'approval:resolved',
   'usage:warning',
+  'provider:retry',
   'artifact:new',
   'agent:spawned',
   'agent:finished',
@@ -139,12 +139,8 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
     // We use 'clear' instead of 'start' so that 'running' defaults to false,
     // and is only set to true when the server actually emits 'turn:start'.
 
-    const token = getToken();
-    // EventSource can't set custom headers, so the token travels as a query
-    // param instead of the Authorization header every other endpoint uses.
-    // It's the same shared secret either way; this is the one place it has
-    // to ride in the URL.
-    const url = `/api/conversations/${conversationId}/stream?token=${encodeURIComponent(token ?? '')}`;
+    // Same-origin EventSource sends the HttpOnly session cookie by itself — no credential in the URL.
+    const url = `/api/conversations/${conversationId}/stream`;
     let closed = false;
     let source: EventSource | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | undefined;

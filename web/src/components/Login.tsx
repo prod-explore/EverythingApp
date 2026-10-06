@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { setToken } from '../api';
+import { ApiError, login } from '../api';
 import { Button } from './shared/Button';
 
 export function Login({ onSuccess }: { onSuccess: () => void }) {
@@ -8,24 +8,22 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
   const [checking, setChecking] = useState(false);
 
   async function submit() {
-    const token = value.trim();
-    if (!token || checking) return;
+    if (!value || checking) return;
     setError(null);
     setChecking(true);
     try {
-      // A raw fetch, deliberately bypassing api.ts's request() helper: that
-      // helper treats any 401 as "the stored token went stale" and reacts
-      // by clearing it and reloading the whole page — exactly the opposite
-      // of what a login attempt needs, which is to fail quietly in place.
-      const res = await fetch('/api/conversations', { headers: { Authorization: `Bearer ${token}` } });
-      if (!res.ok) {
-        setError(res.status === 401 ? 'Wrong token.' : `Server error (${res.status}).`);
-        return;
-      }
-      setToken(token);
+      await login(value);
       onSuccess();
-    } catch {
-      setError('Could not reach the server.');
+    } catch (e) {
+      if (e instanceof ApiError) {
+        setError(
+          e.status === 401 ? 'Wrong password.'
+          : e.status === 429 ? 'Too many failed attempts — try again in a few minutes.'
+          : `Server error (${e.status}).`,
+        );
+      } else {
+        setError('Could not reach the server.');
+      }
     } finally {
       setChecking(false);
     }
@@ -38,7 +36,8 @@ export function Login({ onSuccess }: { onSuccess: () => void }) {
         <input
           type="password"
           autoFocus
-          placeholder="Access token"
+          placeholder="Password"
+          autoComplete="current-password"
           value={value}
           onChange={e => {
             setValue(e.target.value);

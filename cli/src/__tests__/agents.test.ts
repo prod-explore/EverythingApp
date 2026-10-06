@@ -7,6 +7,7 @@ import { ToolRegistry } from '../tool-registry.js';
 import { WebApprovalGate } from '../web-approval.js';
 import { SSEManager } from '../sse.js';
 import { openDb, runMigrations, createConversation } from '../db.js';
+import { DEFAULT_TIER_MODELS } from '../tiers.js';
 import {
   createRun, getRun, listRuns, treeUsage, interruptOrphanedRuns, postRunMessage, drainRunMessages, addRunUsage, setRunStatus,
 } from '../runs.js';
@@ -216,5 +217,44 @@ describe('AgentManager', () => {
     release();
     const waited = await tools.get('wait_agents')!.handler({ run_ids: [runId] }, ctx);
     assert.match(waited.text, /\[done\]/);
+  });
+});
+
+describe('spawn_agent tiers', () => {
+  const ctx = { toolUseId: 'x' };
+  const spawnTool = (t: Awaited<ReturnType<typeof setup>>, rootId: string) =>
+    new Map(t.agents.agentTools(rootId, t.controller.signal).map(v => [v.definition.name, v])).get('spawn_agent')!;
+
+  it('does not advertise a raw model id; tier defaults to the free tier', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    const tool = spawnTool(t, t.root.id);
+    const props = (tool.definition.input_schema as { properties: Record<string, unknown> }).properties;
+    assert.ok('tier' in props && !('model' in props));
+    const r = await tool.handler({ goal: 'g' }, ctx);
+    assert.equal(r.isError, undefined);
+    const runId = /Spawned (\w+)/.exec(r.text)![1]!;
+    assert.equal(getRun(t.db, runId)!.model, DEFAULT_TIER_MODELS.free);
+  });
+
+  it('a free-tier agent cannot start a worker in a higher tier', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    const freeRoot = createRun(t.db, { conversationId: t.conv, model: DEFAULT_TIER_MODELS.free, goal: 'o', label: 'assistant' });
+    t.agents.registerRoot(freeRoot.id, new AbortController());
+    const r = await spawnTool(t, freeRoot.id).handler({ goal: 'g', tier: 'strong' }, ctx);
+    assert.equal(r.isError, true);
+    assert.match(r.text, /above your own tier/);
+  });
+
+  it('a strong-tier agent may delegate downwards, and an unknown tier is rejected', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    const strongRoot = createRun(t.db, { conversationId: t.conv, model: DEFAULT_TIER_MODELS.strong, goal: 'o', label: 'assistant' });
+    t.agents.registerRoot(strongRoot.id, new AbortController());
+    const tool = spawnTool(t, strongRoot.id);
+    const cheap = await tool.handler({ goal: 'g', tier: 'cheap' }, ctx);
+    assert.equal(cheap.isError, undefined);
+    assert.equal(getRun(t.db, /Spawned (\w+)/.exec(cheap.text)![1]!)!.model, DEFAULT_TIER_MODELS.cheap);
+    const bad = await tool.handler({ goal: 'g', tier: 'platinum' }, ctx);
+    assert.equal(bad.isError, true);
+    assert.match(bad.text, /unknown tier/);
   });
 });

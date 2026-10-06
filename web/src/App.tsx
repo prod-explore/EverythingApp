@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
-import { createProject, getConversation, getToken, getTurnStatus, listProjects, updateConversation } from './api';
+import { checkSession, createProject, getConversation, getTurnStatus, listProjects, UNAUTHORIZED_EVENT, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
@@ -24,13 +24,30 @@ const GitHubPanel = lazy(() => import('./components/github/GitHubPanel').then(m 
 import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
-import type { BudgetWarning, Conversation, ProjectListItem, SpendWarning } from './types';
+import type { BudgetWarning, Conversation, ProjectListItem, ProviderRetry, SpendWarning } from './types';
 
 export type DockTool = 'agents' | 'files' | 'scm' | 'github';
 
-export default function App() {
-  const [authed, setAuthed] = useState(() => getToken() !== null);
+function formatWait(ms: number): string {
+  const s = Math.max(1, Math.round(ms / 1000));
+  if (s < 90) return `${s}s`;
+  const m = Math.round(s / 60);
+  return m < 90 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60} min`;
+}
 
+export default function App() {
+  // null = still asking the server whether the cookie session is valid
+  const [authed, setAuthed] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void checkSession().then(ok => { if (!cancelled) setAuthed(ok); });
+    const onUnauthorized = () => setAuthed(false);
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    return () => { cancelled = true; window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized); };
+  }, []);
+
+  if (authed === null) return <div className="h-full bg-bg" />;
   if (!authed) return <Login onSuccess={() => setAuthed(true)} />;
   return <MainApp />;
 }
@@ -70,6 +87,13 @@ function MainApp() {
   const { models } = useModels();
   const approvals = useApprovals(selectedId);
   const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
+  const [providerRetry, setProviderRetry] = useState<ProviderRetry | null>(null);
+  // A successful retry emits no event, so the notice simply expires shortly after its own wait is over.
+  useEffect(() => {
+    if (!providerRetry) return;
+    const t = setTimeout(() => setProviderRetry(null), providerRetry.delayMs + 20_000);
+    return () => clearTimeout(t);
+  }, [providerRetry]);
   const [usage, setUsage] = useState('—');
   const [fullConv, setFullConv] = useState<Conversation | null>(null);
   const [projects, setProjects] = useState<ProjectListItem[]>([]);
@@ -160,6 +184,8 @@ function MainApp() {
     if (event === 'agent:spawned' || event === 'agent:finished') setAgentsRefresh(r => r + 1);
     if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
+    if (event === 'provider:retry') setProviderRetry(data as ProviderRetry);
+    if (event === 'turn:done') setProviderRetry(null);
     if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
   });
 
@@ -293,6 +319,15 @@ function MainApp() {
         dockTool={dockTool}
         onToggleTool={t => setDockTool(cur => (cur === t ? null : t))}
       />
+      {providerRetry && (
+        <div role="status" className="flex items-center justify-between gap-3 border-b border-border px-4 py-2 text-xs text-fg-secondary">
+          <span>
+            {providerRetry.provider} is busy ({providerRetry.status}) — retrying automatically in {formatWait(providerRetry.delayMs)}
+            {providerRetry.remainingMs > 0 ? `, giving up in ${formatWait(providerRetry.remainingMs)}` : ''}. Use stop to cancel.
+          </span>
+          <button onClick={() => setProviderRetry(null)} className="shrink-0 underline">Hide</button>
+        </div>
+      )}
       {spendWarning && (
         <div className="flex items-center justify-between gap-3 border-b border-danger/40 px-4 py-2 text-xs text-danger">
           <span>

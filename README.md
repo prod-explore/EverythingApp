@@ -171,7 +171,7 @@ retroactively inserted where you asked).
 ```bash
 cd cli
 cp .env.example .env
-# fill in ANTHROPIC_API_KEY, SERVER_AUTH_TOKEN (openssl rand -hex 32),
+# fill in ANTHROPIC_API_KEY, SERVER_AUTH_TOKEN (openssl rand -hex 32), optionally SERVER_PASSWORD,
 # and SANDBOX_MCP_URL / OBSIDIAN_MCP_URL if you want those tools
 npm install
 npm run build
@@ -182,7 +182,7 @@ npm run build   # outputs web/dist/, served statically by the Express server
 
 cd ../cli
 npm run server
-# open http://localhost:3000, log in with the SERVER_AUTH_TOKEN
+# open http://localhost:3000, log in with SERVER_PASSWORD (defaults to SERVER_AUTH_TOKEN if unset)
 ```
 
 For local frontend development, `cd web && npm run dev` runs Vite's dev

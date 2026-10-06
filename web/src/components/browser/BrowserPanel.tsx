@@ -1,11 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Monitor, Hand, X, Loader } from 'lucide-react';
-import { getToken } from '../../api';
 
 /**
  * §6b Chunk B: Live-view panel for an active browser session.
  *
- * Connects to the SAME ORIGIN as the app:  wss://<this-host>/api/liveview?conversationId=<id>&token=<token>
+ * Connects to the SAME ORIGIN as the app:  wss://<this-host>/api/liveview?conversationId=<id>  (auth: the session cookie rides on the handshake)
  * The server authenticates the token and relays the WebSocket to playwright-mcp with its own
  * server-side key (cli/src/liveview-proxy.ts). No build-time URL, no second port, no mixed
  * content behind HTTPS, and the CSP `connect-src 'self'` keeps working.
@@ -16,9 +15,9 @@ import { getToken } from '../../api';
  *    "Take control" button. Visual indicator shows when takeover is active.
  */
 
-function liveViewUrl(conversationId: string, token: string): string {
+function liveViewUrl(conversationId: string): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${scheme}://${window.location.host}/api/liveview?conversationId=${encodeURIComponent(conversationId)}&token=${encodeURIComponent(token)}`;
+  return `${scheme}://${window.location.host}/api/liveview?conversationId=${encodeURIComponent(conversationId)}`;
 }
 
 interface Status {
@@ -52,7 +51,7 @@ export function BrowserPanel({
 
   useEffect(() => {
     setUnavailable(false);
-    const ws = new WebSocket(liveViewUrl(conversationId, getToken() ?? ''));
+    const ws = new WebSocket(liveViewUrl(conversationId));
     ws.binaryType = 'blob';
     wsRef.current = ws;
 

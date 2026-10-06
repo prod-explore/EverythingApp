@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { TIERS, isTier, resolveTier, tierModels, tierOfModel, tierRank, type Tier } from './tiers.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import { runTurn, StepLimitError, type LlmClient, type VirtualTool, type ConversationDeps } from './anthropic-loop.js';
 
@@ -140,6 +141,22 @@ export class AgentManager {
   /** Allowed tool names for a run: root = everything in the registry; workers = their (already narrowed) list. */
   private toolsOf(run: RunRow): string[] {
     return run.depth === 0 && run.tools.length === 0 ? this.deps.registry.toAnthropicTools().map(t => t.name) : run.tools;
+  }
+
+  /**
+   * Worker model by TIER (cost policy lives in tiers.ts / the `tier_models` setting). A worker may never sit in
+   * a higher tier than the agent that spawns it, so a free-tier chat cannot quietly start paid workers.
+   */
+  private resolveWorkerModel(parent: RunRow, tier: Tier): { model: string; note?: string } | { error: string } {
+    const map = tierModels(this.deps.db);
+    const parentTier = tierOfModel(parent.model, map);
+    if (parentTier && tierRank(tier) > tierRank(parentTier)) {
+      return { error: `tier "${tier}" is above your own tier ("${parentTier}") — use "${parentTier}" or lower, or ask the user to switch the chat model.` };
+    }
+    const usable = (id: string) => { try { this.deps.router.clientFor(id); return true; } catch { return false; } };
+    const r = resolveTier(tier, map, usable);
+    if (!r) return { error: `no usable model for tier "${tier}" (${map[tier]}) — add its API key in Settings or remap the tier.` };
+    return { model: r.model, note: r.fellBackFrom ? `tier "${r.fellBackFrom}" had no usable model, using "${r.tier}" (${r.model})` : undefined };
   }
 
   spawn(parentRunId: string, input: { goal: string; model: string; tools?: string[]; label?: string }): { runId: string } | { error: string } {
@@ -337,19 +354,31 @@ export class AgentManager {
             type: 'object',
             properties: {
               goal: { type: 'string', description: 'Precise, self-contained goal and expected report format.' },
-              model: { type: 'string', description: 'Model id. Prefer a cheaper/faster model for simple work.' },
+              tier: { type: 'string', enum: [...TIERS], description: 'Cost tier of the worker. Default "free" — keep it there unless the task truly needs a stronger model; you cannot pick a tier above your own.' },
               tools: { type: 'array', items: { type: 'string' }, description: 'Tool names the worker may use (subset of yours). Empty = none.' },
               label: { type: 'string', description: 'Short role name, e.g. "researcher", "tests".' },
             },
-            required: ['goal', 'model'],
+            required: ['goal'],
           },
         },
         handler: async input => {
-          const goal = str(input['goal']); const model = str(input['model']);
-          if (!goal || !model) return { text: 'spawn_agent needs "goal" and "model".', isError: true };
+          const goal = str(input['goal']);
+          if (!goal) return { text: 'spawn_agent needs a "goal".', isError: true };
+          const parent = getRun(db, selfRunId);
+          const tierArg = input['tier'] === undefined || input['tier'] === '' ? 'free' : input['tier'];
+          if (!isTier(tierArg)) return { text: `unknown tier "${String(tierArg)}" — use one of: ${TIERS.join(', ')}.`, isError: true };
+          // `model` is not advertised any more; an explicit id is still honoured for internal callers and old tests.
+          const explicit = str(input['model']);
+          let model = explicit; let tierNote: string | undefined;
+          if (!explicit) {
+            if (!parent) return { text: 'unknown parent run', isError: true };
+            const r = this.resolveWorkerModel(parent, tierArg);
+            if ('error' in r) return { text: `Could not spawn: ${r.error}`, isError: true };
+            model = r.model; tierNote = r.note;
+          }
           const tools = Array.isArray(input['tools']) ? (input['tools'] as unknown[]).filter((t): t is string => typeof t === 'string') : [];
           const r = this.spawn(selfRunId, { goal, model, tools, label: str(input['label']) || undefined });
-          return 'error' in r ? { text: `Could not spawn: ${r.error}`, isError: true } : { text: `Spawned ${r.runId}. Call wait_agents to collect its report.` };
+          return 'error' in r ? { text: `Could not spawn: ${r.error}`, isError: true } : { text: `Spawned ${r.runId}${tierNote ? ` (${tierNote})` : ''}. Call wait_agents to collect its report.` };
         },
       },
       {

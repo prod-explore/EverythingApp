@@ -30,6 +30,7 @@ import { createN5Routes, migrateN5 } from './n5-routes.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { createAuth, type Auth } from './session.js';
+import { DEFAULT_TIER_MODELS, TIERS, defaultChatModel, isTier, setTierModels, tierModels } from './tiers.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
   openDb,
@@ -250,6 +251,19 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const approvalGate = new WebApprovalGate(db);
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
+  // A provider is busy (e.g. Gemini free tier at peak hours): we keep retrying quietly — log it and tell the UI.
+  /**
+   * Model for chats that have none of their own: the user's explicit default, an explicit ANTHROPIC_MODEL env, then
+   * the FREE tier (Gemini Flash-Lite) when it is usable, else the configured fallback. Claude is a manual choice.
+   */
+  const modelAvailable = (id: string) => { try { router.clientFor(id); return true; } catch { return false; } };
+  const defaultModelId = (): string =>
+    getSetting(db, 'default_model') || process.env['ANTHROPIC_MODEL'] || defaultChatModel(tierModels(db), modelAvailable) || config.model;
+
+  router.onProviderRetry = info => {
+    console.warn(`[provider] ${info.provider} busy (${info.status}) — retry #${info.attempt} in ${Math.round(info.delayMs / 1000)}s, giving up in ${Math.round(info.remainingMs / 60_000)} min`);
+    sse.emitAll('provider:retry', info);
+  };
   const supervisor = new OrchestratorSupervisorClient();
   /** Most recently active chat per project — where push approval cards from git-proxy are shown. */
   const lastConvForProject = new Map<string, string>();
@@ -458,7 +472,7 @@ ${formatHumanResponse(response)}` };
           ledger.record({
             conversationId: job.conversationId,
             provider: 'anthropic',
-            model: resolution.model ?? getSetting(db, 'default_model') ?? config.model,
+            model: resolution.model ?? defaultModelId(),
             usage: resolution.usage,
             batch: true,
           });
@@ -593,6 +607,23 @@ ${formatHumanResponse(response)}` };
     res.json({ ok: true });
   });
 
+  // ─── Model tiers (free / cheap / standard / strong → concrete model ids) ───
+  app.get('/api/tiers', (_req, res) => {
+    res.json({ tiers: TIERS, models: tierModels(db), defaults: DEFAULT_TIER_MODELS, defaultChatModel: defaultModelId() });
+  });
+
+  app.put('/api/tiers', (req, res) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const known = new Set(router.models().map(m => m.id));
+    const patch: Partial<Record<(typeof TIERS)[number], string>> = {};
+    for (const [tier, id] of Object.entries(body)) {
+      if (!isTier(tier) || typeof id !== 'string' || !id) { res.status(400).json({ error: `expected { ${TIERS.join('?, ')}?: modelId }` }); return; }
+      if (!known.has(id)) { res.status(400).json({ error: `unknown model "${id}" for tier "${tier}"` }); return; }
+      patch[tier] = id;
+    }
+    res.json({ models: setTierModels(db, patch) });
+  });
+
   // ─── Connectors ───────────────────────────────────────────────────────────
   app.get('/api/connectors', (_req, res) => {
     const data = connections.map(conn => {
@@ -693,7 +724,7 @@ ${formatHumanResponse(response)}` };
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
     // Same resolution order a turn uses, so the UI's model picker never shows "nothing selected"
     // for a conversation that simply inherits the default.
-    res.json({ ...conv, effectiveModel: conv.model || getSetting(db, 'default_model') || config.model });
+    res.json({ ...conv, effectiveModel: conv.model || defaultModelId() });
   });
 
   app.patch('/api/conversations/:id', (req, res) => {
@@ -762,7 +793,7 @@ ${formatHumanResponse(response)}` };
     sse.emit(convId, 'turn:start', { turnId });
 
     void (async () => {
-      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      const effectiveModel = conv.model || defaultModelId();
       const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
       const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
       const unregisterRoot = agents.registerRoot(rootRun.id, controller);
@@ -940,7 +971,7 @@ ${m.body}`),
         return;
       }
       const history = getMessages(db, convId);
-      const effectiveModel = conv.model || getSetting(db, 'default_model') || config.model;
+      const effectiveModel = conv.model || defaultModelId();
       const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
 
       let batchClient: ReturnType<typeof router.anthropic>;

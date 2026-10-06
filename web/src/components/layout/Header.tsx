@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Bot, FolderOpen, FolderTree, GitBranch, GitMerge as Github, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
-import { clearToken } from '../../api';
+import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
 import type { ModelOption } from '../../types';
@@ -13,8 +13,7 @@ const TOOLS: { id: DockTool; label: string; icon: typeof Bot }[] = [
 ];
 
 function logout() {
-  clearToken();
-  window.location.reload();
+  void apiLogout().finally(() => window.location.reload());
 }
 
 export function Header({

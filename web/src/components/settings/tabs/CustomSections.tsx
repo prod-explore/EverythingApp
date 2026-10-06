@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Plug, RefreshCw, Trash2 } from 'lucide-react';
-import { ApiError, getToken } from '../../../api';
+import { ApiError, notifyUnauthorized } from '../../../api';
 import { Button } from '../../shared/Button';
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getToken() ?? ''}` } });
+  const res = await fetch(path, { ...init, headers: { 'Content-Type': 'application/json' } });
+  if (res.status === 401) notifyUnauthorized();
   const body = (await res.json().catch(() => ({}))) as T & { error?: string };
   if (!res.ok) throw new ApiError(body.error ?? `request failed (${res.status})`, res.status);
   return body;

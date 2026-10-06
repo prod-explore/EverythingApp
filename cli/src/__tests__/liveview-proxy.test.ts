@@ -26,7 +26,7 @@ before(async () => {
   const upstreamPort = await listen(upstream);
 
   proxy = http.createServer((_req, res) => { res.statusCode = 404; res.end(); });
-  attachLiveViewProxy(proxy, { upstreamUrl: `http://127.0.0.1:${upstreamPort}/ignored/path`, upstreamApiKey: UPSTREAM_KEY, authToken: APP_TOKEN });
+  attachLiveViewProxy(proxy, { upstreamUrl: `http://127.0.0.1:${upstreamPort}/ignored/path`, upstreamApiKey: UPSTREAM_KEY, authToken: APP_TOKEN, isCookieValid: c => c?.includes('ea_session=good') ?? false });
   proxyPort = await listen(proxy);
 });
 
@@ -51,6 +51,22 @@ describe('live-view WebSocket proxy', () => {
     seen = {};
     assert.equal((await connect('/api/liveview?conversationId=c1')).status, 401);
     assert.equal((await connect('/api/liveview?conversationId=c1&token=nope')).status, 401);
+    assert.equal(seen.url, undefined);
+  });
+
+  it('accepts a valid session cookie (same-origin or no Origin) without any token in the URL', async () => {
+    const noOrigin = await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good' });
+    assert.equal(noOrigin.status, 101);
+    noOrigin.socket!.destroy();
+    const same = await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good', Origin: `http://127.0.0.1:${proxyPort}` });
+    assert.equal(same.status, 101);
+    same.socket!.destroy();
+  });
+
+  it('refuses a session cookie on a cross-origin handshake (403) and an invalid cookie (401)', async () => {
+    seen = {};
+    assert.equal((await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good', Origin: 'https://evil.example' })).status, 403);
+    assert.equal((await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=bad' })).status, 401);
     assert.equal(seen.url, undefined);
   });
 
@@ -155,5 +171,25 @@ describe('live-view proxy — half-closed peers', () => {
       stubborn.closeAllConnections(); stubborn.close();
       front.closeAllConnections(); front.close();
     }
+  });
+
+  it('accepts a valid session cookie without any token in the URL', async () => {
+    const { status, socket } = await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good' });
+    assert.equal(status, 101);
+    socket!.destroy();
+  });
+
+  it('accepts a cookie from a same-origin page but refuses it from another origin (cross-site WebSocket hijacking)', async () => {
+    seen = {};
+    const same = await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good', Origin: `http://127.0.0.1:${proxyPort}` });
+    assert.equal(same.status, 101);
+    same.socket!.destroy();
+    seen = {};
+    assert.equal((await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=good', Origin: 'https://evil.example' })).status, 403);
+    assert.equal(seen.url, undefined);
+  });
+
+  it('rejects an invalid cookie when no token is supplied', async () => {
+    assert.equal((await connect('/api/liveview?conversationId=c1', { Cookie: 'ea_session=bad' })).status, 401);
   });
 });

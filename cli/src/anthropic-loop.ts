@@ -226,6 +226,25 @@ function cacheableTools(tools: Anthropic.ToolUnion[]): Anthropic.ToolUnion[] {
 }
 
 /**
+ * Rolling cache breakpoint on the growing conversation. System + tools are cached, but in a tool loop the
+ * history grows every step — without a breakpoint at its end each step re-bills the whole transcript at the
+ * full input price. Applied to a COPY of the request only: the stored history must never carry cache_control
+ * (the API allows 4 breakpoints per request, and stale ones would pile up).
+ */
+export function withHistoryCache(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const last = messages[messages.length - 1];
+  if (!last) return messages;
+  const blocks: Anthropic.ContentBlockParam[] =
+    typeof last.content === 'string' ? (last.content ? [{ type: 'text', text: last.content }] : []) : [...last.content];
+  const i = blocks.length - 1;
+  const tail = blocks[i];
+  // thinking blocks cannot carry cache_control; fall back to uncached rather than fail the request
+  if (!tail || tail.type === 'thinking' || tail.type === 'redacted_thinking') return messages;
+  blocks[i] = { ...tail, cache_control: { type: 'ephemeral' } } as Anthropic.ContentBlockParam;
+  return [...messages.slice(0, -1), { ...last, content: blocks }];
+}
+
+/**
  * Runs one user turn to completion: sends the message, and if Claude asks to
  * use tools, executes them (through the Approval Gate where required) and
  * feeds the results back — repeating until Claude replies with plain text
@@ -269,7 +288,7 @@ export async function runTurn(
       max_tokens: deps.maxTokens ?? 4096,
       system: cacheableSystem(deps.systemPrompt),
       tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
-      messages,
+      messages: withHistoryCache(messages),
     };
     // Lets the kill switch cancel a request that's already in flight, not just the next one.
     const options = { signal: deps.signal };

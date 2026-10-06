@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { clearToken } from '../../api';
+import { logout } from '../../api';
 import { Modal } from '../shared/Modal';
 import { AppearanceTab } from './tabs/AppearanceTab';
 import { ConnectorsTab } from './tabs/ConnectorsTab';
@@ -74,19 +74,18 @@ function AccountTab() {
     <div className="space-y-4">
       <div className="rounded-button border border-border px-4 py-3">
         <p className="text-xs text-fg-tertiary mb-1">Authentication</p>
-        <p className="text-sm text-fg">Single shared token (SERVER_AUTH_TOKEN).</p>
+        <p className="text-sm text-fg">Password login (SERVER_PASSWORD, falls back to SERVER_AUTH_TOKEN). Sessions last 30 days.</p>
       </div>
       <button
         onClick={() => {
-          clearToken();
-          window.location.reload();
+          void logout().finally(() => window.location.reload());
         }}
         className="w-full rounded-button border border-danger/40 px-4 py-2 text-sm font-medium text-danger hover:bg-danger/10 transition-colors"
       >
         Log out
       </button>
       <p className="text-xs text-fg-tertiary">
-        Logging out clears the token from this browser. The server keeps running.
+        Logging out ends this browser's session on the server. The server keeps running.
       </p>
     </div>
   );

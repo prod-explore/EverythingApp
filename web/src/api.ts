@@ -23,18 +23,40 @@ import type {
   UsageReport,
 } from './types';
 
-const TOKEN_KEY = 'everythingapp_token';
+/**
+ * Auth is a server-side session in an HttpOnly cookie (set by POST /api/login): nothing secret lives in
+ * JS-reachable storage and no credential rides in a URL. Same-origin fetch / EventSource / WebSocket send it by themselves.
+ */
+export const UNAUTHORIZED_EVENT = 'ea:unauthorized';
 
-export function getToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY);
+/** Any 401 means the session is gone — tell the app shell, which swaps to the login screen (no reload loop). */
+export function notifyUnauthorized(): void {
+  window.dispatchEvent(new Event(UNAUTHORIZED_EVENT));
 }
 
-export function setToken(token: string): void {
-  localStorage.setItem(TOKEN_KEY, token);
+export async function checkSession(): Promise<boolean> {
+  try {
+    return (await fetch('/api/session')).ok;
+  } catch {
+    return false;
+  }
 }
 
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY);
+export async function login(password: string): Promise<void> {
+  // Raw fetch on purpose: a wrong password is a 401 that must fail quietly in place, not trigger notifyUnauthorized().
+  const res = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ password }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new ApiError(body.error ?? `login failed (${res.status})`, res.status);
+  }
+}
+
+export async function logout(): Promise<void> {
+  await fetch('/api/logout', { method: 'POST' }).catch(() => undefined);
 }
 
 export class ApiError extends Error {
@@ -46,26 +68,15 @@ export class ApiError extends Error {
   }
 }
 
-/**
- * One 401 anywhere means the token is gone or wrong — there's no refresh
- * flow (single shared secret, see server.ts), so the only sane move is to
- * drop it and force the login screen again rather than let every caller
- * guess what a stale 401 means.
- */
+/** One 401 anywhere means the session expired or was revoked: send the user back to the login screen. */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const token = getToken();
   const res = await fetch(path, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(init?.headers ?? {}),
-    },
+    headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
 
   if (res.status === 401) {
-    clearToken();
-    window.location.reload();
+    notifyUnauthorized();
     throw new ApiError('unauthorized', 401);
   }
 
@@ -276,9 +287,9 @@ export function stopRun(runId: string): Promise<{ ok: true }> {
   return request(`/api/runs/${runId}/stop`, { method: 'POST' });
 }
 
-/** <img>/<a> can't send the Authorization header, so the token rides in the query (same as SSE). */
+/** <img>/<a> are same-origin GETs, so the session cookie authenticates them — no credential in the URL. */
 export function artifactFileUrl(id: string): string {
-  return `/api/artifacts/${id}/file?token=${encodeURIComponent(getToken() ?? '')}`;
+  return `/api/artifacts/${id}/file`;
 }
 
 // ─── Batch jobs ───────────────────────────────────────────────────────────

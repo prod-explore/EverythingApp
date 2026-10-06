@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import { Download, Image, FileText, File, Trash2, X, FolderOpen } from 'lucide-react';
-import { getToken } from '../../api';
 import type { ArtifactRow } from '../../types';
 
 /**
@@ -12,25 +11,18 @@ import type { ArtifactRow } from '../../types';
  */
 
 async function fetchArtifacts(conversationId: string): Promise<ArtifactRow[]> {
-  const token = getToken() ?? '';
-  const res = await fetch(`/api/conversations/${conversationId}/artifacts`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const res = await fetch(`/api/conversations/${conversationId}/artifacts`);
   if (!res.ok) throw new Error('Failed to fetch artifacts');
   const data = await res.json() as { artifacts: ArtifactRow[] };
   return data.artifacts;
 }
 
 async function deleteArtifact(id: string): Promise<void> {
-  const token = getToken() ?? '';
-  await fetch(`/api/artifacts/${id}`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  await fetch(`/api/artifacts/${id}`, { method: 'DELETE' });
 }
 
 function artifactFileUrl(id: string): string {
-  return `/api/artifacts/${id}/file?token=${encodeURIComponent(getToken() ?? '')}`;
+  return `/api/artifacts/${id}/file`;
 }
 
 function MimeIcon({ mimeType }: { mimeType: string }) {

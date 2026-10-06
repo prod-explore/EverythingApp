@@ -4,7 +4,7 @@ import type { AnthropicBatchLike } from '../batch.js';
 import type { LlmClient } from '../anthropic-loop.js';
 import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { KeyVault } from './key-vault.js';
-import { OpenAiCompatClient, ProviderHttpError, type CompatFlavor } from './openai-compat.js';
+import { OpenAiCompatClient, ProviderHttpError, type CompatFlavor, type RetryInfo } from './openai-compat.js';
 import { PROVIDERS, PROVIDER_IDS, getCustomProvider, getModelInfo, isCustomProviderId, listCatalog, parseCustomModelId, type ModelInfo, type ProviderId } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
@@ -44,6 +44,15 @@ export interface RouterOptions {
   fetchImpl?: typeof fetch;
   /** Tests: use this instead of constructing an Anthropic SDK client. Also treated as "configured". */
   anthropicOverride?: LlmClient & AnthropicBatchLike;
+  /** Fired before each wait while a provider is busy (429/5xx) — wire it to the log / UI. */
+  onProviderRetry?: (info: RetryInfo) => void;
+}
+
+/** Gemini's free tier rate-limits hard at peak hours: keep retrying for this long (GEMINI_RETRY_BUDGET_HOURS, 0 = classic 2 retries). */
+function geminiRetryBudgetMs(env: NodeJS.ProcessEnv): number | undefined {
+  const raw = env['GEMINI_RETRY_BUDGET_HOURS'];
+  const hours = raw === undefined || raw === '' ? 12 : Number(raw);
+  return Number.isFinite(hours) && hours > 0 ? hours * 3_600_000 : undefined;
 }
 
 /**
@@ -60,7 +69,11 @@ export class ProviderRouter {
   private readonly keyCache = new Map<ProviderId, string>();
   private anthropicClient: { key: string; client: Anthropic } | null = null;
 
+  /** Settable after construction (the app shell only exists once the router does). */
+  onProviderRetry?: (info: RetryInfo) => void;
+
   constructor(private readonly opts: RouterOptions) {
+    this.onProviderRetry = opts.onProviderRetry;
     this.env = opts.env ?? process.env;
     this.vault = opts.vault ?? new KeyVault(opts.db, this.env['KEY_VAULT_SECRET'] ?? '');
   }
@@ -176,6 +189,7 @@ export class ProviderRouter {
         baseUrl: custom.baseUrl.replace(/\/+$/, ''),
         apiKey: resolved.key,
         fetchImpl: this.opts.fetchImpl,
+        onRetry: info => this.onProviderRetry?.(info),
         modelInfo: id => getModelInfo(id, this.env),
         upstreamModel: id => parseCustomModelId(id)?.upstream ?? id,
         meta: {
@@ -191,6 +205,8 @@ export class ProviderRouter {
       baseUrl: (def.baseUrlEnv ? this.env[def.baseUrlEnv] : undefined) ?? def.baseUrl!,
       apiKey: resolved.key,
       fetchImpl: this.opts.fetchImpl,
+      ...(info.provider === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
+      onRetry: info => this.onProviderRetry?.(info),
       modelInfo: id => getModelInfo(id, this.env),
       meta: {
         get: id => getToolCallMeta(this.opts.db, id, info.provider),

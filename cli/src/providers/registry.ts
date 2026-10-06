@@ -189,6 +189,18 @@ const CATALOG: ModelInfo[] = [
     hidden: true,
   },
   {
+    id: 'gemini-3.5-flash-lite',
+    provider: 'gemini',
+    label: 'Gemini 3.5 Flash-Lite (free tier)',
+    // Free of charge on the Gemini API free tier (rate-limited; not for customer data). With billing enabled the
+    // list price is $0.30 in / $2.50 out per 1M — override via MODEL_PRICING_JSON if you run it on a paid project.
+    pricing: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+    supportsImages: true,
+    supportsWebSearch: false,
+    supportsBatch: false,
+    minOutputTokens: 16000,
+  },
+  {
     id: 'gemini-3.8-flash',
     provider: 'gemini',
     label: 'Gemini 3.8 Flash',
