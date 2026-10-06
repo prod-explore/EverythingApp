@@ -27,7 +27,7 @@ server {
         # of these itself, but keeping them is normal practice for anything
         # you might add later (real client IP in logs, etc.), and
         # `trust_proxy` is already set server-side to expect them.
-        proxy_set_header Host              $host;
+        proxy_set_header Host              $http_host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;

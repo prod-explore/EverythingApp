@@ -29,6 +29,7 @@ import { SupervisorExec } from './supervisor-client.js';
 import { createN5Routes, migrateN5 } from './n5-routes.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
+import { createAuth, type Auth } from './session.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
   openDb,
@@ -163,7 +164,7 @@ async function main(): Promise<void> {
     console.warn(`[vault] ${router.vault.disabledReason} — saving API keys from the UI is disabled until it is set.`);
   }
 
-  const { app, stop } = await buildApp({ db, connections, router, authToken, config });
+  const { app, stop, auth } = await buildApp({ db, connections, router, authToken, password: process.env['SERVER_PASSWORD'] || undefined, config });
 
   // ─── Start server ─────────────────────────────────────────────────────────
   const port = Number(process.env['PORT'] ?? 3000);
@@ -177,6 +178,7 @@ async function main(): Promise<void> {
     upstreamUrl: playwrightCfg ? new URL(playwrightCfg.url).origin : undefined,
     upstreamApiKey: playwrightCfg?.apiKey,
     authToken,
+    isCookieValid: auth.isCookieValid,
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────
@@ -217,6 +219,8 @@ export interface BuildAppOptions {
   /** Test double for the Anthropic client — only used when `router` is omitted. */
   anthropic?: LlmClient & AnthropicBatchLike;
   authToken: string;
+  /** Password for the browser login form (SERVER_PASSWORD). Defaults to authToken. */
+  password?: string;
   config: Pick<Config, 'model' | 'autoApproveTools' | 'webSearchEnabled'>;
 }
 
@@ -225,10 +229,12 @@ export interface BuiltApp {
   sse: SSEManager;
   /** Clears the background batch-check and SSE-keepalive intervals. Does not close the db or MCP connections — the caller owns those. */
   stop: () => void;
+  auth: Auth;
 }
 
 export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const { db, connections, authToken, config } = opts;
+  const auth = createAuth({ db, authToken, password: opts.password });
   const router = opts.router ?? new ProviderRouter({ db, anthropicOverride: opts.anthropic });
 
   const registry = new ToolRegistry(config.autoApproveTools);
@@ -501,6 +507,7 @@ ${formatHumanResponse(response)}` };
   app.get('/api/conversations/:id/stream', (req, res) => {
     const queryToken = typeof req.query['token'] === 'string' ? req.query['token'] : undefined;
     const authorized =
+      auth.isCookieValid(req.headers.cookie) ||
       isValidAuthHeader(req.headers.authorization, authToken) ||
       (queryToken !== undefined && isValidAuthHeader(`Bearer ${queryToken}`, authToken));
     if (!authorized) {
@@ -515,13 +522,9 @@ ${formatHumanResponse(response)}` };
   // git-proxy → orchestrator (own bearer secret, GIT_PROXY_ADMIN_TOKEN) — must sit above the user auth.
   app.use('/internal', github.internal);
 
-  app.use('/api', (req, res, next) => {
-    if (!isValidAuthHeader(req.headers.authorization, authToken)) {
-      res.status(401).json({ error: 'unauthorized' });
-      return;
-    }
-    next();
-  });
+  // Browser login/logout/session probe (no auth needed to reach them), then the gate for everything else.
+  app.use('/api', auth.routes);
+  app.use('/api', auth.middleware);
 
   app.use('/api', github.api);
   app.use('/api', n5.api);
@@ -1469,7 +1472,7 @@ ${formatHumanResponse(response)}`;
     clearInterval(keepaliveInterval);
   }
 
-  return { app, sse, stop };
+  return { app, sse, stop, auth };
 }
 
 // Only actually boot the server (and install process-level handlers) when

@@ -24,6 +24,8 @@ export interface LiveViewProxyOptions {
   upstreamApiKey?: string;
   /** The app's own token (same one the REST API / SSE use). */
   authToken: string;
+  /** Browser session check (the HttpOnly cookie rides along on the WebSocket upgrade). */
+  isCookieValid?: (cookieHeader: string | undefined) => boolean;
   /** Handshake + idle safety net. Default 15 s for the upstream handshake. */
   handshakeTimeoutMs?: number;
 }
@@ -57,7 +59,14 @@ export function attachLiveViewProxy(server: http.Server, opts: LiveViewProxyOpti
     // Auth: browsers cannot set headers on a WebSocket, so the token travels as ?token= (same as SSE).
     const header = req.headers.authorization;
     const supplied = header?.startsWith('Bearer ') ? header.slice(7) : (url.searchParams.get('token') ?? undefined);
-    if (!tokenMatches(supplied, opts.authToken)) return reject(clientSocket, '401 Unauthorized');
+    const cookieOk = opts.isCookieValid?.(req.headers.cookie) ?? false;
+    if (cookieOk && req.headers.origin) {
+      // Cookies ride along on cross-site WebSocket handshakes too — only same-origin pages may use them.
+      let sameOrigin = false;
+      try { sameOrigin = new URL(req.headers.origin).host === req.headers.host; } catch { /* malformed Origin */ }
+      if (!sameOrigin) return reject(clientSocket, '403 Forbidden');
+    }
+    if (!cookieOk && !tokenMatches(supplied, opts.authToken)) return reject(clientSocket, '401 Unauthorized');
 
     const conversationId = url.searchParams.get('conversationId');
     if (!conversationId) return reject(clientSocket, '400 Bad Request');
