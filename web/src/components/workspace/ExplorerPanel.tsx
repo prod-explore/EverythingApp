@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, File, FileText, Folder, FolderTree, History, Image, Link2, RotateCcw } from 'lucide-react';
-import { fetchWorkspaceFile, listCheckpoints, listWorkspaceFiles, rollbackWorkspace } from '../../api-workspace';
+import { fetchWorkspaceFile, listCheckpoints, listWorkspaceFiles, rollbackWorkspace, saveWorkspaceFile } from '../../api-workspace';
 import type { Checkpoint, WorkspaceEntry, WorkspaceListing } from '../../types-workspace';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
@@ -31,6 +31,20 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ path: string; url: string; type: string; text?: string; size: number } | null>(null);
   const [tab, setTab] = useState<'files' | 'checkpoints'>('files');
+  // Editing: `draft` is null while just viewing. Saving takes a checkpoint first (server side), so it is undoable.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  async function save() {
+    if (!preview || draft === null) return;
+    setSaveState('saving'); setSaveError(null);
+    try {
+      await saveWorkspaceFile(owner, preview.path, draft);
+      setPreview({ ...preview, text: draft, size: new Blob([draft]).size });
+      setDraft(null); setSaveState('saved');
+    } catch (e) { setSaveError((e as Error).message); setSaveState('error'); }
+  }
 
   const load = useCallback(async (p: string) => {
     setError(null);
@@ -87,13 +101,34 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
       ) : preview ? (
         <div className="flex h-full flex-col">
           <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
-            <button onClick={() => setPreview(null)} className="rounded p-0.5 text-fg-tertiary hover:text-fg" aria-label="Back to folder"><ArrowLeft size={14} /></button>
+            <button onClick={() => { setPreview(null); setDraft(null); setSaveState('idle'); }} className="rounded p-0.5 text-fg-tertiary hover:text-fg" aria-label="Back to folder"><ArrowLeft size={14} /></button>
             <span className="min-w-0 flex-1 truncate font-mono text-fg-secondary">{preview.path}</span>
             <span className="text-fg-tertiary">{formatSize(preview.size)}</span>
+            {saveState === 'saved' && draft === null && <span className="text-fg-tertiary">Saved</span>}
+            {preview.text !== undefined && draft === null && (
+              <button onClick={() => { setDraft(preview.text ?? ''); setSaveState('idle'); }} className="text-fg-secondary underline hover:text-fg">Edit</button>
+            )}
+            {draft !== null && (
+              <>
+                <button onClick={() => void save()} disabled={saveState === 'saving'} className="rounded bg-fg px-2 py-0.5 font-medium text-bg disabled:opacity-40">Save</button>
+                <button onClick={() => { setDraft(null); setSaveError(null); }} className="text-fg-secondary underline hover:text-fg">Cancel</button>
+              </>
+            )}
             <a href={preview.url} download={preview.path.split('/').pop()} className="text-fg-tertiary underline hover:text-fg">Download</a>
           </div>
+          {saveError && <p role="alert" className="border-b border-border px-3 py-1 text-xs text-danger">{saveError}</p>}
           <div className="min-h-0 flex-1 overflow-auto p-3">
-            {preview.text !== undefined ? (
+            {draft !== null ? (
+              <textarea
+                value={draft}
+                onChange={e => setDraft(e.target.value)}
+                onKeyDown={e => { if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); void save(); } }}
+                spellCheck={false}
+                aria-label={`Edit ${preview.path}`}
+                autoFocus
+                className="h-full min-h-[50vh] w-full resize-none rounded-button border border-border bg-bg-secondary p-2 font-mono text-xs text-fg outline-none focus:border-border-hover"
+              />
+            ) : preview.text !== undefined ? (
               <pre className="whitespace-pre-wrap break-words font-mono text-xs text-fg">{preview.text}</pre>
             ) : preview.type.startsWith('image/') ? (
               <img src={preview.url} alt={preview.path} className="max-w-full" />

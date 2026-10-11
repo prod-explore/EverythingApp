@@ -50,4 +50,10 @@ describe('TokenStore', () => {
     assert.equal(findGrant(b, 'acme', 'other'), undefined);
     assert.equal(findGrant(b, 'evil', 'app'), undefined);
   });
+
+  it('findGrant supports wildcards, and an exact entry beats the wildcard', () => {
+    const b = { projectId: 'p', expiresAt: Date.now() + 1000, repos: [{ owner: '*', repo: '*', pushMode: 'ask' as const }, { owner: 'acme', repo: 'locked', pushMode: 'deny' as const }] };
+    assert.equal(findGrant(b, 'anyone', 'anything')?.pushMode, 'ask');
+    assert.equal(findGrant(b, 'ACME', 'locked.git')?.pushMode, 'deny');
+  });
 });

@@ -307,6 +307,7 @@ export interface RunRow {
   error: string | null;
   usage: RunUsage;
   heartbeatAt: string | null;
+  batch?: boolean;
   createdAt: string;
   finishedAt: string | null;
 }

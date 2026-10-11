@@ -1,6 +1,6 @@
 import { ApiError, notifyUnauthorized } from './api';
 import type {
-  Checkpoint, GithubStatus, ProjectRepo, PushMode, ScmBranch, ScmCommit, ScmStatus, WorkspaceListing,
+  Checkpoint, GithubStatus, ScmBranch, ScmCommit, ScmRepo, ScmStatus, WorkspaceListing,
 } from './types-workspace';
 
 /** Same contract as api.ts's request(): JSON in/out, session cookie, ApiError on failure. */
@@ -36,6 +36,10 @@ export async function fetchWorkspaceFile(owner: string, path: string): Promise<{
   return { url: URL.createObjectURL(blob), type, size: blob.size, text: type.startsWith('text/') ? await blob.text() : undefined };
 }
 
+export function saveWorkspaceFile(owner: string, path: string, content: string): Promise<{ ok: boolean; bytes: number }> {
+  return request(`/api/workspace/${owner}/file`, { method: 'PUT', body: JSON.stringify({ path, content }) });
+}
+
 export function listCheckpoints(owner: string): Promise<{ checkpoints: Checkpoint[] }> {
   return request(`/api/workspace/${owner}/checkpoints`);
 }
@@ -44,7 +48,7 @@ export function rollbackWorkspace(owner: string, checkpointId: string): Promise<
   return request(`/api/workspace/${owner}/rollback`, post({ checkpointId }));
 }
 
-// ─── N4: GitHub connection + repo bindings ────────────────────────────────────
+// ─── N4: GitHub connection (once, app-wide) ────────────────────────────────────
 
 export const githubConnect = {
   status: () => request<GithubStatus>('/api/github/status'),
@@ -57,15 +61,12 @@ export const githubConnect = {
   disconnect: () => request<{ ok: boolean }>('/api/github', { method: 'DELETE' }),
 };
 
-export const projectRepos = {
-  list: (projectId: string) => request<{ repos: ProjectRepo[] }>(`/api/projects/${projectId}/repos`),
-  add: (projectId: string, repo: string, pushMode?: PushMode) => request<{ repos: ProjectRepo[] }>(`/api/projects/${projectId}/repos`, post({ repo, pushMode })),
-  update: (projectId: string, repoId: string, patch: { pushMode?: PushMode; defaultBranch?: string }) =>
-    request<{ repos: ProjectRepo[] }>(`/api/projects/${projectId}/repos/${repoId}`, { method: 'PATCH', body: JSON.stringify(patch) }),
-  remove: (projectId: string, repoId: string) => request<{ ok: boolean }>(`/api/projects/${projectId}/repos/${repoId}`, { method: 'DELETE' }),
+/** Git checkouts found in the project's sandbox (there is no per-project repository configuration). */
+export const scmRepos = {
+  list: (projectId: string) => request<{ repos: ScmRepo[] }>(`/api/projects/${projectId}/scm-repos`),
 };
 
-/** GitHub REST through the server (linked repos only). `path` like `/repos/o/r/pulls?state=open`. */
+/** GitHub REST through the server, as the account connected in Settings → GitHub. `path` like `/repos/o/r/pulls?state=open`. */
 export function githubApi<T>(projectId: string, path: string, init?: { method?: string; body?: unknown }): Promise<T> {
   return request(`/api/projects/${projectId}/github${path}`, {
     method: init?.method ?? 'GET',
@@ -104,6 +105,6 @@ export const scm = {
   stash: (p: string, dir: string, action: 'list' | 'push' | 'pop' | 'apply' | 'drop', index?: number, message?: string) =>
     request<{ output: string }>(`/api/projects/${p}/scm/stash`, post({ dir, action, index, message })),
   resolve: (p: string, dir: string, path: string, content: string) => request(`/api/projects/${p}/scm/resolve`, post({ dir, path, content })),
-  sync: (p: string, dir: string, action: 'fetch' | 'pull' | 'push' | 'clone', repoId?: string) =>
-    request<{ output: string }>(`/api/projects/${p}/scm/sync`, post({ dir, action, repoId })),
+  sync: (p: string, dir: string, action: 'fetch' | 'pull' | 'push' | 'clone', url?: string) =>
+    request<{ output: string }>(`/api/projects/${p}/scm/sync`, post({ dir, action, url })),
 };

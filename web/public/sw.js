@@ -51,3 +51,21 @@ self.addEventListener('fetch', event => {
     );
   }
 });
+
+// Web Push (urgent Gazeta items). The payload is JSON { title, body, url } from the server.
+self.addEventListener('push', event => {
+  let data = { title: 'EverythingApp', body: '', url: '/' };
+  try { data = { ...data, ...event.data.json() }; } catch { /* keep defaults */ }
+  event.waitUntil(self.registration.showNotification(data.title, { body: data.body, icon: '/favicon.svg', tag: 'ea-urgent', data: { url: data.url } }));
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  const url = (event.notification.data && event.notification.data.url) || '/';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      const open = list.find(c => 'focus' in c);
+      return open ? open.focus() : self.clients.openWindow(url);
+    }),
+  );
+});

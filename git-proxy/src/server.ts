@@ -137,8 +137,8 @@ export function createGitProxy(cfg: ProxyConfig): http.Server {
       if (!Array.isArray(body.repos) || body.repos.length === 0) throw new HttpError(400, 'repos must be a non-empty array');
       const repos: RepoGrant[] = body.repos.map((r: unknown, i: number) => {
         const g = (r ?? {}) as { owner?: unknown; repo?: unknown; pushMode?: unknown };
-        if (typeof g.owner !== 'string' || !NAME_OK.test(g.owner)) throw new HttpError(400, `repos[${i}].owner is invalid`);
-        if (typeof g.repo !== 'string' || !NAME_OK.test(g.repo)) throw new HttpError(400, `repos[${i}].repo is invalid`);
+        if (typeof g.owner !== 'string' || !(g.owner === '*' || NAME_OK.test(g.owner))) throw new HttpError(400, `repos[${i}].owner is invalid`);
+        if (typeof g.repo !== 'string' || !(g.repo === '*' || NAME_OK.test(g.repo))) throw new HttpError(400, `repos[${i}].repo is invalid`);
         const pushMode = g.pushMode ?? 'ask';
         if (!PUSH_MODES.includes(pushMode as RepoGrant['pushMode'])) throw new HttpError(400, `repos[${i}].pushMode must be allow|ask|deny`);
         return { owner: g.owner, repo: g.repo, pushMode: pushMode as RepoGrant['pushMode'] };
@@ -371,7 +371,7 @@ export function createGitProxy(cfg: ProxyConfig): http.Server {
     audit['projectId'] = binding.projectId;
     const grant = findGrant(binding, owner, repo);
     if (!grant) {
-      throw new HttpError(403, `git-proxy: repository ${owner}/${repo} is not linked to this project. Link it in EverythingApp to use it here.`);
+      throw new HttpError(403, `git-proxy: repository ${owner}/${repo} is not allowed for this token.`);
     }
     const ctx: GitCtx = { binding, grant, owner, repo, endpoint };
 

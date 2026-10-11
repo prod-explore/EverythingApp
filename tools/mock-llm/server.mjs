@@ -11,7 +11,7 @@
  *   "report"            → post_report (urgent)
  *   "bash: <cmd>"       → the first tool whose name ends with run_bash
  *   "browse: <url>"     → browse_url / browser_open
- *   "spawn"             → spawn_agent (worker on @mock/mock-1) then wait_agents
+ *   "spawn"             → spawn_agent (worker on flash) then wait_agents
  *   "tool: <name> <json>" → call any tool by (suffix) name with JSON args
  *   "long"              → long markdown answer (streamed slowly)
  *   "error"             → HTTP 500
@@ -98,7 +98,7 @@ function decide(body) {
   }
   if (lower.startsWith('spawn')) {
     const t = findTool(tools, 'spawn_agent');
-    if (t) return { text: 'Delegating to a worker.', toolCalls: [call(t, { goal: 'Count the open TODOs in the project and report them.', model: '@mock/mock-1', label: 'counter' })] };
+    if (t) return { text: 'Delegating to a worker.', toolCalls: [call(t, { goal: 'Count the open TODOs in the project and report them.', model: 'flash', label: 'counter' })] };
   }
   if (lower.startsWith('tool:')) {
     const m = /^tool:\s*(\S+)\s*(\{[\s\S]*\})?$/i.exec(user);

@@ -16,6 +16,7 @@ import {
   commandGrantLabel,
   type SubcommandVerdict,
 } from './command-policy.js';
+import { mergeCommandPolicy, type PolicyStore } from './policy-file.js';
 
 /**
  * Patterns that look potentially irreversible/destructive — §12 pt.5 of the
@@ -100,7 +101,7 @@ export class WebApprovalGate {
   private readonly chatAllowed = new Map<string, Set<string>>();
   private readonly pending = new Map<string, { entry: PendingApproval; resolve: (approved: boolean) => void; timer?: ReturnType<typeof setTimeout> }>();
 
-  constructor(db: Database.Database) {
+  constructor(db: Database.Database, private readonly policyFile?: PolicyStore) {
     this.db = db;
   }
 
@@ -132,7 +133,10 @@ export class WebApprovalGate {
     let commands: SubcommandVerdict[] | undefined;
     if (command !== null) {
       const project = ctx?.projectId ? getProject(this.db, ctx.projectId) : null;
-      const policy = parseCommandPolicy(project?.policy?.['commands']);
+      const projectRaw = project?.policy?.['commands'];
+      const projectPolicy = parseCommandPolicy(projectRaw);
+      const projectHasMode = !!projectRaw && typeof projectRaw === 'object' && 'mode' in (projectRaw as object);
+      const policy = this.policyFile ? mergeCommandPolicy(this.policyFile.get().commands, projectPolicy, projectHasMode) : projectPolicy;
       const chatSet = this.chatAllowed.get(conversationId);
       const verdict = evaluateCommand(command, policy, prefix =>
         !!chatSet?.has(commandGrantLabel(prefix)) || !!findMatchingGrant(this.db, commandGrantLabel(prefix), grantCtx));

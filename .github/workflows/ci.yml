@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'wip/**']
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cli, git-proxy, sandbox-mcp, sandbox-supervisor, playwright-mcp]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  web:
+    name: web (typecheck + build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npx tsc -b
+      - run: npx vite build
+
+  compose:
+    name: docker-compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate compose file
+        run: |
+          cp .env.example .env
+          KEY_VAULT_SECRET=ci SERVER_AUTH_TOKEN=ci MCP_API_KEY=ci GIT_PROXY_ADMIN_TOKEN=ci docker compose config -q

@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { AssistantRuntimeProvider, ThreadPrimitive } from '@assistant-ui/react';
+import { AssistantRuntimeProvider, SelectionToolbarPrimitive, ThreadPrimitive } from '@assistant-ui/react';
+import { Quote } from 'lucide-react';
 import { useEverythingAppRuntime } from '../../lib/runtime';
 import { Composer } from './Composer';
 import { ChatQuestions } from '../gazeta/ChatQuestions';
@@ -67,6 +68,12 @@ export function ChatView({
             <InlineApprovals pending={approvals.pending} respond={approvals.respond} />
           </div>
         </ThreadPrimitive.Viewport>
+        {/* Select any passage in a message → floating "Quote" quotes just that passage in the next reply. */}
+        <SelectionToolbarPrimitive.Root className="z-50 rounded-button border border-border bg-bg-secondary shadow-lg">
+          <SelectionToolbarPrimitive.Quote className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs text-fg hover:bg-bg-tertiary" aria-label="Quote selection">
+            <Quote size={12} /> Quote
+          </SelectionToolbarPrimitive.Quote>
+        </SelectionToolbarPrimitive.Root>
         <ChatQuestions conversationId={conversationId} />
         <Composer conversationId={conversationId} error={error} onRetry={retry} />
       </ThreadPrimitive.Root>

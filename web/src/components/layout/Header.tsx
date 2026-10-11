@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, FolderOpen, FolderTree, GitBranch, GitMerge as Github, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
+import { Bot, Download, FolderOpen, FolderTree, GitBranch, GitMerge as Github, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
 import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
@@ -31,8 +31,11 @@ export function Header({
   artifactsPanelOpen,
   dockTool,
   onToggleTool,
+  conversationId,
 }: {
   title: string;
+  /** Enables the export download for the open chat. */
+  conversationId?: string | null;
   usage: string;
   /** null until the full conversation loads, or when there's no conversation selected yet. */
   model: string | null;
@@ -114,6 +117,12 @@ export function Header({
 
       <span className="hidden shrink-0 text-xs text-fg-tertiary md:inline">{usage}</span>
 
+      {conversationId && (
+        <a href={`/api/conversations/${conversationId}/export`} download title="Export this chat as Markdown" aria-label="Export chat as Markdown" className="hidden shrink-0 text-fg-tertiary hover:text-fg-secondary md:block">
+          <Download size={16} />
+        </a>
+      )}
+
       <button onClick={logout} title="Log out" aria-label="Log out" className="hidden shrink-0 text-fg-tertiary hover:text-fg-secondary md:block">
         <LogOut size={16} />
       </button>
@@ -148,6 +157,11 @@ export function Header({
                 <t.icon size={15} /> {dockTool === t.id ? `Hide ${t.label}` : t.label}
               </button>
             ))}
+            {conversationId && (
+              <a role="menuitem" className={itemClass(false)} href={`/api/conversations/${conversationId}/export`} download>
+                <Download size={15} /> Export chat
+              </a>
+            )}
             <button role="menuitem" className={itemClass(false)} onClick={logout}>
               <LogOut size={15} /> Log out
             </button>

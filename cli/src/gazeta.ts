@@ -1,3 +1,4 @@
+import type Anthropic from '@anthropic-ai/sdk';
 import type Database from 'better-sqlite3';
 import { createGazetaItem, type BatchJob, type GazetaItem } from './db.js';
 import type { AnthropicLike } from './anthropic-loop.js';
@@ -144,6 +145,7 @@ export async function generateDailySummary(
   db: Database.Database,
   anthropic: AnthropicLike,
   model: string,
+  onUsage?: (u: Anthropic.Usage) => void,
 ): Promise<string> {
   const systemPrompt = 'You are a concise daily briefing assistant. Summarize the provided items in plain markdown. Be brief.';
 
@@ -169,6 +171,7 @@ export async function generateDailySummary(
     messages: [{ role: 'user', content: `Summarize these ${pending.length} pending items:\n\n${itemsText}` }],
   });
 
+  onUsage?.(response.usage);
   const summaryText = (response.content as Array<{ type: string; text?: string }>)
     .filter(b => b.type === 'text' && typeof b.text === 'string')
     .map(b => b.text as string)
@@ -254,6 +257,13 @@ export function awaitHumanInput(
       timer,
     });
   });
+}
+
+/** Sentinel delivered to a waiting agent when the user dismisses its question instead of answering. */
+export const DISMISSED_RESPONSE = Object.freeze({ dismissed: true });
+
+export function isDismissedResponse(response: unknown): boolean {
+  return !!response && typeof response === 'object' && (response as Record<string, unknown>)['dismissed'] === true;
 }
 
 /** Human-readable form of a Gazeta answer ({text}, {choice}, {fields}) — what the agent and the chat see. */

@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ArrowLeft, CircleCheck, CircleDot, CircleX, Clock, ExternalLink, GitPullRequest, GitMerge as Github, Play } from 'lucide-react';
-import { githubApi, githubConnect, githubText, projectRepos } from '../../api-workspace';
-import type { ProjectRepo } from '../../types-workspace';
+import { githubApi, githubConnect, githubText, scmRepos } from '../../api-workspace';
 import { MarkdownBody as MarkdownText } from '../chat/MarkdownText';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
@@ -28,19 +27,34 @@ function StateIcon({ status, conclusion }: { status: string; conclusion: string 
   return <CircleX size={13} className="shrink-0 text-danger" />;
 }
 
-/** GitHub panel (Plan v3 §7.2): PRs, issues, checks and Actions for the project's linked repos, through the server. */
+/** GitHub panel (Plan v3 §7.2): PRs, issues, checks and Actions for the repos in this sandbox and on the connected account, through the server. */
 export function GitHubPanel({ projectId, onClose, onConnect }: { projectId: string; onClose: () => void; onConnect: () => void }) {
   const [connected, setConnected] = useState<boolean | null>(null);
   useEffect(() => {
     githubConnect.status().then(s => setConnected(s.connected)).catch(() => setConnected(true)); // unknown → let the panel show its own errors
   }, []);
-  const [repos, setRepos] = useState<ProjectRepo[] | null>(null);
-  const [repo, setRepo] = useState<ProjectRepo | null>(null);
+  // Repositories: first the ones checked out in this project's sandbox, then the account's most recently pushed.
+  const [repos, setRepos] = useState<Array<{ id: string; owner: string; repo: string }> | null>(null);
+  const [repo, setRepo] = useState<{ id: string; owner: string; repo: string } | null>(null);
   const [tab, setTab] = useState<'pulls' | 'issues' | 'actions'>('pulls');
   const [view, setView] = useState<View>({ kind: 'list' });
 
   useEffect(() => {
-    void projectRepos.list(projectId).then(r => { setRepos(r.repos); setRepo(r.repos[0] ?? null); }).catch(() => setRepos([]));
+    let cancelled = false;
+    void (async () => {
+      const seen = new Set<string>();
+      const list: Array<{ id: string; owner: string; repo: string }> = [];
+      const add = (owner: string, repo: string) => {
+        const id = `${owner}/${repo}`.toLowerCase();
+        if (!seen.has(id)) { seen.add(id); list.push({ id, owner, repo }); }
+      };
+      try { for (const r of (await scmRepos.list(projectId)).repos) if (r.owner && r.repo) add(r.owner, r.repo); } catch { /* sandbox may be asleep */ }
+      try { for (const r of await githubApi<Array<{ name: string; owner: { login: string } }>>(projectId, '/user/repos?sort=pushed&per_page=50')) add(r.owner.login, r.name); } catch { /* not connected / offline */ }
+      if (cancelled) return;
+      setRepos(list);
+      setRepo(list[0] ?? null);
+    })();
+    return () => { cancelled = true; };
   }, [projectId]);
 
   const base = repo ? `/repos/${repo.owner}/${repo.repo}` : '';
@@ -53,7 +67,7 @@ export function GitHubPanel({ projectId, onClose, onConnect }: { projectId: stri
           <button onClick={onConnect} className="rounded-button bg-fg px-4 py-2 text-sm font-medium text-bg hover:opacity-90">Connect GitHub</button>
         </div>
       ) : (<>
-      {repos && repos.length === 0 && <PanelMessage>No repositories linked. Add one in Project settings → Repositories.</PanelMessage>}
+      {repos && repos.length === 0 && <PanelMessage>No repositories found. Clone one in Source Control, or log in to GitHub in Settings.</PanelMessage>}
       {repo && (
         <>
           <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">

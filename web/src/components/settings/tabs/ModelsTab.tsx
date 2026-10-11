@@ -14,8 +14,9 @@ export function ModelsTab() {
       <CustomProvidersSection onChanged={refreshModels} />
 
       <div>
-        <label className="mb-2 block text-xs font-medium text-fg-secondary">Default model</label>
+        <label htmlFor="default-model" className="mb-2 block text-xs font-medium text-fg-secondary">Default model</label>
         <select
+          id="default-model"
           value={settings['default_model'] ?? 'claude-sonnet-5'}
           onChange={e => set('default_model', e.target.value)}
           className="w-full rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none"

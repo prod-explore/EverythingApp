@@ -306,6 +306,21 @@ export function guessProvider(modelId: string): BuiltinProviderId {
   return 'anthropic';
 }
 
+/**
+ * True when `modelId` is something we can actually route: a catalog entry, a custom-provider model, a
+ * priced override, a MindGate alias / `pipeline:` id, or an id with a known provider prefix. Anything else
+ * (e.g. `google/gemini-2.0-flash-lite`) used to fall through to Anthropic and fail with a misleading
+ * "credit balance too low"; callers now reject it up front.
+ */
+export function isKnownModelId(modelId: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  if (parseCustomModelId(modelId)) return true;
+  if (CATALOG.some(m => m.id === modelId)) return true;
+  if (Object.prototype.hasOwnProperty.call(loadOverrides(env), modelId)) return true;
+  const id = modelId.toLowerCase();
+  return id.startsWith('claude') || id.startsWith('gemini') || id.startsWith('deepseek') || id.startsWith('mindgate') || id.startsWith('pipeline:')
+    || ['flash', 'chat', 'reasoning', 'coding-fast', 'coding-hard', 'extreme'].includes(id);
+}
+
 function customModelInfo(modelId: string): ModelInfo | null {
   const parsed = parseCustomModelId(modelId);
   if (!parsed) return null;

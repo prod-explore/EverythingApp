@@ -82,7 +82,7 @@ describe('auth and repo binding', () => {
     const r = await request(`${h.proxy}/acme/secret.git/info/refs?service=git-upload-pack`, { headers: { authorization: basic(token) } });
     assert.equal(r.status, 403);
     assert.match(String(r.headers['content-type']), /^text\/plain/);
-    assert.match(r.body.toString(), /acme\/secret is not linked to this project/);
+    assert.match(r.body.toString(), /acme\/secret is not allowed for this token/);
     const r2 = await request(`${h.proxy}/acme/secret/git-upload-pack`, { method: 'POST', headers: { authorization: `Bearer ${token}` }, body: '0000' });
     assert.equal(r2.status, 403);
     assert.equal(h.upstreamSeen.length, 0);

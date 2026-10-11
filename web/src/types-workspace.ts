@@ -29,15 +29,12 @@ export interface GithubStatus {
   vaultEnabled: boolean;
   error?: string;
 }
-export type PushMode = 'ask' | 'allow' | 'deny';
-export interface ProjectRepo {
-  id: string;
-  projectId: string;
-  owner: string;
-  repo: string;
-  defaultBranch: string;
-  pushMode: PushMode;
-  createdAt: string;
+/** A git checkout found in the project's sandbox workspace (`dir` is relative to /workspace, '' = the workspace itself). */
+export interface ScmRepo {
+  dir: string;
+  origin: string | null;
+  owner: string | null;
+  repo: string | null;
 }
 export interface ScmFile {
   path: string;

@@ -12,6 +12,7 @@ export type SSEEventName =
   | 'approval:pending'
   | 'approval:resolved'
   | 'batch:resolved'
+  | 'conversation:titled'
   | 'gazeta:new'
   | 'gazeta:responded'
   | 'gazeta:dismissed'

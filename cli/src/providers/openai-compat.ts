@@ -162,6 +162,66 @@ class NameMap {
   original(safe: string): string {
     return this.toOriginal.get(safe) ?? safe;
   }
+  /** Number of tools offered to the model in this request. */
+  get size(): number {
+    return this.toOriginal.size;
+  }
+  /** Maps a name the model produced (sent-safe or original) to the safe name we offered, or undefined if we never offered it. */
+  resolve(name: string): string | undefined {
+    if (this.toOriginal.has(name)) return name;
+    const s = safeToolName(name);
+    return this.toOriginal.has(s) ? s : undefined;
+  }
+}
+
+// ─── Tool calls emitted as plain text ────────────────────────────────────────
+
+/** Most calls a text-encoded batch may carry; anything longer is almost certainly prose. */
+const MAX_RECOVERED_CALLS = 8;
+
+/**
+ * Small local models behind MindGate sometimes "call" a tool by writing the call as JSON in the message
+ * body instead of using the tool_calls channel. When the WHOLE reply is such a payload (optionally in a
+ * ```json fence) — `{name, arguments}` or an array of them — and every name is a tool we actually offered,
+ * it is treated as a real call. Anything else (prose, unknown tool, broken JSON) returns null and stays text.
+ */
+export function recoverJsonToolCalls(
+  text: string,
+  resolveName: (name: string) => string | undefined,
+): Array<{ name: string; arguments: Record<string, unknown> }> | null {
+  let body = text.trim();
+  const fence = /^```(?:json|JSON)?\s*\n?([\s\S]*?)\n?```$/.exec(body);
+  if (fence) body = fence[1]!.trim();
+  if (!body || (body[0] !== '{' && body[0] !== '[')) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  if (items.length === 0 || items.length > MAX_RECOVERED_CALLS) return null;
+  const out: Array<{ name: string; arguments: Record<string, unknown> }> = [];
+  for (const raw of items) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+    const item = raw as Record<string, unknown>;
+    const fn = item['function'] && typeof item['function'] === 'object' ? (item['function'] as Record<string, unknown>) : item;
+    const name = fn['name'];
+    if (typeof name !== 'string') return null;
+    const safe = resolveName(name);
+    if (!safe) return null;
+    let args: unknown = fn['arguments'] ?? fn['parameters'] ?? fn['input'] ?? {};
+    if (typeof args === 'string') {
+      try {
+        args = args.trim() ? JSON.parse(args) : {};
+      } catch {
+        return null;
+      }
+    }
+    if (!args || typeof args !== 'object' || Array.isArray(args)) return null;
+    out.push({ name: safe, arguments: args as Record<string, unknown> });
+  }
+  return out;
 }
 
 // ─── Schema sanitising ───────────────────────────────────────────────────────
@@ -442,12 +502,21 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
   const msg = choice.message;
 
   const content: Anthropic.ContentBlock[] = [];
-  const text = Array.isArray(msg.content)
+  let text = Array.isArray(msg.content)
     ? msg.content.map(p => p.text ?? '').join('')
     : (msg.content ?? '');
+
+  let calls = msg.tool_calls ?? [];
+  // Local models (MindGate / custom endpoints) sometimes write the call as JSON text instead of using tool_calls.
+  if (calls.length === 0 && text && (ctx.flavor === 'mindgate' || ctx.flavor === 'generic') && ctx.names.size > 0) {
+    const recovered = recoverJsonToolCalls(text, n => ctx.names.resolve(n));
+    if (recovered) {
+      calls = recovered.map((r, i) => ({ id: `call_recovered_${randomUUID().replace(/-/g, '').slice(0, 12)}_${i}`, function: { name: r.name, arguments: JSON.stringify(r.arguments) } }));
+      text = '';
+    }
+  }
   if (text) content.push({ type: 'text', text, citations: null } as Anthropic.TextBlock);
 
-  const calls = msg.tool_calls ?? [];
   calls.forEach((tc, i) => {
     const id = normalizeToolCallId(tc.id);
     const rawArgs = tc.function?.arguments ?? '';
@@ -674,6 +743,21 @@ export class OpenAiCompatClient implements LlmClient {
       if (!type.includes('event-stream')) return fromChatResponse((await res.json()) as OaiResponse, params.model, ctx, this.opts.flavor);
 
       let text = '';
+      // MindGate/custom models may answer with a tool call written as JSON text. A reply that starts with
+      // { [ or ``` is held back (not streamed) until we know whether it was a call; otherwise it flows live.
+      const mayBeTextCall = (this.opts.flavor === 'mindgate' || this.opts.flavor === 'generic') && ctx.names.size > 0;
+      let mode = (mayBeTextCall ? 'undecided' : 'stream') as 'undecided' | 'stream' | 'hold';
+      const onText = (delta: string) => {
+        text += delta;
+        if (mode === 'stream') { emitText(delta); return; }
+        if (mode === 'undecided') {
+          const lead = text.trimStart();
+          if (!lead) return;
+          if (/^[{[`]/.test(lead)) { mode = 'hold'; return; }
+          mode = 'stream';
+          emitText(text);
+        }
+      };
       let reasoning = '';
       let finish: string | null = null;
       let id = '';
@@ -710,7 +794,7 @@ export class OpenAiCompatClient implements LlmClient {
           if (choice.finish_reason) finish = choice.finish_reason;
           const d = choice.delta ?? {};
           if (d.reasoning_content) reasoning += d.reasoning_content;
-          if (d.content) { text += d.content; emitText(d.content); }
+          if (d.content) onText(d.content);
           for (const tc of d.tool_calls ?? []) {
             const i = tc.index ?? calls.length;
             calls[i] ??= { id: '', type: 'function', function: { name: '', arguments: '' } };
@@ -735,7 +819,13 @@ export class OpenAiCompatClient implements LlmClient {
         }],
         usage,
       } as unknown as OaiResponse;
-      return fromChatResponse(json, params.model, ctx, this.opts.flavor);
+      const message = fromChatResponse(json, params.model, ctx, this.opts.flavor);
+      // Held text that turned out NOT to be a tool call (a JSON answer, a code block) is released now.
+      if (mode === 'hold') {
+        const first = message.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
+        if (first) emitText(first.text);
+      }
+      return message;
     } finally {
       cleanup();
     }

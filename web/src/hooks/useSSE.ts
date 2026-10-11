@@ -97,6 +97,7 @@ const SIDE_EVENTS = [
   'gazeta:responded',
   'gazeta:dismissed',
   'batch:resolved',
+  'conversation:titled',
   'approval:resolved',
   'usage:warning',
   'provider:retry',

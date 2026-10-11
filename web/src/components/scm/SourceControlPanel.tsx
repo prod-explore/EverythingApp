@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowUp, GitBranch, GitCommitHorizontal, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react';
-import { fetchWorkspaceFile, projectRepos, scm } from '../../api-workspace';
-import type { ProjectRepo, ScmBranch, ScmCommit, ScmFile, ScmStatus } from '../../types-workspace';
+import { fetchWorkspaceFile, scm, scmRepos } from '../../api-workspace';
+import type { ScmBranch, ScmCommit, ScmFile, ScmRepo, ScmStatus } from '../../types-workspace';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
 /**
@@ -9,7 +9,8 @@ import { DockPanel, PanelMessage } from '../shared/DockPanel';
  * the human's own actions (no approval), network operations go through git-proxy.
  */
 export function SourceControlPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const [repos, setRepos] = useState<ProjectRepo[]>([]);
+  const [repos, setRepos] = useState<ScmRepo[]>([]);
+  const [cloneUrl, setCloneUrl] = useState('');
   const [dir, setDir] = useState<string>('');
   const [tab, setTab] = useState<'changes' | 'history' | 'branches'>('changes');
   const [status, setStatus] = useState<ScmStatus | null>(null);
@@ -19,12 +20,14 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
   const [diffFile, setDiffFile] = useState<{ file: ScmFile; staged: boolean } | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
 
-  useEffect(() => {
-    void projectRepos.list(projectId).then(r => {
+  const loadRepos = useCallback(async (preferred?: string) => {
+    try {
+      const r = await scmRepos.list(projectId);
       setRepos(r.repos);
-      setDir(d => d || r.repos[0]?.repo || '');
-    }).catch(() => {});
+      setDir(d => preferred ?? (d || r.repos[0]?.dir || ''));
+    } catch { /* the panel shows its own errors once a repo is selected */ }
   }, [projectId]);
+  useEffect(() => { void loadRepos(); }, [loadRepos]);
 
   const refresh = useCallback(async () => {
     try {
@@ -57,7 +60,6 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
   const changed = useMemo(() => status?.files.filter(f => !f.conflicted && (f.worktree !== ' ' || f.index === '?')) ?? [], [status]);
   const conflicts = useMemo(() => status?.files.filter(f => f.conflicted) ?? [], [status]);
   const notRepo = error?.includes('not a git repository');
-  const repoForDir = repos.find(r => r.repo === dir);
 
   return (
     <DockPanel
@@ -71,7 +73,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
       <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
         <label className="sr-only" htmlFor="scm-dir">Repository</label>
         <select id="scm-dir" value={dir} onChange={e => { setDir(e.target.value); setDiffFile(null); }} className="min-w-0 flex-1 rounded border border-border bg-bg px-1 py-0.5 text-fg">
-          {repos.map(r => <option key={r.id} value={r.repo}>/workspace/{r.repo} ({r.owner}/{r.repo})</option>)}
+          {repos.filter(r => r.dir !== '').map(r => <option key={r.dir} value={r.dir}>/workspace/{r.dir}{r.owner ? ` (${r.owner}/${r.repo})` : ''}</option>)}
           <option value="">/workspace</option>
         </select>
         <div className="flex rounded-button border border-border" role="tablist">
@@ -88,13 +90,34 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
         </div>
       ) : notRepo ? (
         <div className="space-y-2 p-3 text-xs">
-          <PanelMessage>/workspace/{dir} is not a git repository yet.</PanelMessage>
-          {repoForDir && (
-            <button onClick={() => void act('clone', () => scm.sync(projectId, '', 'clone', repoForDir.id))} disabled={!!busy} className="w-full rounded-button bg-fg px-3 py-1.5 text-bg font-medium disabled:opacity-50">
-              {busy === 'clone' ? 'Cloning…' : `Clone ${repoForDir.owner}/${repoForDir.repo}`}
+          <PanelMessage>{dir ? `/workspace/${dir} is not a git repository.` : 'No git repository in /workspace yet.'}</PanelMessage>
+          <form
+            className="flex gap-2"
+            onSubmit={e => {
+              e.preventDefault();
+              const url = cloneUrl.trim();
+              if (!url || busy) return;
+              void act('clone', async () => {
+                const r = await scm.sync(projectId, '', 'clone', url);
+                const name = url.replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() ?? '';
+                setCloneUrl('');
+                await loadRepos(name);
+                return r;
+              });
+            }}
+          >
+            <input
+              value={cloneUrl}
+              onChange={e => setCloneUrl(e.target.value)}
+              placeholder="github.com/owner/repo — clone into the sandbox"
+              aria-label="Repository URL to clone"
+              className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-fg outline-none focus:border-border-hover"
+            />
+            <button type="submit" disabled={!cloneUrl.trim() || !!busy} className="rounded-button bg-fg px-3 py-1 font-medium text-bg disabled:opacity-50">
+              {busy === 'clone' ? 'Cloning…' : 'Clone'}
             </button>
-          )}
-          {repos.length === 0 && <PanelMessage>Link a GitHub repository in Project settings to clone it here.</PanelMessage>}
+          </form>
+          <PanelMessage>Log in to GitHub once in Settings → GitHub; every push still asks for your approval.</PanelMessage>
         </div>
       ) : (
         <>

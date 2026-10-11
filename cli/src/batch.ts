@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Anthropic from '@anthropic-ai/sdk';
-import { cacheableSystem, sanitizeHistory } from './anthropic-loop.js';
+import { cacheableSystem, sanitizeHistory, type LlmClient } from './anthropic-loop.js';
 
 export interface PendingBatch {
   batchId: string;
@@ -104,4 +104,63 @@ export async function checkBatch(
 
   // Ended but no matching result — shouldn't happen for a single-request batch, but don't crash over it.
   return { entry, status: 'errored', errorDetail: 'brak wyniku dla tego custom_id w zakończonym batchu' };
+}
+
+export interface BatchedClientOptions {
+  /** How often to ask whether the batch has ended. Anthropic batches usually finish within an hour, at most 24 h. */
+  pollMs?: number;
+  /** Give up after this long (Anthropic expires batches at 24 h). */
+  timeoutMs?: number;
+  /** Called once per submitted step — lets the owner show "waiting for batch …" and persist the id. */
+  onSubmitted?: (batchId: string) => void;
+}
+
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('aborted'));
+    const t = setTimeout(() => { signal?.removeEventListener('abort', onAbort); resolve(); }, ms);
+    const onAbort = () => { clearTimeout(t); reject(new Error('aborted')); };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+
+/**
+ * An LlmClient whose every `messages.create` is a one-request Batch API job (50% cheaper per call).
+ *
+ * This is what makes tool-using work batchable: the normal agent loop keeps running unchanged, and each model
+ * step becomes   submit → poll → result → (run tool locally, behind the same approval gate) → submit …
+ * An approval step simply waits for a human *between* two batches; nothing is held at Anthropic while it does.
+ * Trade-off: latency per step is minutes, not seconds — use it for background workers, never for the live chat.
+ */
+export function createBatchedClient(batches: AnthropicBatchLike, opts: BatchedClientOptions = {}): LlmClient {
+  const pollMs = opts.pollMs ?? 20_000;
+  const timeoutMs = opts.timeoutMs ?? 24 * 60 * 60 * 1000;
+  return {
+    messages: {
+      create: (async (params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }) => {
+        const signal = options?.signal;
+        const customId = randomUUID();
+        // Same hygiene as submitBatch: no stream flag, cacheable system prompt, sanitized history.
+        const { stream: _stream, ...rest } = params as Anthropic.MessageCreateParamsNonStreaming & { stream?: boolean };
+        const system = typeof rest.system === 'string' ? cacheableSystem(rest.system) : rest.system;
+        const batch = await batches.messages.batches.create({
+          requests: [{ custom_id: customId, params: { ...rest, system, messages: sanitizeHistory(rest.messages) } }],
+        });
+        opts.onSubmitted?.(batch.id);
+        const started = Date.now();
+        for (;;) {
+          const st = await batches.messages.batches.retrieve(batch.id);
+          if (st.processing_status === 'ended') break;
+          if (Date.now() - started > timeoutMs) throw new Error(`batch ${batch.id} did not finish within ${Math.round(timeoutMs / 3_600_000)} h`);
+          await sleep(pollMs, signal);
+        }
+        for await (const result of await batches.messages.batches.results(batch.id)) {
+          if (result.custom_id !== customId) continue;
+          if (result.result.type === 'succeeded') return result.result.message;
+          if (result.result.type === 'errored') throw new Error(`batch step failed: ${result.result.error.error.message}`);
+          throw new Error(`batch step ${result.result.type}`);
+        }
+        throw new Error(`batch ${batch.id} ended without a result for this step`);
+      }) as LlmClient['messages']['create'],
+    },
+  };
 }

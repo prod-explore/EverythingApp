@@ -36,7 +36,8 @@ export function notifyUnauthorized(): void {
 
 export async function checkSession(): Promise<boolean> {
   try {
-    return (await fetch('/api/session')).ok;
+    const res = await fetch('/api/session');
+    return res.ok && (await res.json().catch(() => ({ authed: false }))).authed === true;
   } catch {
     return false;
   }
@@ -287,6 +288,11 @@ export function stopRun(runId: string): Promise<{ ok: true }> {
   return request(`/api/runs/${runId}/stop`, { method: 'POST' });
 }
 
+/** Talks to a worker agent: a running one gets it in its inbox, a finished one is resumed with it. */
+export function messageRun(runId: string, body: string): Promise<{ ok: true; delivered: 'inbox' | 'resumed' }> {
+  return request(`/api/runs/${runId}/message`, { method: 'POST', body: JSON.stringify({ body }) });
+}
+
 /** <img>/<a> are same-origin GETs, so the session cookie authenticates them — no credential in the URL. */
 export function artifactFileUrl(id: string): string {
   return `/api/artifacts/${id}/file`;
@@ -362,8 +368,9 @@ export function updateProject(id: string, patch: { name?: string; description?: 
   return request(`/api/projects/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
 
-export function deleteProject(id: string): Promise<{ ok: boolean }> {
-  return request(`/api/projects/${id}`, { method: 'DELETE' });
+/** Deletes a project; its chats are deleted with it unless `keepChats` (they then become quick chats). */
+export function deleteProject(id: string, keepChats = false): Promise<{ ok: boolean }> {
+  return request(`/api/projects/${id}${keepChats ? '?conversations=keep' : ''}`, { method: 'DELETE' });
 }
 
 export function listProjectConversations(id: string): Promise<{ conversations: ConversationSummary[] }> {
@@ -383,4 +390,9 @@ export function listApprovalGrants(filter?: { conversationId?: string; projectId
 
 export function revokeApprovalGrant(id: string): Promise<{ ok: boolean }> {
   return request(`/api/approval/grants/${id}`, { method: 'DELETE' });
+}
+
+export interface SearchHit { conversationId: string; title: string; messageId: number; snippet: string }
+export async function searchMessages(q: string): Promise<SearchHit[]> {
+  return (await request<{ hits: SearchHit[] }>(`/api/search?q=${encodeURIComponent(q)}`)).hits;
 }

@@ -11,21 +11,27 @@ import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type LlmClient, type VirtualTool } from './anthropic-loop.js';
+import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
+import { PushService } from './push.js';
+import { searchMessages, exportMarkdown } from './search.js';
+import { backgroundModel, generateTitle } from './background.js';
+import { generateDailySummary } from './gazeta.js';
 import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
 import { UsageLedger, type UsageRange } from './usage-ledger.js';
-import { ProviderRouter, ProviderNotConfiguredError } from './providers/router.js';
+import { withModelIdentity } from './providers/identity.js';
+import { ProviderRouter, ProviderNotConfiguredError, UnknownModelError } from './providers/router.js';
 import { isProviderId } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, type GazetaField } from './gazeta.js';
-import { runSubagent, SPAWN_SUBAGENT_TOOL } from './subagent.js';
+import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
 import { parseCommandPolicy } from './command-policy.js';
+import { PolicyStore, policyFilePath } from './policy-file.js';
 import { AgentManager } from './agents.js';
 import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
 import { OrchestratorSupervisorClient, guessMime } from './supervisor-client.js';
 import { createHash } from 'node:crypto';
 import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
-import { SupervisorExec } from './supervisor-client.js';
+import { SupervisorExec, type SandboxExec } from './supervisor-client.js';
 import { createN5Routes, migrateN5 } from './n5-routes.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
@@ -58,6 +64,7 @@ import {
   logApprovalAudit,
   expireGazetaItem,
   createGazetaItem,
+  onGazetaItemCreated,
   createBatchJob,
   listBatchJobs,
   resolveBatchJob,
@@ -83,14 +90,24 @@ import {
   getProject,
   updateProject,
   deleteProject,
+  listProjectConversationIds,
   listProjectConversations,
 } from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const DEFAULT_SYSTEM_PROMPT = `You are Mikołaj's personal AI assistant in EverythingApp — his self-hosted BYOK AI system accessed via web browser (phone or desktop). You have access to tools exposed by connected MCP servers. Every tool call with a side effect goes through the Approval Gate on the page — if rejected, inform the user and suggest an alternative instead of retrying the same call in a loop. When you need non-urgent input from the user, use the request_human_input tool to queue it in their Gazeta inbox. Be concise and direct.`;
+const DEFAULT_SYSTEM_PROMPT = `You are a personal AI assistant running inside EverythingApp, a self-hosted, bring-your-own-key AI workspace. You have access to tools exposed by connected MCP servers. Every tool call with a side effect goes through the Approval Gate — if one is rejected, tell the user and suggest an alternative instead of retrying the same call in a loop. When you need non-urgent input from the user, use the request_human_input tool to queue it in their Gazeta inbox. Be concise and direct.`;
 
 const BATCH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+
+/** Plain text of the assistant messages a turn produced — input for the free-tier title. */
+function textOfHistory(msgs: Anthropic.MessageParam[]): string {
+  return msgs
+    .filter(m => m.role === 'assistant')
+    .map(m => (typeof m.content === 'string' ? m.content : (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text ?? '').join(' ')))
+    .join('\n')
+    .trim();
+}
 
 function isValidAuthHeader(header: string | undefined, expectedToken: string): boolean {
   if (!header) return false;
@@ -165,7 +182,7 @@ async function main(): Promise<void> {
     console.warn(`[vault] ${router.vault.disabledReason} — saving API keys from the UI is disabled until it is set.`);
   }
 
-  const { app, stop, auth } = await buildApp({ db, connections, router, authToken, password: process.env['SERVER_PASSWORD'] || undefined, config });
+  const { app, stop, auth } = await buildApp({ db, connections, router, authToken, password: process.env['SERVER_PASSWORD'] || undefined, config, policyFile: policyFilePath() });
 
   // ─── Start server ─────────────────────────────────────────────────────────
   const port = Number(process.env['PORT'] ?? 3000);
@@ -214,6 +231,8 @@ async function main(): Promise<void> {
  */
 export interface BuildAppOptions {
   db: ReturnType<typeof openDb>;
+  /** Shell inside the sandbox — tests inject a fake; defaults to the real supervisor. */
+  sandboxExec?: SandboxExec;
   connections: McpConnection[];
   /** Provider resolution + key vault. Omit in tests to get a router whose Anthropic client is `anthropic`. */
   router?: ProviderRouter;
@@ -223,6 +242,8 @@ export interface BuildAppOptions {
   /** Password for the browser login form (SERVER_PASSWORD). Defaults to authToken. */
   password?: string;
   config: Pick<Config, 'model' | 'autoApproveTools' | 'webSearchEnabled'>;
+  /** Path of policy.json; omitted/null disables the file (tests). main() passes policyFilePath(). */
+  policyFile?: string | null;
 }
 
 export interface BuiltApp {
@@ -248,7 +269,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   await n5.startSaved();
 
   // ─── Shared services ──────────────────────────────────────────────────────
-  const approvalGate = new WebApprovalGate(db);
+  const policyStore = new PolicyStore(opts.policyFile ?? null);
+  const approvalGate = new WebApprovalGate(db, policyStore);
+  if (opts.policyFile) { policyStore.get(); console.log(`[policy] always-allow/block lists and domains: ${opts.policyFile}${policyStore.lastError ? ` (INVALID: ${policyStore.lastError})` : ''}`); }
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
   // A provider is busy (e.g. Gemini free tier at peak hours): we keep retrying quietly — log it and tell the UI.
@@ -265,15 +288,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     sse.emitAll('provider:retry', info);
   };
   const supervisor = new OrchestratorSupervisorClient();
+  const sandboxExec: SandboxExec = opts.sandboxExec ?? new SupervisorExec();
   /** Most recently active chat per project — where push approval cards from git-proxy are shown. */
   const lastConvForProject = new Map<string, string>();
   const github = createGithubRoutes({
-    db, approvalGate, credentials: new GitHubCredentials(router.vault), sandbox: new SupervisorExec(),
+    db, approvalGate, credentials: new GitHubCredentials(router.vault), sandbox: sandboxExec,
     activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestProjectConversation(db, projectId),
   });
 
   // web_search is executed on Anthropic's side, so it only exists for Anthropic
-  // models. request_human_input / spawn_subagent are orchestrator-executed
+  // models. request_human_input / spawn_agent are orchestrator-executed
   // virtual tools (see VirtualTool in anthropic-loop.ts) and work with any provider.
   const webSearchTool: Anthropic.ToolUnion = { type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 };
 
@@ -284,8 +308,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const agents = new AgentManager({
     db, router, registry, approval: approvalGate, sse,
     browserPolicyOf: projectId => browserPolicyOf(projectId),
-    recordUsage: ({ conversationId, provider, model, usage }) => {
-      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage });
+    recordUsage: ({ conversationId, provider, model, usage, batch }) => {
+      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage, batch });
       if (warning) sse.emitAll('usage:warning', warning);
       return costUsd;
     },
@@ -299,12 +323,18 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   /** Project browser policy (Plan v3 §6) → playwright-mcp `_policy`; it can only tighten the operator's env policy. */
   function browserPolicyOf(projectId: string | null | undefined): { domainAllow?: string[]; domainDeny?: string[]; js?: 'disabled' | 'review' | 'allowed' } | undefined {
+    const file = policyStore.get().browser;
     const raw = projectId ? getProject(db, projectId)?.policy?.['browser'] : undefined;
-    if (!raw || typeof raw !== 'object') return undefined;
-    const b = raw as Record<string, unknown>;
-    const list = (v: unknown) => (Array.isArray(v) ? v.filter(isString).map(x => x.trim()).filter(Boolean) : undefined);
-    const js = b['js'] === 'disabled' || b['js'] === 'review' || b['js'] === 'allowed' ? b['js'] : undefined;
-    return { domainAllow: list(b['domainAllow']), domainDeny: list(b['domainDeny']), js };
+    const b = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+    const list = (v: unknown) => (Array.isArray(v) ? v.filter(isString).map(x => x.trim()).filter(Boolean) : []);
+    // Legacy per-project browser settings still tighten the file (deny accumulates); the UI no longer writes them.
+    const domainDeny = [...new Set([...file.domainDeny, ...list(b['domainDeny'])])];
+    const domainAllow = list(b['domainAllow']).length ? list(b['domainAllow']) : file.domainAllow;
+    const order = { allowed: 0, review: 1, disabled: 2 } as const;
+    const pj = b['js'] === 'disabled' || b['js'] === 'review' || b['js'] === 'allowed' ? b['js'] : 'allowed';
+    const js = order[pj] > order[file.js] ? pj : file.js;
+    const out = { ...(domainAllow.length ? { domainAllow } : {}), ...(domainDeny.length ? { domainDeny } : {}), ...(js !== 'allowed' ? { js } : {}) };
+    return Object.keys(out).length ? out : undefined;
   }
 
   interface Origin { convId: string; projectId: string | null; runId: string | null; agent: string }
@@ -368,6 +398,9 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
             sse.emitAll('gazeta:dismissed', { id: itemId, status: 'expired' });
             return { text: `No response received within the ${timeoutSeconds}s timeout. Continue without the answer or ask again later.` };
           }
+          if (isDismissedResponse(response)) {
+            return { text: 'The user dismissed this question without answering. Continue without it, or ask differently if you really need the information.' };
+          }
           return { text: `The user answered:
 ${formatHumanResponse(response)}` };
         } finally {
@@ -404,39 +437,6 @@ ${formatHumanResponse(response)}` };
       humanInputTool(origin, signal),
       reportTool(origin),
       ...agents.agentTools(rootRunId, signal),
-      {
-        definition: SPAWN_SUBAGENT_TOOL as unknown as Anthropic.Tool,
-        handler: async (input, ctx) => {
-          if (!isString(input.goal) || !input.goal.trim() || !isString(input.model) || !input.model.trim()) {
-            return { text: 'spawn_subagent needs non-empty "goal" and "model" strings.', isError: true };
-          }
-          const result = await runSubagent(
-            {
-              goal: input.goal,
-              model: input.model,
-              allowedTools: Array.isArray(input.allowed_tools) ? input.allowed_tools.filter(isString) : undefined,
-              depth: 0,
-            },
-            {
-              db,
-              router,
-              registry,
-              sse,
-              parentConvId: convId,
-              projectId: getConversation(db, convId)?.projectId ?? undefined,
-              approval: approvalGate,
-              signal: ctx.signal,
-              onUsage: ({ provider, model, usage }) => {
-                const { warning } = ledger.record({ conversationId: convId, provider, model, usage });
-                if (warning) sse.emitAll('usage:warning', warning);
-              },
-            },
-          );
-          return result.status === 'done'
-            ? { text: `Subagent completed.\n\nSummary:\n${result.summary}${result.artifactIds.length ? `\n\nArtifact IDs: ${result.artifactIds.join(', ')}` : ''}` }
-            : { text: `Subagent failed: ${result.error ?? 'unknown error'}`, isError: true };
-        },
-      },
     ];
   }
 
@@ -575,6 +575,22 @@ ${formatHumanResponse(response)}` };
     } catch (err) { res.status(502).json({ error: (err as Error).message }); }
   });
 
+  /** Files editor save. A checkpoint is taken first so every edit is one rollback away. */
+  app.put('/api/workspace/:owner/file', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    const { path, content } = req.body ?? {};
+    if (!owner || typeof path !== 'string' || typeof content !== 'string') { res.status(400).json({ error: 'owner, path and content required' }); return; }
+    try {
+      await supervisor.checkpoint(owner, `before edit: ${path.slice(-50)}`).catch(() => undefined);
+      const r = await writeWorkspaceFile(sandboxExec, owner, path, content);
+      logApprovalAudit(db, { action: 'workspace_edit', toolLabel: `edit ${r.path}`, toolArgs: JSON.stringify({ owner, bytes: r.bytes }) });
+      res.json({ ok: true, ...r });
+    } catch (err) {
+      const status = err instanceof WorkspaceWriteError ? err.status : 502;
+      res.status(status).json({ error: (err as Error).message });
+    }
+  });
+
   app.get('/api/workspace/:owner/checkpoints', async (req, res) => {
     const owner = workspaceOwner(req.params.owner);
     if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
@@ -678,7 +694,10 @@ ${formatHumanResponse(response)}` };
   });
 
   app.delete('/api/projects/:id', (req, res) => {
-    const ok = deleteProject(db, req.params.id);
+    if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
+    // Stop anything still running inside the project before its rows disappear.
+    for (const convId of listProjectConversationIds(db, req.params.id)) abortControllers.get(convId)?.abort();
+    const ok = deleteProject(db, req.params.id, { conversations: req.query['conversations'] === 'keep' ? 'keep' : 'delete' });
     if (!ok) { res.status(404).json({ error: 'project not found' }); return; }
     res.json({ ok: true });
   });
@@ -734,9 +753,53 @@ ${formatHumanResponse(response)}` };
   });
 
   app.delete('/api/conversations/:id', (req, res) => {
+    // A running turn would keep writing into a conversation that no longer exists — stop it first.
+    abortControllers.get(req.params.id)?.abort();
     const ok = deleteConversation(db, req.params.id);
     if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
     res.json({ ok: true });
+  });
+
+  // ─── Web Push (urgent Gazeta items) ───────────────────────────────────────
+  const push = new PushService(db, router.vault);
+  const offPush = onGazetaItemCreated(item => {
+    if (item.urgent) void push.notify({ title: item.title, body: item.description, url: '/' });
+  });
+  app.get('/api/push/key', (_req, res) => {
+    const publicKey = push.publicKey();
+    if (!publicKey) { res.status(503).json({ error: 'Push needs KEY_VAULT_SECRET to be set on the server.' }); return; }
+    res.json({ publicKey, subscriptions: push.count() });
+  });
+  app.post('/api/push/subscribe', (req, res) => {
+    try { push.subscribe(req.body?.subscription); res.json({ ok: true }); }
+    catch (err) { res.status(400).json({ error: (err as Error).message }); }
+  });
+  app.post('/api/push/unsubscribe', (req, res) => {
+    if (typeof req.body?.endpoint === 'string') push.unsubscribe(req.body.endpoint);
+    res.json({ ok: true });
+  });
+  app.post('/api/push/test', async (_req, res) => {
+    res.json({ ok: true, sent: await push.notify({ title: 'EverythingApp', body: 'Push notifications work.' }) });
+  });
+
+  app.get('/api/search', (req, res) => {
+    const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
+    res.json({ hits: searchMessages(db, q) });
+  });
+
+  app.get('/api/conversations/:id/export', (req, res) => {
+    const conv = getConversation(db, req.params.id);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    const messages = getMessages(db, req.params.id);
+    const safe = conv.title.replace(/[^\p{L}\p{N}._ -]+/gu, '_').trim().slice(0, 60) || 'conversation';
+    if (req.query['format'] === 'json') {
+      res.setHeader('Content-Disposition', `attachment; filename="${safe}.json"`);
+      res.json({ title: conv.title, exportedAt: new Date().toISOString(), messages });
+      return;
+    }
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${safe}.md"`);
+    res.send(exportMarkdown(conv.title, messages));
   });
 
   // ─── Messages ─────────────────────────────────────────────────────────────
@@ -815,7 +878,7 @@ ${formatHumanResponse(response)}` };
       // saved as "" from the Settings UI) must fall through to the default
       // too — `??` only catches null/undefined, and Anthropic's API rejects
       // a system text block with cache_control on empty text.
-      let effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+      let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
       // Inject prompts from Skills attached to this conversation (Phase 2).
       // Each non-empty skill prompt is appended after a separator so the model
@@ -895,6 +958,21 @@ ${m.body}`),
         if (conv2 && conv2.title === 'New conversation') {
           const titleSource = typeof content === 'string' ? content : '(attachment)';
           updateConversation(db, convId, { title: titleSource.slice(0, 60) });
+          // Upgrade the plain slice to a proper title with a free-tier model; best-effort, never blocks the turn.
+          const assistantText = textOfHistory(updatedHistory.slice(historyBeforeTurn.length + 1));
+          const bg = backgroundModel(db, router);
+          if (bg && typeof content === 'string' && assistantText) {
+            void generateTitle(bg, content, assistantText, usage => ledger.record({ conversationId: convId, provider: bg.provider, model: bg.model, usage }))
+              .then(title => {
+                const cur = getConversation(db, convId);
+                // Only replace our own slice — a title the user renamed in the meantime wins.
+                if (title && cur && cur.title === titleSource.slice(0, 60)) {
+                  updateConversation(db, convId, { title });
+                  sse.emit(convId, 'conversation:titled', { id: convId, title });
+                }
+              })
+              .catch(() => { /* keep the slice */ });
+          }
         }
 
         setRunStatus(db, rootRun.id, 'done');
@@ -972,7 +1050,7 @@ ${m.body}`),
       }
       const history = getMessages(db, convId);
       const effectiveModel = conv.model || defaultModelId();
-      const effectiveSystem = conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT;
+      const effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
       let batchClient: ReturnType<typeof router.anthropic>;
       try {
@@ -983,7 +1061,7 @@ ${m.body}`),
         }
         batchClient = router.anthropic();
       } catch (err) {
-        res.status(err instanceof ProviderNotConfiguredError ? 400 : 500).json({ error: (err as Error).message });
+        res.status(err instanceof ProviderNotConfiguredError || err instanceof UnknownModelError ? 400 : 500).json({ error: (err as Error).message });
         return;
       }
       if (!batchClient) { res.status(400).json({ error: 'No Anthropic API key configured — add one in Settings → Models.' }); return; }
@@ -1229,6 +1307,8 @@ ${formatHumanResponse(response)}`;
   app.post('/api/gazeta/:id/dismiss', (req, res) => {
     const ok = dismissGazetaItem(db, req.params.id);
     if (!ok) { res.status(404).json({ error: 'item not found' }); return; }
+    // A dismissed question must not leave its agent (and the chat's composer) blocked forever.
+    resolveHumanInput(req.params.id, DISMISSED_RESPONSE);
     sse.emitAll('gazeta:dismissed', { id: req.params.id, status: 'dismissed' });
     res.json({ ok: true });
   });
@@ -1236,7 +1316,7 @@ ${formatHumanResponse(response)}`;
   app.post('/api/gazeta/bulk-dismiss', (req, res) => {
     const ids = Array.isArray(req.body?.ids) ? (req.body.ids as unknown[]).filter(isString) : [];
     let n = 0;
-    for (const id of ids) if (dismissGazetaItem(db, id)) { n++; sse.emitAll('gazeta:dismissed', { id, status: 'dismissed' }); }
+    for (const id of ids) if (dismissGazetaItem(db, id)) { n++; resolveHumanInput(id, DISMISSED_RESPONSE); sse.emitAll('gazeta:dismissed', { id, status: 'dismissed' }); }
     res.json({ ok: true, dismissed: n });
   });
 
@@ -1255,6 +1335,23 @@ ${formatHumanResponse(response)}`;
     const run = getRun(db, req.params.id);
     if (!run?.transcriptConversationId) { res.status(404).json({ error: 'no transcript for this run' }); return; }
     res.json({ messages: getMessages(db, run.transcriptConversationId) });
+  });
+
+  // The user talks to an agent: a running one gets it in its inbox, a finished one is resumed with it.
+  app.post('/api/runs/:id/message', (req, res) => {
+    const run = getRun(db, req.params.id);
+    if (!run) { res.status(404).json({ error: 'run not found' }); return; }
+    const body = isString(req.body?.body) ? req.body.body.trim() : '';
+    if (!body) { res.status(400).json({ error: 'body required' }); return; }
+    if (run.depth === 0) { res.status(400).json({ error: 'send a normal chat message to the assistant instead' }); return; }
+    if (ACTIVE_STATUSES.includes(run.status)) {
+      postRunMessage(db, { runId: run.id, fromRunId: null, fromLabel: 'user', body });
+      res.json({ ok: true, delivered: 'inbox' });
+      return;
+    }
+    const r = agents.resume(run.id, `[message from the user]\n${body}`);
+    if ('error' in r) { res.status(409).json({ error: r.error }); return; }
+    res.json({ ok: true, delivered: 'resumed' });
   });
 
   app.post('/api/runs/:id/stop', (req, res) => {
@@ -1485,6 +1582,28 @@ ${formatHumanResponse(response)}`;
   // ─── Background jobs ──────────────────────────────────────────────────────
   const keepaliveInterval = sse.startKeepalive();
 
+  /** Once per local day: a free-tier digest of what is waiting in Gazeta. Skipped silently without a free model. */
+  async function runDailyDigest(force = false): Promise<string | null> {
+    const today = new Date().toISOString().slice(0, 10);
+    if (!force && getSetting(db, 'last_digest_date') === today) return null;
+    const bg = backgroundModel(db, router);
+    if (!bg) return null;
+    if (listGazetaItems(db, 'pending').length === 0) return null;
+    setSetting(db, 'last_digest_date', today);
+    const id = await generateDailySummary(db, bg.client, bg.model, usage => ledger.record({ conversationId: null, provider: bg.provider, model: bg.model, usage }));
+    sse.emitAll('gazeta:new', { type: 'daily_summary' });
+    return id;
+  }
+  app.post('/api/gazeta/daily-digest', async (_req, res) => {
+    try {
+      const id = await runDailyDigest(true);
+      if (!id) { res.status(409).json({ error: 'Nothing to summarize, or no usable free-tier model (Settings → Models → Tiers).' }); return; }
+      res.json({ ok: true, id });
+    } catch (err) { res.status(502).json({ error: router.redact((err as Error).message) }); }
+  });
+  const digestInterval = setInterval(() => { runDailyDigest().catch(e => console.error('[digest]', (e as Error).message)); }, 60 * 60 * 1000);
+  digestInterval.unref();
+
   const batchInterval = setInterval(() => {
     const runningConvIds = [...turnStates.entries()]
       .filter(([, s]) => s.status === 'running')
@@ -1500,6 +1619,8 @@ ${formatHumanResponse(response)}`;
 
   function stop(): void {
     clearInterval(batchInterval);
+    clearInterval(digestInterval);
+    offPush();
     clearInterval(keepaliveInterval);
   }
 

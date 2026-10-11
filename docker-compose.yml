@@ -165,7 +165,8 @@ services:
       KEY_VAULT_SECRET: ${KEY_VAULT_SECRET:?KEY_VAULT_SECRET is required}
       SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}
       SERVER_PASSWORD: ${SERVER_PASSWORD:-}
-      SERVER_PASSWORD: ${SERVER_PASSWORD:-}
+      # Optional: where always-allow / always-block command prefixes and known domains live (hot-reloaded).
+      EVERYTHINGAPP_POLICY_FILE: ${EVERYTHINGAPP_POLICY_FILE:-}
       PORT: 3000
       # Connectors: add playwright and github when services are deployed.
       MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,obsidian,playwright,github}

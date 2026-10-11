@@ -35,7 +35,7 @@ function ApprovalCard({ approval, respond }: { approval: PendingApproval; respon
     >
       <div className={`mb-2 flex items-center gap-2 ${danger ? 'text-danger' : 'text-fg-secondary'}`}>
         {danger ? <AlertTriangle size={16} /> : <Shield size={16} />}
-        <span className="font-medium">{danger ? 'Potencjalnie destrukcyjne — tylko jednorazowo' : 'Zgoda na wywołanie narzędzia'}</span>
+        <span className="font-medium">{danger ? 'Potentially destructive — one time only' : 'Tool call needs your approval'}</span>
         {agent && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-xs text-accent">{agent}</span>}
       </div>
       {approval.warning && (
@@ -66,14 +66,14 @@ function ApprovalCard({ approval, respond }: { approval: PendingApproval; respon
         </pre>
       )}
       <div className="flex flex-wrap gap-2">
-        <Button variant="ghost" disabled={busy} onClick={() => void answer(false, 'once')}>Odmów</Button>
+        <Button variant="ghost" disabled={busy} onClick={() => void answer(false, 'once')}>Deny</Button>
         <Button variant={danger ? 'danger' : 'primary'} disabled={busy} onClick={() => void answer(true, 'once')}>
-          Zatwierdź raz
+          Approve once
         </Button>
         {!danger && (
           <>
-            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'chat')}>Dla tego czatu</Button>
-            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'always')}>Zawsze</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'chat')}>For this chat</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'always')}>Always</Button>
           </>
         )}
       </div>

@@ -29,6 +29,8 @@ export interface RunRow {
   goal: string;
   tools: string[];
   depth: number;
+  /** Every model step goes through the Batch API (50% cheaper, minutes per step). */
+  batch: boolean;
   status: RunStatus;
   result: string | null;
   error: string | null;
@@ -84,6 +86,8 @@ export function migrateRuns(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_run_messages ON run_messages(run_id, delivered);
   `);
+  const cols = db.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === 'batch')) db.exec(`ALTER TABLE runs ADD COLUMN batch INTEGER NOT NULL DEFAULT 0`);
 }
 
 function toRow(r: Record<string, unknown>): RunRow {
@@ -99,6 +103,7 @@ function toRow(r: Record<string, unknown>): RunRow {
     goal: r['goal'] as string,
     tools: JSON.parse(r['tools'] as string) as string[],
     depth: r['depth'] as number,
+    batch: Boolean(r['batch']),
     status: r['status'] as RunStatus,
     result: (r['result'] as string | null) ?? null,
     error: (r['error'] as string | null) ?? null,
@@ -122,11 +127,12 @@ export function createRun(
     goal: string;
     tools?: string[];
     depth?: number;
+    batch?: boolean;
   },
 ): RunRow {
   const row = db.prepare(`
-    INSERT INTO runs (parent_run_id, root_run_id, project_id, conversation_id, transcript_conversation_id, label, model, goal, tools, depth, heartbeat_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    INSERT INTO runs (parent_run_id, root_run_id, project_id, conversation_id, transcript_conversation_id, label, model, goal, tools, depth, batch, heartbeat_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     RETURNING *
   `).get(
     opts.parentRunId ?? null,
@@ -139,6 +145,7 @@ export function createRun(
     opts.goal.slice(0, 4000),
     JSON.stringify(opts.tools ?? []),
     opts.depth ?? 0,
+    opts.batch ? 1 : 0,
   ) as Record<string, unknown>;
   if (!opts.rootRunId) {
     db.prepare(`UPDATE runs SET root_run_id = id WHERE id = ?`).run(row['id']);
@@ -166,7 +173,7 @@ export function setRunStatus(db: Database.Database, id: string, status: RunStatu
   const finished = !ACTIVE_STATUSES.includes(status);
   db.prepare(`
     UPDATE runs SET status = ?, result = COALESCE(?, result), error = COALESCE(?, error),
-      finished_at = CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE finished_at END,
+      finished_at = CASE WHEN ? THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE NULL END,
       heartbeat_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
     WHERE id = ?
   `).run(status, extra?.result ?? null, extra?.error ?? null, finished ? 1 : 0, id);

@@ -3,10 +3,10 @@ import { Bot, FolderTree, Globe, HelpCircle, KeyRound, Sparkles } from 'lucide-r
 import { useModels } from '../../hooks/useModels';
 
 const SUGGESTIONS = [
-  { icon: Globe, text: 'Przejrzyj stronę example.com i streść ją' },
-  { icon: FolderTree, text: 'Stwórz w sandboxie prosty projekt Node.js' },
-  { icon: HelpCircle, text: 'Zadaj mi pytania, zanim zaczniesz duże zadanie' },
-  { icon: Bot, text: 'Uruchom agenta, który zbada temat i zrobi raport' },
+  { icon: Globe, text: 'Browse example.com and summarize it' },
+  { icon: FolderTree, text: 'Create a simple Node.js project in the sandbox' },
+  { icon: HelpCircle, text: 'Ask me questions before starting a big task' },
+  { icon: Bot, text: 'Start an agent to research a topic and write a report' },
 ];
 
 /** Shown in an empty chat: a setup prompt when no model is usable yet, otherwise a few conversation starters. */
@@ -20,15 +20,15 @@ export function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
         <Sparkles size={30} strokeWidth={1.5} className="text-fg-tertiary" />
-        <h2 className="text-lg font-semibold text-fg">Witaj w EverythingApp</h2>
+        <h2 className="text-lg font-semibold text-fg">Welcome to EverythingApp</h2>
         <p className="max-w-sm text-sm text-fg-tertiary">
-          Żeby zacząć, dodaj dostawcę modelu — klucz API (Anthropic, Gemini, DeepSeek…) albo własny serwer zgodny z OpenAI, także lokalny.
+          To get started, add a model provider — an API key (Anthropic, Gemini, DeepSeek…) or your own OpenAI-compatible server, local ones included.
         </p>
         <button
           onClick={onOpenSettings}
           className="flex items-center gap-2 rounded-button bg-fg px-4 py-2 text-sm font-medium text-bg hover:opacity-90"
         >
-          <KeyRound size={15} /> Dodaj model w Ustawieniach
+          <KeyRound size={15} /> Add a model in Settings
         </button>
       </div>
     );
@@ -37,7 +37,7 @@ export function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
       <Sparkles size={28} strokeWidth={1.5} className="text-fg-tertiary" />
-      <p className="text-sm text-fg-tertiary">W czym mogę pomóc? Napisz wiadomość albo zacznij od podpowiedzi:</p>
+      <p className="text-sm text-fg-tertiary">How can I help? Write a message or start from a suggestion:</p>
       <div className="grid w-full max-w-xl gap-2 sm:grid-cols-2">
         {SUGGESTIONS.map(s => (
           <button

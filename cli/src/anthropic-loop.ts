@@ -34,7 +34,7 @@ export type AnthropicLike = LlmClient;
 
 /**
  * In-process tool the orchestrator itself executes (e.g. request_human_input,
- * spawn_subagent). Unlike MCP tools it never goes through ToolRegistry, but it
+ * spawn_agent). Unlike MCP tools it never goes through ToolRegistry, but it
  * runs INSIDE the tool loop: the model gets a real tool_result for the real
  * tool_use id, in order, in the same turn. Names must not contain "__" (that
  * separator is reserved for "<mcp-server>__<tool>").

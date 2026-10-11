@@ -138,6 +138,15 @@ function MainApp() {
     void refreshProjects();
   }
 
+  /** After a project is deleted: close its modal, drop the selection, and move off a chat that no longer exists. */
+  async function handleProjectDeleted(id: string) {
+    setEditProjectId(null);
+    setSelectedProjectId(prev => (prev === id ? null : prev));
+    const list = await refreshConversations();
+    if (selectedId && !list.some(c => c.id === selectedId)) setSelectedId(list[0]?.id ?? null);
+    void refreshProjects();
+  }
+
   const selected = conversations.find(c => c.id === selectedId) ?? null;
   const projectOfChat = selected?.projectId ?? null;
   const workspaceOwner = projectOfChat ?? selectedId;
@@ -171,6 +180,21 @@ function MainApp() {
     void updateConversation(selectedId, { sandboxEnabled: enabled }).catch(() => {});
   }
 
+  // Slash commands from the composer (see chat/SlashMenu.tsx).
+  useEffect(() => {
+    const onCommand = (e: Event) => {
+      const name = (e as CustomEvent<{ name: string }>).detail.name;
+      if (name === 'new') void createConversation();
+      else if (name === 'search') setSearchOpen(true);
+      else if (name === 'agents') setDockTool('agents');
+      else if (name === 'files') setDockTool('files');
+      else if (name === 'sandbox') { if (fullConv) handleSandboxToggle(!fullConv.sandboxEnabled); }
+      else if (name === 'export' && selectedId) window.location.assign(`/api/conversations/${selectedId}/export`);
+    };
+    window.addEventListener('app:command', onCommand);
+    return () => window.removeEventListener('app:command', onCommand);
+  });
+
   // A second SSE connection to whichever conversation is open, purely to
   // hear server.ts's emitAll() broadcasts (gazeta:new, etc.) — ChatView
   // opens its own connection to the same stream for turn events, which
@@ -180,7 +204,7 @@ function MainApp() {
   useSSE(selectedId, (event, data) => {
     if (event.startsWith('gazeta:')) gazeta.handleEvent(event, data);
     // The first turn auto-titles the chat server-side — pick the new title up.
-    if (event === 'turn:done') void refreshConversations();
+    if (event === 'turn:done' || event === 'conversation:titled') void refreshConversations();
     if (event === 'agent:spawned' || event === 'agent:finished') setAgentsRefresh(r => r + 1);
     if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
     if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
@@ -305,6 +329,7 @@ function MainApp() {
     >
       <Header
         title={selected?.title ?? ''}
+        conversationId={selected?.id ?? null}
         usage={usage}
         model={fullConv ? fullConv.model || fullConv.effectiveModel || null : null}
         models={models}
@@ -399,6 +424,7 @@ function MainApp() {
           projectId={editProjectId}
           onClose={() => setEditProjectId(null)}
           onChanged={() => void refreshProjects()}
+          onDeleted={() => void handleProjectDeleted(editProjectId)}
         />
       )}
       {newProjectOpen && <NewProjectModal onSubmit={submitNewProject} onClose={() => setNewProjectOpen(false)} />}

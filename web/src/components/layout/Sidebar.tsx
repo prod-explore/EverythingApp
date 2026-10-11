@@ -174,15 +174,41 @@ export function Sidebar({
                     {conversations
                       .filter(c => c.projectId === p.id)
                       .map(c => (
-                        <button
+                        <div
                           key={c.id}
-                          onClick={() => onSelect(c.id)}
-                          className={`mb-0.5 w-full truncate rounded px-2 py-1.5 text-left text-xs ${
+                          className={`group mb-0.5 flex items-center gap-1 rounded px-2 py-1.5 text-xs ${
                             c.id === selectedId ? 'bg-bg-tertiary text-fg' : 'text-fg-secondary hover:bg-bg-secondary'
                           }`}
                         >
-                          {c.title}
-                        </button>
+                          {editingId === c.id ? (
+                            <input
+                              autoFocus
+                              value={draftTitle}
+                              onChange={e => setDraftTitle(e.target.value)}
+                              onBlur={commitEdit}
+                              onKeyDown={e => e.key === 'Enter' && commitEdit()}
+                              className="min-w-0 flex-1 rounded bg-bg-secondary px-1 py-0.5 text-fg outline-none"
+                            />
+                          ) : (
+                            <button onClick={() => onSelect(c.id)} className="min-w-0 flex-1 truncate text-left">
+                              {c.title}
+                            </button>
+                          )}
+                          <button
+                            onClick={() => startEdit(c)}
+                            className="shrink-0 rounded p-0.5 text-fg-tertiary opacity-0 hover:text-fg group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                            aria-label={`Rename ${c.title}`}
+                          >
+                            <Pencil size={12} />
+                          </button>
+                          <button
+                            onClick={() => onDelete(c.id)}
+                            className="shrink-0 rounded p-0.5 text-fg-tertiary opacity-0 hover:text-danger group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+                            aria-label={`Delete ${c.title}`}
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
                       ))}
                     <button
                       onClick={() => onCreate(p.id)}

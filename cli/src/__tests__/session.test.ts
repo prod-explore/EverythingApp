@@ -48,6 +48,11 @@ describe('session auth', () => {
     const cookie = setCookie.split(';')[0]!;
     assert.equal((await fetch(`${base}/api/secret`, { headers: { Cookie: cookie } })).status, 200);
     assert.equal((await fetch(`${base}/api/session`, { headers: { Cookie: cookie } })).status, 200);
+    assert.deepEqual(await (await fetch(`${base}/api/session`, { headers: { Cookie: cookie } })).json(), { ok: true, authed: true });
+    // Unauthenticated probe: 200 + authed:false, so loading the page never logs a 401 to the console.
+    const anon = await fetch(`${base}/api/session`);
+    assert.equal(anon.status, 200);
+    assert.equal((await anon.json() as { authed: boolean }).authed, false);
     await fetch(`${base}/api/logout`, { method: 'POST', headers: { Cookie: cookie } });
     assert.equal((await fetch(`${base}/api/secret`, { headers: { Cookie: cookie } })).status, 401);
   });

@@ -1,4 +1,5 @@
-const DEFAULT_MAX_LENGTH = 30_000;
+/** ~3k tokens. Head + tail are kept, the full output stays in the UI; override with TOOL_OUTPUT_MAX_CHARS. */
+const DEFAULT_MAX_LENGTH = Number(process.env['TOOL_OUTPUT_MAX_CHARS']) > 0 ? Number(process.env['TOOL_OUTPUT_MAX_CHARS']) : 12_000;
 
 export interface TruncationResult {
   truncated: string;

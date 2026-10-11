@@ -24,6 +24,10 @@ export function GitHubTab() {
     try {
       const d = await githubConnect.startDevice();
       setDevice({ userCode: d.userCode, verificationUri: d.verificationUri });
+      // GitHub's device flow has no redirect: open its page in a popup right away and put the code on the clipboard,
+      // so logging in is "paste, authorize, done" — no copying between tabs.
+      try { void navigator.clipboard?.writeText(d.userCode); } catch { /* clipboard may be blocked */ }
+      window.open(d.verificationUri, 'github-login', 'popup=yes,width=560,height=760');
       const poll = async (interval: number) => {
         const r = await githubConnect.pollDevice().catch(e => ({ status: 'error' as const, error: (e as Error).message }));
         if (r.status === 'pending') { timer.current = setTimeout(() => void poll(r.interval ?? interval), (r.interval ?? interval) * 1000); return; }
@@ -75,16 +79,17 @@ export function GitHubTab() {
       </section>
 
       <section>
-        <h3 className="mb-1 font-medium text-fg">Connect with GitHub</h3>
+        <h3 className="mb-1 font-medium text-fg">Log in once, use it everywhere</h3>
+        <p className="mb-2 text-xs text-fg-tertiary">The login is app-wide: clone any repository by URL in any project's sandbox. Every push still asks you first, and the credential never enters the sandbox.</p>
         {status?.appConfigured ? (
           device ? (
             <div className="rounded-button border border-accent px-4 py-3">
-              <p className="text-fg-secondary">Open <a href={device.verificationUri} target="_blank" rel="noreferrer noopener" className="underline">{device.verificationUri}</a> and enter:</p>
+              <p className="text-fg-secondary">A GitHub window opened — paste this code (already copied) or <a href={device.verificationUri} target="_blank" rel="noreferrer noopener" className="underline">open it again</a>:</p>
               <p className="my-2 select-all text-center font-mono text-2xl tracking-widest text-fg">{device.userCode}</p>
               <p className="text-xs text-fg-tertiary">Waiting for authorization…</p>
             </div>
           ) : (
-            <Button onClick={() => void startDevice()}>Connect GitHub</Button>
+            <Button onClick={() => void startDevice()}>Log in with GitHub</Button>
           )
         ) : (
           <p className="text-xs text-fg-tertiary">Set GITHUB_APP_CLIENT_ID on the server (a GitHub App with Device Flow enabled) to connect this way.</p>

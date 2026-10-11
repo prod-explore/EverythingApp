@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import { migrateRuns } from './runs.js';
+import { migrateSearch } from './search.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { mkdirSync } from 'node:fs';
@@ -51,7 +52,7 @@ export function runMigrations(db: Database.Database): void {
   // ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, so this is
   // guarded manually — safe to run on both a fresh db (columns already
   // exist from CREATE TABLE below) and an existing pre-branching db.
-  // conversations.kind: 'chat' (user-visible) vs 'subagent' (isolated transcript of a spawn_subagent run,
+  // conversations.kind: 'chat' (user-visible) vs 'subagent' (isolated transcript of a spawn_agent run,
   // kept for the UI's run view but never listed in the sidebar).
   if (!columnExists(db, 'conversations', 'kind')) {
     db.exec(`ALTER TABLE conversations ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'`);
@@ -276,6 +277,7 @@ export function runMigrations(db: Database.Database): void {
     if (!columnExists(db, 'gazeta_items', col)) db.exec(`ALTER TABLE gazeta_items ADD COLUMN ${col} ${def}`);
   }
   migrateRuns(db);
+  migrateSearch(db);
 
   // Seed default settings
   const seedSetting = db.prepare(
@@ -553,6 +555,14 @@ export interface GazetaItem {
   respondedAt: string | null;
 }
 
+type GazetaCreatedListener = (item: { id: string; type: string; title: string; description?: string; urgent: boolean; conversationId?: string }) => void;
+const gazetaCreatedListeners = new Set<GazetaCreatedListener>();
+/** Lets side channels (Web Push) react to new inbox items without every call site knowing about them. */
+export function onGazetaItemCreated(fn: GazetaCreatedListener): () => void {
+  gazetaCreatedListeners.add(fn);
+  return () => { gazetaCreatedListeners.delete(fn); };
+}
+
 export function createGazetaItem(
   db: Database.Database,
   item: {
@@ -577,6 +587,9 @@ export function createGazetaItem(
       item.urgent ? 1 : 0,
       item.attachments ? JSON.stringify(item.attachments) : null,
     ) as { id: string };
+  for (const fn of gazetaCreatedListeners) {
+    try { fn({ id: row.id, type: item.type, title: item.title, description: item.description, urgent: Boolean(item.urgent), conversationId: item.conversationId }); } catch { /* listeners must never break inserts */ }
+  }
   return row.id;
 }
 
@@ -873,8 +886,24 @@ export function updateProject(
   return result.changes > 0;
 }
 
-export function deleteProject(db: Database.Database, id: string): boolean {
-  return db.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+/**
+ * Removes a project. By default its conversations go with it (messages, agent transcripts and runs cascade);
+ * `conversations: 'keep'` detaches them into plain quick chats instead. Sandbox workspace files on the Pi
+ * are never touched — they outlive the project record by design.
+ */
+export function deleteProject(db: Database.Database, id: string, opts: { conversations?: 'delete' | 'keep' } = {}): boolean {
+  const run = db.transaction(() => {
+    if ((opts.conversations ?? 'delete') === 'delete') {
+      db.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
+    }
+    return db.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+  });
+  return run();
+}
+
+/** Ids of every conversation (chats and agent transcripts) that belongs to a project. */
+export function listProjectConversationIds(db: Database.Database, projectId: string): string[] {
+  return (db.prepare(`SELECT id FROM conversations WHERE project_id = ?`).all(projectId) as Array<{ id: string }>).map(r => r.id);
 }
 
 export function listProjectConversations(db: Database.Database, projectId: string): ConversationListItem[] {

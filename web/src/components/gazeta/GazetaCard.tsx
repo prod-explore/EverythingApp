@@ -186,12 +186,33 @@ export function GazetaAnswer({ item }: { item: GazetaItem }) {
       {schema?.type === 'fields' && <FieldsForm fields={schema.fields} disabled={busy} onSubmit={values => void submit({ fields: values })} />}
 
       {schema?.type === 'choice' && (
-        <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
-          {schema.choices.map(choice => (
-            <Button key={choice} variant="ghost" className="px-3 py-1.5 text-xs" disabled={busy} onClick={() => void submit({ choice })}>
-              {choice}
+        <div className="space-y-2">
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Choose an answer">
+            {schema.choices.map(choice => (
+              <Button key={choice} variant="ghost" className="px-3 py-1.5 text-xs" disabled={busy} onClick={() => void submit({ choice })}>
+                {choice}
+              </Button>
+            ))}
+          </div>
+          {/* Choices are suggestions, not a cage: the user can always answer in their own words. */}
+          <form
+            className="flex gap-2"
+            onSubmit={e => {
+              e.preventDefault();
+              if (text.trim() && !busy) void submit({ text });
+            }}
+          >
+            <input
+              value={text}
+              onChange={e => setText(e.target.value)}
+              placeholder="Or write your own answer…"
+              aria-label={`Own answer: ${item.title}`}
+              className={`flex-1 ${INPUT_CLASS}`}
+            />
+            <Button type="submit" disabled={!text.trim() || busy}>
+              Reply
             </Button>
-          ))}
+          </form>
         </div>
       )}
 
@@ -335,7 +356,7 @@ export function GazetaCard({
         <span className="ml-auto text-xs text-fg-tertiary">{new Date(item.createdAt).toLocaleString()}</span>
       </div>
 
-      <h3 className="mb-1 text-sm font-medium leading-snug text-fg">{item.title}</h3>
+      <h2 className="mb-1 text-sm font-medium leading-snug text-fg">{item.title}</h2>
       {item.description && (
         <div className="prose prose-invert prose-sm mb-3 max-w-none text-fg-secondary [&_pre]:overflow-x-auto [&_pre]:rounded-lg [&_pre]:bg-bg [&_pre]:p-3">
           <MarkdownBody text={item.description} />

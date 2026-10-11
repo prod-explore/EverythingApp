@@ -17,24 +17,15 @@ import { getProject, listProjectConversations, logApprovalAudit } from './db.js'
  *     branches, log graph, blame, stash, conflicts). Host never runs git.
  */
 
-export interface ProjectRepo {
-  id: string;
-  projectId: string;
-  owner: string;
-  repo: string;
-  defaultBranch: string;
-  pushMode: 'ask' | 'allow' | 'deny';
-  createdAt: string;
-}
-
 const NAME_RE = /^[A-Za-z0-9_.-]{1,100}$/;
-const PUSH_MODES = new Set(['ask', 'allow', 'deny']);
 
-export function listProjectRepos(db: Database.Database, projectId: string): ProjectRepo[] {
-  return (db.prepare(`SELECT * FROM project_repos WHERE project_id = ? ORDER BY created_at`).all(projectId) as Record<string, string>[]).map(r => ({
-    id: r['id']!, projectId: r['project_id']!, owner: r['owner']!, repo: r['repo']!,
-    defaultBranch: r['default_branch']!, pushMode: r['push_mode'] as ProjectRepo['pushMode'], createdAt: r['created_at']!,
-  }));
+/** Parses `owner/repo`, `https://github.com/owner/repo(.git)` or `git@github.com:owner/repo.git`. Only github.com is accepted. */
+export function parseGithubRepo(input: unknown): { owner: string; repo: string } | null {
+  if (typeof input !== 'string') return null;
+  const t = input.trim();
+  const m = /^(?:https:\/\/(?:www\.)?github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(t);
+  if (!m || !NAME_RE.test(m[1]!) || !NAME_RE.test(m[2]!) || m[1] === '.' || m[2] === '.' || m[1] === '..' || m[2] === '..') return null;
+  return { owner: m[1]!, repo: m[2]! };
 }
 
 function sameRepo(a: { owner: string; repo: string }, owner: string, repo: string): boolean {
@@ -95,8 +86,6 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
       refs?: Array<{ ref: string; old: string; new: string; kind: 'create' | 'update' | 'delete'; force: boolean | null }>;
     };
     if (!projectId || !owner || !repo || !Array.isArray(refs) || refs.length === 0) { res.status(400).json({ error: 'bad request' }); return; }
-    const binding = listProjectRepos(db, projectId).find(r => sameRepo(r, owner, repo));
-    if (!binding) { res.json({ approved: false, reason: 'repository is not linked to this project' }); return; }
     const risky = refs.some(r => r.kind === 'delete' || r.force === true);
 
     const now = Date.now();
@@ -159,44 +148,21 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
     res.json({ ok: true });
   });
 
-  // Project ↔ repo bindings
-  api.get('/projects/:id/repos', (req, res) => {
+  // Repositories that exist in the project's sandbox workspace (any git checkout up to 3 levels deep) + their origin.
+  api.get('/projects/:id/scm-repos', async (req, res) => {
     if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
-    res.json({ repos: listProjectRepos(db, req.params.id) });
-  });
-  api.post('/projects/:id/repos', (req, res) => {
-    if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
-    let { owner, repo } = (req.body ?? {}) as { owner?: string; repo?: string };
-    const { defaultBranch, pushMode } = (req.body ?? {}) as { defaultBranch?: string; pushMode?: string };
-    // Accept "owner/repo" or a GitHub URL in `repo`.
-    const m = /(?:github\.com[/:])?([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(repo ?? '');
-    if (!owner && m) { owner = m[1]; repo = m[2]; }
-    if (!owner || !repo || !NAME_RE.test(owner) || !NAME_RE.test(repo)) { res.status(400).json({ error: 'expected owner/repo' }); return; }
-    if (pushMode !== undefined && !PUSH_MODES.has(pushMode)) { res.status(400).json({ error: 'pushMode must be ask | allow | deny' }); return; }
     try {
-      db.prepare(`INSERT INTO project_repos (project_id, owner, repo, default_branch, push_mode) VALUES (?, ?, ?, ?, ?)`)
-        .run(req.params.id, owner, repo, defaultBranch && /^[\w./-]{1,200}$/.test(defaultBranch) ? defaultBranch : 'main', pushMode ?? 'ask');
-    } catch {
-      res.status(409).json({ error: 'repository already linked' });
-      return;
+      const r = await sandbox.exec(owner(req.params.id), `cd /workspace 2>/dev/null && find . -maxdepth 3 -name .git -prune | while IFS= read -r g; do d=$(dirname "$g"); printf '%s\\t%s\\n' "$d" "$(git -C "$d" remote get-url origin 2>/dev/null)"; done`, 30_000);
+      const repos = r.stdout.split('\n').filter(Boolean).map(line => {
+        const [d, origin] = line.split('\t');
+        const dir = (d ?? '.').replace(/^\.\/?/, '');
+        const gh = parseGithubRepo(origin ?? '');
+        return { dir, origin: origin || null, owner: gh?.owner ?? null, repo: gh?.repo ?? null };
+      }).filter(x => x.dir === '' || /^[\w.@+/-]+$/.test(x.dir));
+      res.json({ repos });
+    } catch (err) {
+      res.status(502).json({ error: (err as Error).message });
     }
-    sandboxTokens.delete(req.params.id); // repo set changed → next wiring mints a new token
-    res.status(201).json({ repos: listProjectRepos(db, req.params.id) });
-  });
-  api.patch('/projects/:id/repos/:repoId', (req, res) => {
-    const { pushMode, defaultBranch } = (req.body ?? {}) as { pushMode?: string; defaultBranch?: string };
-    if (pushMode !== undefined && !PUSH_MODES.has(pushMode)) { res.status(400).json({ error: 'pushMode must be ask | allow | deny' }); return; }
-    const r = db.prepare(`UPDATE project_repos SET push_mode = COALESCE(?, push_mode), default_branch = COALESCE(?, default_branch) WHERE id = ? AND project_id = ?`)
-      .run(pushMode ?? null, defaultBranch && /^[\w./-]{1,200}$/.test(defaultBranch) ? defaultBranch : null, req.params.repoId, req.params.id);
-    if (!r.changes) { res.status(404).json({ error: 'not found' }); return; }
-    sandboxTokens.delete(req.params.id);
-    res.json({ repos: listProjectRepos(db, req.params.id) });
-  });
-  api.delete('/projects/:id/repos/:repoId', (req, res) => {
-    const r = db.prepare(`DELETE FROM project_repos WHERE id = ? AND project_id = ?`).run(req.params.repoId, req.params.id);
-    if (!r.changes) { res.status(404).json({ error: 'not found' }); return; }
-    sandboxTokens.delete(req.params.id);
-    res.json({ ok: true });
   });
 
   // GitHub REST proxy for the panel — bound repos (or account-level reads) only.
@@ -205,10 +171,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
     const path = '/' + (Array.isArray(rest) ? rest.join('/') : String(rest ?? ''));
     const target = classifyGithubPath(path);
     if (!target) { res.status(400).json({ error: 'path not allowed' }); return; }
-    if (target.kind === 'repo' && !listProjectRepos(db, req.params.id).some(r => sameRepo(r, target.owner, target.repo))) {
-      res.status(403).json({ error: 'repository is not linked to this project' });
-      return;
-    }
+    if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
     if (target.kind === 'account' && req.method !== 'GET') { res.status(405).json({ error: 'read-only' }); return; }
     if (!['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) { res.status(405).end(); return; }
     const token = await credentials.getToken();
@@ -381,8 +344,8 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
     if (action !== 'fetch' && action !== 'pull' && action !== 'push' && action !== 'clone') throw new Error('action must be fetch | pull | push | clone');
     await ensureSandboxGit(id);
     if (action === 'clone') {
-      const repo = listProjectRepos(db, id).find(r => r.id === req.body?.repoId);
-      if (!repo) throw new Error('unknown repository');
+      const repo = parseGithubRepo(req.body?.url);
+      if (!repo) throw new Error('expected a github.com repository URL or owner/repo');
       const r = await sandbox.exec(owner(id), `cd /workspace && git clone https://github.com/${repo.owner}/${repo.repo}.git ${shq(repo.repo)}`, 600_000);
       return { output: ok(r) + r.stderr };
     }
@@ -415,18 +378,18 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
    * to use git-proxy for github.com (HTTPS and SSH forms). The token is opaque and useless outside the
    * proxy; the real GitHub credential never enters the sandbox (Plan v3 invariant 2).
    */
-  async function ensureSandboxGit(projectId: string): Promise<{ wired: boolean; repos: number; reason?: string }> {
-    const repos = listProjectRepos(db, projectId);
-    if (!repos.length) return { wired: false, repos: 0, reason: 'no repositories linked to this project' };
-    if (!adminToken) return { wired: false, repos: repos.length, reason: 'GIT_PROXY_ADMIN_TOKEN is not configured' };
-    const reposKey = repos.map(r => `${r.owner}/${r.repo}:${r.pushMode}`).join(',');
+  async function ensureSandboxGit(projectId: string): Promise<{ wired: boolean; reason?: string }> {
+    if (!adminToken) return { wired: false, reason: 'GIT_PROXY_ADMIN_TOKEN is not configured' };
+    if (!(await credentials.getToken())) return { wired: false, reason: 'GitHub is not connected — log in once in Settings → GitHub' };
+    // One login for the whole app: the proxy token may reach any repository the connected account can; every push still asks.
+    const reposKey = '*';
     const cached = sandboxTokens.get(projectId);
-    if (cached && cached.reposKey === reposKey && cached.expiresAt - Date.now() > 10 * 60_000) return { wired: true, repos: repos.length };
+    if (cached && cached.reposKey === reposKey && cached.expiresAt - Date.now() > 10 * 60_000) return { wired: true };
 
     const minted = await doFetch(`${proxyUrl.replace(/\/$/, '')}/admin/tokens`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, repos: repos.map(r => ({ owner: r.owner, repo: r.repo, pushMode: r.pushMode })), ttlSeconds: 4 * 3600 }),
+      body: JSON.stringify({ projectId, repos: [{ owner: '*', repo: '*', pushMode: 'ask' }], ttlSeconds: 4 * 3600 }),
     });
     if (!minted.ok) throw new Error(`git-proxy refused to mint a token (${minted.status})`);
     const { token, expiresAt } = (await minted.json()) as { token: string; expiresAt: string };
@@ -444,7 +407,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
     const r = await sandbox.exec(owner(projectId), cfg, 30_000);
     if (r.exitCode !== 0) throw new Error(`could not configure git in the sandbox: ${r.stderr.trim()}`);
     sandboxTokens.set(projectId, { token, expiresAt: Date.parse(expiresAt), reposKey });
-    return { wired: true, repos: repos.length };
+    return { wired: true };
   }
 
   return { internal, api, ensureSandboxGit };

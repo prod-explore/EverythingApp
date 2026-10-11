@@ -14,7 +14,7 @@
 
   --color-fg: #ffffff;
   --color-fg-secondary: #a0a0a0;
-  --color-fg-tertiary: #666666;
+  --color-fg-tertiary: #8c8c8c; /* ≥ 5:1 on the darkest surfaces (WCAG AA) */
 
   --color-accent: #ffffff;
 

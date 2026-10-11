@@ -5,7 +5,7 @@ import type { LlmClient } from '../anthropic-loop.js';
 import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { KeyVault } from './key-vault.js';
 import { OpenAiCompatClient, ProviderHttpError, type CompatFlavor, type RetryInfo } from './openai-compat.js';
-import { PROVIDERS, PROVIDER_IDS, getCustomProvider, getModelInfo, isCustomProviderId, listCatalog, parseCustomModelId, type ModelInfo, type ProviderId } from './registry.js';
+import { PROVIDERS, PROVIDER_IDS, getCustomProvider, getModelInfo, isCustomProviderId, isKnownModelId, listCatalog, parseCustomModelId, type ModelInfo, type ProviderId } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
   constructor(
@@ -14,6 +14,13 @@ export class ProviderNotConfiguredError extends Error {
   ) {
     super(detail);
     this.name = 'ProviderNotConfiguredError';
+  }
+}
+
+export class UnknownModelError extends Error {
+  constructor(readonly modelId: string) {
+    super(`Unknown model "${modelId}" — pick one from the model list.`);
+    this.name = 'UnknownModelError';
   }
 }
 
@@ -170,6 +177,7 @@ export class ProviderRouter {
   }
 
   clientFor(modelId: string): ResolvedModel {
+    if (!isKnownModelId(modelId, this.env)) throw new UnknownModelError(modelId);
     const info = getModelInfo(modelId, this.env);
 
     if (info.provider === 'anthropic') {

@@ -157,11 +157,12 @@ export function useEverythingAppRuntime(conversationId: string | null) {
       setPersisted(before);
       try {
         await deleteMessageFrom(conversationId, messageId);
+        refetch(); // the server is the source of truth (it deletes across branches too)
       } catch {
-        setPersisted(persisted);
+        setPersisted(persisted); // e.g. 409 while a turn is running
       }
     },
-    [conversationId, persisted],
+    [conversationId, persisted, refetch],
   );
 
   const runtime = useExternalStoreRuntime({

@@ -55,7 +55,7 @@ export function Layout({
   return (
     <div className="relative flex h-full">
       {sidebarOpen && <div className="fixed inset-0 z-20 bg-black/60 md:hidden" aria-hidden="true" onClick={onCloseSidebar} />}
-      <div className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} ${sidebarCollapsed ? 'md:hidden' : 'md:block'}`}>
+      <aside aria-label="Conversations" className={`fixed inset-y-0 left-0 z-30 md:static md:z-auto ${sidebarOpen ? 'block' : 'hidden'} ${sidebarCollapsed ? 'md:hidden' : 'md:block'}`}>
         <Sidebar
           conversations={conversations}
           projects={projects}
@@ -75,7 +75,7 @@ export function Layout({
           gazetaCount={gazetaCount}
           gazetaUrgent={gazetaUrgent}
         />
-      </div>
+      </aside>
       {sidebarCollapsed && (
         <div className="hidden md:block">
           <SidebarRail
@@ -89,7 +89,7 @@ export function Layout({
           />
         </div>
       )}
-      <div className="relative flex min-w-0 flex-1 flex-col">{children}</div>
+      <main className="relative flex min-w-0 flex-1 flex-col">{children}</main>
     </div>
   );
 }

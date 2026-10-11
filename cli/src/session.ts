@@ -202,8 +202,9 @@ export function createAuth(opts: AuthOptions): Auth {
   });
 
   routes.get('/session', (req, res) => {
-    if (isBearerValid(req.headers.authorization) || isCookieValid(req.headers.cookie)) res.json({ ok: true });
-    else res.status(401).json({ error: 'unauthorized' });
+    // 200 either way: the SPA asks this on every load, and a 401 here would show up as a console error before login.
+    const authed = isBearerValid(req.headers.authorization) || isCookieValid(req.headers.cookie);
+    res.json({ ok: authed, authed });
   });
 
   const middleware: RequestHandler = (req, res, next) => {

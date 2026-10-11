@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Bot, ChevronDown, ChevronRight, Square } from 'lucide-react';
-import { getRunTranscript, listConversationRuns, stopRun } from '../../api';
+import { Bot, ChevronDown, ChevronRight, Send, Square } from 'lucide-react';
+import { getRunTranscript, listConversationRuns, messageRun, stopRun } from '../../api';
 import type { BudgetWarning, RunRow } from '../../types';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
@@ -21,8 +21,9 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 /**
- * Agents tab (Plan v3 §7c): run trees of the current chat. Each chat turn is a root run ("assistant");
- * workers it spawned hang below it. Live via agent:* SSE (refreshKey) + polling while anything is active.
+ * Agents tab (Plan v3 §7c): the worker agents of the current chat, split into Active and Completed. Finished agents
+ * stay in the list — they keep their transcript and wake up when you send them a follow-up. Live via agent:* SSE
+ * (refreshKey) + polling while anything is active.
  */
 export function AgentsPanel({ conversationId, refreshKey, budgetWarning, onClose }: {
   conversationId: string;
@@ -51,18 +52,15 @@ export function AgentsPanel({ conversationId, refreshKey, budgetWarning, onClose
     return () => clearInterval(t);
   }, [anyActive, load]);
 
-  const { roots, children } = useMemo(() => {
-    const children = new Map<string, RunRow[]>();
-    for (const r of runs ?? []) {
-      if (!r.parentRunId) continue;
-      const list = children.get(r.parentRunId) ?? [];
-      list.push(r);
-      children.set(r.parentRunId, list);
-    }
-    for (const list of children.values()) list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    // Only turns that started agents (or the turn still running) — plain chat turns are noise here.
-    const roots = (runs ?? []).filter(r => !r.parentRunId && (children.has(r.id) || ACTIVE.has(r.status)));
-    return { roots, children };
+  const { active, completed, labelOf } = useMemo(() => {
+    const workers = (runs ?? []).filter(r => r.depth > 0);
+    const labelOf = new Map((runs ?? []).map(r => [r.id, r.depth === 0 ? 'the assistant' : r.label]));
+    const byNewest = (a: RunRow, b: RunRow) => b.createdAt.localeCompare(a.createdAt);
+    return {
+      active: workers.filter(r => ACTIVE.has(r.status)).sort(byNewest),
+      completed: workers.filter(r => !ACTIVE.has(r.status)).sort((a, b) => (b.finishedAt ?? b.createdAt).localeCompare(a.finishedAt ?? a.createdAt)),
+      labelOf,
+    };
   }, [runs]);
 
   return (
@@ -73,22 +71,33 @@ export function AgentsPanel({ conversationId, refreshKey, budgetWarning, onClose
         </div>
       )}
       {error && <PanelMessage tone="error">{error}</PanelMessage>}
-      {runs && roots.length === 0 && <PanelMessage>No agents in this chat yet. Ask the assistant to split work across agents (spawn_agent).</PanelMessage>}
-      <ul className="space-y-2 p-2">
-        {roots.map(root => (
-          <li key={root.id}>
-            <RunNode run={root} childrenOf={children} onChanged={load} />
-          </li>
-        ))}
-      </ul>
+      {runs && active.length + completed.length === 0 && <PanelMessage>No agents in this chat yet. Ask the assistant to split work across agents (spawn_agent).</PanelMessage>}
+      {active.length > 0 && (
+        <section aria-label="Active agents">
+          <h3 className="px-3 pt-2 text-[11px] font-medium uppercase tracking-wide text-fg-tertiary">Active · {active.length}</h3>
+          <ul className="space-y-2 p-2">
+            {active.map(r => <li key={r.id}><AgentCard run={r} startedBy={r.parentRunId ? labelOf.get(r.parentRunId) : undefined} onChanged={load} /></li>)}
+          </ul>
+        </section>
+      )}
+      {completed.length > 0 && (
+        <section aria-label="Completed agents">
+          <h3 className="px-3 pt-2 text-[11px] font-medium uppercase tracking-wide text-fg-tertiary">Completed · {completed.length}</h3>
+          <ul className="space-y-2 p-2">
+            {completed.map(r => <li key={r.id}><AgentCard run={r} startedBy={r.parentRunId ? labelOf.get(r.parentRunId) : undefined} onChanged={load} /></li>)}
+          </ul>
+        </section>
+      )}
     </DockPanel>
   );
 }
 
-function RunNode({ run, childrenOf, onChanged }: { run: RunRow; childrenOf: Map<string, RunRow[]>; onChanged: () => void }) {
+function AgentCard({ run, startedBy, onChanged }: { run: RunRow; startedBy?: string; onChanged: () => void }) {
   const [open, setOpen] = useState(false);
   const [transcript, setTranscript] = useState<string | null>(null);
-  const kids = childrenOf.get(run.id) ?? [];
+  const [reply, setReply] = useState('');
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'ok' | 'error'; text: string } | null>(null);
   const active = ACTIVE.has(run.status);
   const tokens = run.usage.inputTokens + run.usage.outputTokens;
 
@@ -102,22 +111,42 @@ function RunNode({ run, childrenOf, onChanged }: { run: RunRow; childrenOf: Map<
     }
   }
 
+  async function send() {
+    const body = reply.trim();
+    if (!body || sending) return;
+    setSending(true);
+    setNotice(null);
+    try {
+      const r = await messageRun(run.id, body);
+      setReply('');
+      setTranscript(null);
+      setNotice({ tone: 'ok', text: r.delivered === 'resumed' ? 'Agent resumed with your message.' : 'Delivered — the agent reads it at its next step.' });
+      onChanged();
+    } catch (e) {
+      setNotice({ tone: 'error', text: (e as Error).message });
+    } finally {
+      setSending(false);
+    }
+  }
+
   return (
-    <div className={`rounded-button border ${run.depth === 0 ? 'border-border' : 'border-border/70'} bg-bg`}>
+    <div className="rounded-button border border-border bg-bg">
       <div className="flex items-start gap-2 px-2 py-1.5">
         <button onClick={() => setOpen(o => !o)} className="mt-0.5 text-fg-tertiary hover:text-fg" aria-label={open ? 'Collapse' : 'Expand'} aria-expanded={open}>
           {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5 text-xs">
-            <span className="font-medium text-fg">{run.depth === 0 ? 'Turn' : run.label}</span>
+            <span className="font-medium text-fg">{run.label}</span>
             <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLE[run.status] ?? ''}`}>{STATUS_LABEL[run.status] ?? run.status}</span>
             <span className="text-fg-tertiary">{run.model}</span>
+            {run.batch && <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-fg-secondary" title="Every step runs through the Batch API: 50% cheaper, minutes per step">batch</span>}
             <span className="text-fg-tertiary">{tokens.toLocaleString()} tok · ${run.usage.costUsd.toFixed(3)}</span>
+            {startedBy && run.depth > 1 && <span className="text-fg-tertiary">· started by {startedBy}</span>}
           </div>
           <p className={`mt-0.5 text-xs text-fg-secondary ${open ? 'whitespace-pre-wrap' : 'truncate'}`}>{run.goal}</p>
         </div>
-        {active && run.depth > 0 && (
+        {active && (
           <button
             onClick={() => void stopRun(run.id).then(onChanged)}
             className="rounded p-1 text-fg-tertiary hover:text-danger"
@@ -132,23 +161,28 @@ function RunNode({ run, childrenOf, onChanged }: { run: RunRow; childrenOf: Map<
         <div className="space-y-1 border-t border-border px-2 py-1.5 text-xs">
           {run.result && <pre className="max-h-48 overflow-auto whitespace-pre-wrap rounded bg-bg-secondary p-2 font-sans text-fg">{run.result}</pre>}
           {run.error && <p className="text-danger">{run.error}</p>}
-          {run.depth > 0 && (
-            <button onClick={() => void toggleTranscript()} className="text-fg-tertiary underline hover:text-fg">
-              {transcript === null ? 'Show transcript' : 'Hide transcript'}
-            </button>
-          )}
+          <button onClick={() => void toggleTranscript()} className="text-fg-tertiary underline hover:text-fg">
+            {transcript === null ? 'Show transcript' : 'Hide transcript'}
+          </button>
           {transcript !== null && <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-bg-secondary p-2 font-mono text-[11px] text-fg-secondary">{transcript}</pre>}
         </div>
       )}
-      {kids.length > 0 && (
-        <ul className="space-y-1.5 border-t border-border py-1.5 pl-4 pr-1.5">
-          {kids.map(k => (
-            <li key={k.id}>
-              <RunNode run={k} childrenOf={childrenOf} onChanged={onChanged} />
-            </li>
-          ))}
-        </ul>
-      )}
+      <form
+        className="flex gap-1.5 border-t border-border px-2 py-1.5"
+        onSubmit={e => { e.preventDefault(); void send(); }}
+      >
+        <input
+          value={reply}
+          onChange={e => setReply(e.target.value)}
+          placeholder={active ? 'Message this agent…' : 'Reply to resume this agent…'}
+          aria-label={`${active ? 'Message' : 'Follow up with'} ${run.label}`}
+          className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg outline-none placeholder:text-fg-tertiary focus:border-border-hover"
+        />
+        <button type="submit" disabled={!reply.trim() || sending} className="rounded p-1.5 text-fg-secondary hover:text-fg disabled:opacity-30" aria-label="Send">
+          <Send size={13} />
+        </button>
+      </form>
+      {notice && <p className={`px-2 pb-1.5 text-xs ${notice.tone === 'error' ? 'text-danger' : 'text-success'}`} role="status">{notice.text}</p>}
     </div>
   );
 }

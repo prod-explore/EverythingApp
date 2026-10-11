@@ -7,7 +7,7 @@ import { openDb, runMigrations, createProject, createConversation } from '../db.
 import { WebApprovalGate } from '../web-approval.js';
 import { KeyVault } from '../providers/key-vault.js';
 import { GitHubCredentials, classifyGithubPath } from '../github.js';
-import { createGithubRoutes, parseStatus } from '../github-routes.js';
+import { createGithubRoutes, parseGithubRepo, parseStatus } from '../github-routes.js';
 import type { SandboxExec } from '../supervisor-client.js';
 
 const ADMIN = 'admin-secret';
@@ -90,27 +90,41 @@ describe('N4 routes', () => {
     } finally { t.close(); }
   });
 
-  it('repo bindings: accepts owner/repo or URL, rejects junk and duplicates', async () => {
-    const t = await setup();
+  it('parseGithubRepo accepts owner/repo and github.com URLs only', () => {
+    assert.deepEqual(parseGithubRepo('acme/site'), { owner: 'acme', repo: 'site' });
+    assert.deepEqual(parseGithubRepo('https://github.com/acme/site.git'), { owner: 'acme', repo: 'site' });
+    assert.deepEqual(parseGithubRepo('git@github.com:acme/site.git'), { owner: 'acme', repo: 'site' });
+    assert.equal(parseGithubRepo('https://evil.example/acme/site'), null);
+    assert.equal(parseGithubRepo('not a repo!'), null);
+    assert.equal(parseGithubRepo('../x'), null);
+  });
+
+  it('discovers git checkouts in the sandbox workspace', async () => {
+    const t = await setup({ exec: async () => ({ stdout: './site\thttps://github.com/acme/site.git\n./scratch\t\n', stderr: '', exitCode: 0 }) });
     try {
-      const a = await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { repo: 'https://github.com/acme/site.git' });
-      assert.equal(a.status, 201);
-      assert.deepEqual(a.json.repos.map((r: any) => [r.owner, r.repo, r.pushMode]), [['acme', 'site', 'ask']]);
-      assert.equal((await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { owner: 'acme', repo: 'site' })).status, 409);
-      assert.equal((await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { repo: 'not a repo!' })).status, 400);
-      const id = a.json.repos[0].id;
-      assert.equal((await call(t.port, 'PATCH', `/api/projects/${t.project.id}/repos/${id}`, { pushMode: 'allow' })).json.repos[0].pushMode, 'allow');
+      const r = await call(t.port, 'GET', `/api/projects/${t.project.id}/scm-repos`);
+      assert.deepEqual(r.json.repos, [
+        { dir: 'site', origin: 'https://github.com/acme/site.git', owner: 'acme', repo: 'site' },
+        { dir: 'scratch', origin: null, owner: null, repo: null },
+      ]);
     } finally { t.close(); }
   });
 
-  it('push approval: unlinked repo is refused; a linked push becomes an approval card; force forces once-only', async () => {
+  it('clones by URL, refusing anything that is not github.com', async () => {
+    const t = await setup({ fetch: fakeFetch(url => url.endsWith('/admin/tokens') ? { status: 201, json: { token: 'gpx_t', expiresAt: new Date(Date.now() + 3600e3).toISOString() } } : { status: 404, json: {} }) });
+    try {
+      const ok = await call(t.port, 'POST', `/api/projects/${t.project.id}/scm/sync`, { dir: '', action: 'clone', url: 'https://github.com/acme/site' });
+      assert.equal(ok.status, 200);
+      assert.ok(t.execs.some(c => /git clone https:\/\/github\.com\/acme\/site\.git 'site'/.test(c)));
+      const bad = await call(t.port, 'POST', `/api/projects/${t.project.id}/scm/sync`, { dir: '', action: 'clone', url: 'https://evil.example/acme/site' });
+      assert.equal(bad.status, 502);
+    } finally { t.close(); }
+  });
+
+  it('push approval: every push becomes an approval card; force forces once-only', async () => {
     const t = await setup();
     try {
       const refs = [{ ref: 'refs/heads/feat', old: 'a'.repeat(40), new: 'b'.repeat(40), kind: 'update', force: false }];
-      const unlinked = await call(t.port, 'POST', '/internal/push-approval', { projectId: t.project.id, owner: 'x', repo: 'y', refs });
-      assert.equal(unlinked.json.approved, false);
-
-      await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { repo: 'acme/site' });
       const pending = call(t.port, 'POST', '/internal/push-approval', { projectId: t.project.id, owner: 'acme', repo: 'site', refs });
       for (let i = 0; i < 100 && t.gate.listPending().length === 0; i++) await new Promise(r => setTimeout(r, 10));
       const [card] = t.gate.listPending();
@@ -139,15 +153,13 @@ describe('N4 routes', () => {
       }),
     });
     try {
-      assert.deepEqual(await t.routes.ensureSandboxGit(t.project.id), { wired: false, repos: 0, reason: 'no repositories linked to this project' });
-      await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { repo: 'acme/site' });
-      assert.deepEqual(await t.routes.ensureSandboxGit(t.project.id), { wired: true, repos: 1 });
-      assert.deepEqual((minted[0] as any).repos, [{ owner: 'acme', repo: 'site', pushMode: 'ask' }]);
+      assert.deepEqual(await t.routes.ensureSandboxGit(t.project.id), { wired: true });
+      assert.deepEqual((minted[0] as any).repos, [{ owner: '*', repo: '*', pushMode: 'ask' }]);
       const cmd = t.execs.join('\n');
       assert.match(cmd, /x-token:gpx_abc123@git-proxy:8080\/'\.insteadOf https:\/\/github\.com\//);
       assert.match(cmd, /insteadOf git@github\.com:/);
       assert.doesNotMatch(cmd, /github_pat_env/);
-      // Cached: no second mint while the token is fresh and the repo set is unchanged.
+      // Cached: no second mint while the token is fresh.
       await t.routes.ensureSandboxGit(t.project.id);
       assert.equal(minted.length, 1);
     } finally { t.close(); }
@@ -173,15 +185,15 @@ describe('N4 routes', () => {
     } finally { t.close(); }
   });
 
-  it('GitHub API proxy is limited to linked repos', async () => {
+  it('GitHub API proxy reaches any repo of the connected account, but account endpoints are read-only', async () => {
     const seen: string[] = [];
     const t = await setup({ fetch: fakeFetch(url => { seen.push(url); return { json: [{ number: 1 }] }; }) });
     try {
-      await call(t.port, 'POST', `/api/projects/${t.project.id}/repos`, { repo: 'acme/site' });
       const ok = await call(t.port, 'GET', `/api/projects/${t.project.id}/github/repos/acme/site/pulls?state=open`);
       assert.deepEqual(ok.json, [{ number: 1 }]);
       assert.equal(seen.at(-1), 'https://api.github.com/repos/acme/site/pulls?state=open');
-      assert.equal((await call(t.port, 'GET', `/api/projects/${t.project.id}/github/repos/other/repo/pulls`)).status, 403);
+      assert.equal((await call(t.port, 'GET', `/api/projects/${t.project.id}/github/repos/other/repo/pulls`)).status, 200);
+      assert.equal((await call(t.port, 'GET', `/api/projects/${t.project.id}/github/admin/users`)).status, 400);
       assert.equal((await call(t.port, 'POST', `/api/projects/${t.project.id}/github/user`, {})).status, 405);
     } finally { t.close(); }
   });

@@ -3,6 +3,7 @@ import { AttachmentPrimitive, ComposerPrimitive, ThreadPrimitive } from '@assist
 import { AlertTriangle, Clock, Paperclip, RotateCw, Send, X } from 'lucide-react';
 import { sendMessage } from '../../api';
 import { StopButton } from './StopButton';
+import { SlashMenu } from './SlashMenu';
 
 /**
  * Batch mode bypasses the runtime entirely (assistant-ui's onNew always
@@ -39,6 +40,11 @@ export function Composer({
           </button>
         </div>
       )}
+
+      <SlashMenu onCommand={name => {
+        if (name === 'batch') setBatchMode(b => !b);
+        else window.dispatchEvent(new CustomEvent('app:command', { detail: { name } }));
+      }} />
 
       <ComposerPrimitive.Quote className="mx-3 mt-2 flex items-start gap-2 rounded-button border border-border bg-bg-secondary px-2.5 py-1.5 text-xs text-fg-tertiary">
         <span className="line-clamp-2 flex-1">

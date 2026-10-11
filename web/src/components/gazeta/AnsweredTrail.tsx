@@ -16,7 +16,7 @@ function formatResponse(response: unknown): string {
   return String(response);
 }
 
-/** F16: leaves "Odpowiedziałeś: …" in the transcript for questions this chat's agents asked and the user answered. */
+/** F16: leaves "You answered: …" in the transcript for questions this chat's agents asked and the user answered. */
 export function AnsweredTrail({ conversationId }: { conversationId: string }) {
   const { byId, upsert } = useGazeta();
 
@@ -44,7 +44,7 @@ export function AnsweredTrail({ conversationId }: { conversationId: string }) {
           <span className="min-w-0">
             <span className="text-fg-secondary">{i.title}</span>
             <br />
-            Odpowiedziałeś: <span className="text-fg-secondary">{formatResponse(i.response) || '—'}</span>
+            You answered: <span className="text-fg-secondary">{formatResponse(i.response) || '—'}</span>
           </span>
         </div>
       ))}

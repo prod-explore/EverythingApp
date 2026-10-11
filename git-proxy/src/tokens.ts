@@ -82,8 +82,14 @@ export class TokenStore {
   }
 }
 
+/** `*` matches any owner / any repo: used when the GitHub account is connected once for the whole app (no per-project bindings). */
+export const WILDCARD = '*';
+
 export function findGrant(binding: TokenBinding, owner: string, repo: string): RepoGrant | undefined {
   const o = owner.toLowerCase();
   const r = normalizeRepo(repo);
-  return binding.repos.find(g => g.owner.toLowerCase() === o && normalizeRepo(g.repo) === r);
+  // An exact entry wins over a wildcard one, so a specific `deny` still beats a general `ask`.
+  const exact = binding.repos.find(g => g.owner.toLowerCase() === o && normalizeRepo(g.repo) === r);
+  if (exact) return exact;
+  return binding.repos.find(g => (g.owner === WILDCARD || g.owner.toLowerCase() === o) && (g.repo === WILDCARD || normalizeRepo(g.repo) === r));
 }

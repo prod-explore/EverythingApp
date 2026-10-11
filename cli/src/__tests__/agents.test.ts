@@ -6,7 +6,7 @@ import { runTurn } from '../anthropic-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import { WebApprovalGate } from '../web-approval.js';
 import { SSEManager } from '../sse.js';
-import { openDb, runMigrations, createConversation } from '../db.js';
+import { openDb, runMigrations, createConversation, getMessages } from '../db.js';
 import { DEFAULT_TIER_MODELS } from '../tiers.js';
 import {
   createRun, getRun, listRuns, treeUsage, interruptOrphanedRuns, postRunMessage, drainRunMessages, addRunUsage, setRunStatus,
@@ -217,6 +217,53 @@ describe('AgentManager', () => {
     release();
     const waited = await tools.get('wait_agents')!.handler({ run_ids: [runId] }, ctx);
     assert.match(waited.text, /\[done\]/);
+  });
+});
+
+describe('resuming finished agents', () => {
+  it('a finished worker is woken by a follow-up with its full transcript, and only new messages are appended', async () => {
+    let turn = 0;
+    const t = await setup(p => (isWorker(p) ? message([text(`report ${++turn}`)], 'end_turn') : message([text('?')], 'end_turn')));
+    const r = t.agents.spawn(t.root.id, { goal: 'first job', model: 'm', label: 'w' });
+    assert.ok('runId' in r);
+    await t.agents.wait([r.runId], 'all');
+    const before = getRun(t.db, r.runId)!;
+    assert.equal(before.status, 'done');
+    assert.ok(before.finishedAt);
+
+    const resumed = t.agents.resume(r.runId, 'now do the second part');
+    assert.ok('ok' in resumed);
+    assert.equal(getRun(t.db, r.runId)!.status, 'running');
+    assert.equal(getRun(t.db, r.runId)!.finishedAt, null);
+    await t.agents.wait([r.runId], 'all');
+    const after = getRun(t.db, r.runId)!;
+    assert.equal(after.status, 'done');
+    assert.equal(after.result, 'report 2');
+
+    // The second request carried the whole earlier conversation plus the follow-up.
+    const second = t.requests.filter(isWorker)[1]!;
+    const texts = JSON.stringify(second.messages);
+    assert.match(texts, /first job/);
+    assert.match(texts, /report 1/);
+    assert.match(texts, /now do the second part/);
+    // Transcript: goal, report 1, follow-up, report 2 — no duplicated history.
+    const transcript = getMessages(t.db, after.transcriptConversationId!);
+    assert.equal(transcript.length, 4);
+  });
+
+  it('refuses to resume a running agent or a chat turn, and send_message resumes a finished peer', async () => {
+    const t = await setup(p => (isWorker(p) ? message([text('ok')], 'end_turn') : message([text('?')], 'end_turn')));
+    assert.ok('error' in t.agents.resume(t.root.id, 'x'));
+    const tools = new Map(t.agents.agentTools(t.root.id, t.controller.signal).map(v => [v.definition.name, v]));
+    const ctx = { toolUseId: 'x' };
+    const spawned = await tools.get('spawn_agent')!.handler({ goal: 'g', model: 'm', label: 'w' }, ctx);
+    const runId = /Spawned (\w+)/.exec(spawned.text)![1]!;
+    await t.agents.wait([runId], 'all');
+    const sent = await tools.get('send_message')!.handler({ to: runId, body: 'one more thing' }, ctx);
+    assert.match(sent.text, /resumed/);
+    assert.ok('error' in t.agents.resume(runId, 'while running'));
+    await t.agents.wait([runId], 'all');
+    assert.equal(getRun(t.db, runId)!.status, 'done');
   });
 });
 
