@@ -57,4 +57,4 @@ jobs:
       - name: Validate compose file
         run: |
           cp .env.example .env
-          KEY_VAULT_SECRET=ci SERVER_AUTH_TOKEN=ci MCP_API_KEY=ci GIT_PROXY_ADMIN_TOKEN=ci docker compose config -q
+          KEY_VAULT_SECRET=ci SERVER_AUTH_TOKEN=ci MCP_API_KEY=ci PLAYWRIGHT_MCP_API_KEY=ci GITHUB_PAT=ci GIT_PROXY_ADMIN_TOKEN=ci N8N_USER=ci N8N_PASSWORD=ci docker compose config -q
