@@ -112,22 +112,6 @@ services:
     networks:
       - browser-egress
 
-  # GitHub connector — official github-mcp-server.
-  # Token (PAT) is held here, never in the bash sandbox, never visible to the model.
-  # The model uses GitHub tools (read, create PR, push via push_files) through
-  # this connector. git push is removed from the sandbox tool whitelist.
-  github-mcp:
-    image: ghcr.io/github/github-mcp-server:latest
-    environment:
-      GITHUB_PERSONAL_ACCESS_TOKEN: ${GITHUB_PAT:?GITHUB_PAT is required for GitHub connector}
-      # Toolset: "all" exposes all tools. Narrow with comma-separated tool names
-      # if you want to limit surface area.
-      # GITHUB_TOOLSETS: repos,files,pull_requests,issues,code_security
-    ports:
-      - "127.0.0.1:3004:3004"
-    restart: unless-stopped
-    networks:
-      - sandbox-internal
 
   # N4: git smart-HTTP proxy to github.com. Sandboxes push/pull through it with short-lived proxy
   # tokens; the real GitHub credential (from the orchestrator, or GITHUB_PAT as fallback) is injected
@@ -167,16 +151,12 @@ services:
       # Optional: where always-allow / always-block command prefixes and known domains live (hot-reloaded).
       EVERYTHINGAPP_POLICY_FILE: ${EVERYTHINGAPP_POLICY_FILE:-}
       PORT: 3000
-      # Connectors: add playwright and github when services are deployed.
-      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,obsidian,playwright,github}
+      # Connectors: add playwright when services are deployed.
+      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,obsidian,playwright}
       MCP_SANDBOX_URL: http://sandbox-mcp:3002/mcp/sse
       MCP_SANDBOX_API_KEY: ${MCP_API_KEY:-}
       MCP_PLAYWRIGHT_URL: http://playwright-mcp:3003/mcp/sse
       MCP_PLAYWRIGHT_API_KEY: ${PLAYWRIGHT_MCP_API_KEY:-}
-      # github-mcp-server uses its own auth (PAT via env above),
-      # so no separate API key needed for the connector URL.
-      MCP_GITHUB_URL: http://github-mcp:3004/mcp
-      MCP_GITHUB_API_KEY: ${GITHUB_PAT:-}
       MCP_OBSIDIAN_URL: ${MCP_OBSIDIAN_URL:-}
       MCP_OBSIDIAN_API_KEY: ${MCP_OBSIDIAN_API_KEY:-}
       # N3: workspace Explorer / checkpoints (byte reads + in-sandbox git only).
@@ -196,7 +176,6 @@ services:
     depends_on:
       - sandbox-mcp
       - playwright-mcp
-      - github-mcp
       - git-proxy
     restart: unless-stopped
     networks:

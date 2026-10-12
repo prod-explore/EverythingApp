@@ -35,6 +35,9 @@ COPY --from=web-builder /web/dist/ /app/web/dist/
 
 # node user is uid 1000 in node:alpine — no special group needed here,
 # unlike sandbox-supervisor (no docker.sock access from this container).
+# Ensure default data directory exists with proper ownership for user node
+RUN mkdir -p /home/node/.everythingapp && chown -R node:node /home/node/.everythingapp
+
 USER node
 
 EXPOSE 3000
