@@ -140,6 +140,7 @@ services:
 
   # Core EverythingApp web server
   everythingapp-web:
+    image: everythingapp-web:latest
     build:
       context: .
       dockerfile: cli/Dockerfile
