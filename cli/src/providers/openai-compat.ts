@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type Anthropic from '@anthropic-ai/sdk';
-import type { LlmClient, MessageStreamLike } from '../anthropic-loop.js';
+import type * as Llm from '../llm-types.js';
+import type { LlmClient, MessageStreamLike } from '../llm-loop.js';
 import type { ModelInfo } from './registry.js';
 
 /**
@@ -8,7 +8,7 @@ import type { ModelInfo } from './registry.js';
  * compatibility endpoint, DeepSeek). The app's canonical message format stays
  * Anthropic-shaped — that is what's persisted and what the tool loop consumes —
  * so this file's whole job is translating *out* to chat-completions and *back*
- * to an Anthropic.Message, per request. Nothing provider-specific ever reaches
+ * to an Llm.Message, per request. Nothing provider-specific ever reaches
  * the database or the loop except through MetaStore.
  */
 
@@ -288,15 +288,15 @@ export function flattenToolSchema(schema: unknown): { schema: Record<string, unk
   return { schema: { type: 'object', properties: out, ...(required.length ? { required } : {}) }, flattened };
 }
 
-// ─── Anthropic → chat-completions ────────────────────────────────────────────
+// ─── internal messages → chat-completions ────────────────────────────────────────────
 
-function systemText(system: Anthropic.MessageCreateParams['system']): string {
+function systemText(system: Llm.MessageCreateParams['system']): string {
   if (!system) return '';
   if (typeof system === 'string') return system;
   return system.map(b => b.text).join('\n\n');
 }
 
-function toolResultText(block: Anthropic.ToolResultBlockParam): string {
+function toolResultText(block: Llm.ToolResultBlockParam): string {
   let text: string;
   if (typeof block.content === 'string') text = block.content;
   else if (Array.isArray(block.content)) {
@@ -309,28 +309,8 @@ function toolResultText(block: Anthropic.ToolResultBlockParam): string {
   return text || '(no output)';
 }
 
-function describeServerBlock(block: { type: string } & Record<string, unknown>): string | null {
-  if (block.type === 'server_tool_use') {
-    const input = block['input'] as { query?: string } | undefined;
-    return `[searched the web${input?.query ? `: "${input.query}"` : ''}]`;
-  }
-  if (block.type === 'web_search_tool_result') {
-    const content = block['content'];
-    if (!Array.isArray(content)) return '[web search returned an error]';
-    const items = content
-      .slice(0, 5)
-      .map(r => {
-        const item = r as { title?: string; url?: string };
-        return item.title ? `${item.title} (${item.url ?? 'no url'})` : null;
-      })
-      .filter(Boolean);
-    return items.length > 0 ? `[web search results: ${items.join('; ')}]` : '[web search returned no results]';
-  }
-  return null;
-}
-
 /** Index of the last user message that carries real user input (not just tool results) — where the current tool loop began. */
-function currentTurnStart(messages: Anthropic.MessageParam[]): number {
+function currentTurnStart(messages: Llm.MessageParam[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i]!;
     if (m.role !== 'user') continue;
@@ -342,7 +322,7 @@ function currentTurnStart(messages: Anthropic.MessageParam[]): number {
 
 function normalizeToolCallId(id: string | undefined | null): string {
   const cleaned = (id ?? '').replace(/[^a-zA-Z0-9_-]/g, '_');
-  // Anthropic requires ids to match ^[a-zA-Z0-9_-]+$ — providers sometimes omit them or use other characters.
+  // Tool-call ids must be [a-zA-Z0-9_-]+ on most providers — some omit them or use other characters.
   return cleaned || `call_${randomUUID().replace(/-/g, '')}`;
 }
 
@@ -355,7 +335,7 @@ export interface TranslateContext {
   flattened?: Map<string, Set<string>>;
 }
 
-export function toChatMessages(params: Anthropic.MessageCreateParamsNonStreaming, ctx: TranslateContext): OaiMessage[] {
+export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx: TranslateContext): OaiMessage[] {
   const out: OaiMessage[] = [];
   const sys = systemText(params.system);
   if (sys) out.push({ role: 'system', content: sys });
@@ -417,11 +397,6 @@ export function toChatMessages(params: Anthropic.MessageCreateParamsNonStreaming
           type: 'function',
           function: { name: ctx.names.safe(block.name), arguments: JSON.stringify(block.input ?? {}) },
         });
-      } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
-        // Anthropic thinking blocks are signed for Anthropic only — meaningless elsewhere.
-      } else {
-        const described = describeServerBlock(block as unknown as { type: string } & Record<string, unknown>);
-        if (described) texts.push(described);
       }
     }
 
@@ -458,15 +433,13 @@ export function toChatMessages(params: Anthropic.MessageCreateParamsNonStreaming
 }
 
 export function toChatTools(
-  tools: Anthropic.MessageCreateParams['tools'],
+  tools: Llm.MessageCreateParams['tools'],
   ctx: TranslateContext,
 ): Array<{ type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown> } }> {
   const out: Array<{ type: 'function'; function: { name: string; description?: string; parameters?: Record<string, unknown> } }> = [];
   const mode = ctx.modelInfo.toolSchemaMode ?? 'full';
   if (mode === 'none') return out;
   for (const tool of tools ?? []) {
-    // Server tools (web_search_20250305, …) have no input_schema and only exist on Anthropic's side.
-    if (!('input_schema' in tool)) continue;
     const safeName = ctx.names.safe(tool.name);
     let parameters: Record<string, unknown> | undefined;
     if (mode === 'flat') {
@@ -494,14 +467,14 @@ export function toChatTools(
   return out;
 }
 
-// ─── chat-completions → Anthropic ────────────────────────────────────────────
+// ─── chat-completions → internal messages ────────────────────────────────────────────
 
-export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx: TranslateContext, providerId: string): Anthropic.Message {
+export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx: TranslateContext, providerId: string): Llm.Message {
   const choice = json.choices?.[0];
   if (!choice?.message) throw new Error(`${providerId} returned no completion choices`);
   const msg = choice.message;
 
-  const content: Anthropic.ContentBlock[] = [];
+  const content: Llm.ContentBlock[] = [];
   let text = Array.isArray(msg.content)
     ? msg.content.map(p => p.text ?? '').join('')
     : (msg.content ?? '');
@@ -515,7 +488,7 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
       text = '';
     }
   }
-  if (text) content.push({ type: 'text', text, citations: null } as Anthropic.TextBlock);
+  if (text) content.push({ type: 'text', text, citations: null } as Llm.TextBlock);
 
   calls.forEach((tc, i) => {
     const id = normalizeToolCallId(tc.id);
@@ -546,7 +519,7 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
       id,
       name: ctx.names.original(tc.function?.name ?? ''),
       input,
-    } as Anthropic.ToolUseBlock);
+    } as Llm.ToolUseBlock);
 
     const meta: Record<string, unknown> = {};
     const sig = tc.extra_content?.google?.thought_signature;
@@ -559,7 +532,7 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
   const toolUse = content.some(b => b.type === 'tool_use');
   const finish = choice.finish_reason;
   // Gemini's compat layer has been seen returning finish_reason "stop" alongside tool calls; the loop keys off stop_reason.
-  const stop_reason: Anthropic.StopReason = toolUse
+  const stop_reason: Llm.StopReason = toolUse
     ? 'tool_use'
     : finish === 'length'
       ? 'max_tokens'
@@ -582,13 +555,9 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
     usage: {
       input_tokens: Math.max(prompt - cached, 0),
       output_tokens: u.completion_tokens ?? 0,
-      cache_creation_input_tokens: null,
       cache_read_input_tokens: cached || null,
-      server_tool_use: null,
-      service_tier: null,
-      cache_creation: null,
     },
-  } as unknown as Anthropic.Message;
+  };
 }
 
 // ─── Client ──────────────────────────────────────────────────────────────────
@@ -655,9 +624,9 @@ export class OpenAiCompatClient implements LlmClient {
 
   readonly messages = {
     create: async (
-      params: Anthropic.MessageCreateParamsNonStreaming,
+      params: Llm.MessageCreateParamsNonStreaming,
       options?: { signal?: AbortSignal },
-    ): Promise<Anthropic.Message> => {
+    ): Promise<Llm.Message> => {
       const info = this.opts.modelInfo(params.model);
       const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
 
@@ -687,29 +656,29 @@ export class OpenAiCompatClient implements LlmClient {
           const json = (await this.post('/chat/completions', bare, options?.signal)) as OaiResponse;
           const msg = fromChatResponse(json, params.model, ctx, this.opts.flavor);
           const note = '_(This local model could not produce a valid tool call, so it answered without tools. Pick a larger model for tool use.)_\n\n';
-          const first = msg.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
+          const first = msg.content.find(b => b.type === 'text') as Llm.TextBlock | undefined;
           if (first) first.text = note + first.text;
-          else msg.content.unshift({ type: 'text', text: note.trim(), citations: null } as Anthropic.TextBlock);
+          else msg.content.unshift({ type: 'text', text: note.trim(), citations: null } as Llm.TextBlock);
           return msg;
         }
         throw err;
       }
     },
-    stream: (params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike => this.stream(params, options),
+    stream: (params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike => this.stream(params, options),
   };
 
   /**
-   * N2b — real token streaming for OpenAI-compatible providers. Text deltas are emitted as Anthropic-style
+   * N2b — real token streaming for OpenAI-compatible providers. Text deltas are emitted as
    * `content_block_delta` events as they arrive; text, reasoning and `tool_calls` deltas (by index, with
    * arguments split across chunks) are accumulated and the final message goes through the same
    * fromChatResponse() translation as the non-streaming path, so tool calls behave identically.
    * Gemini stays non-streaming: its thought signatures arrive outside the delta format we can trust.
    * Any HTTP error before the stream starts falls back to create() (retries, local-model fallback).
    */
-  stream(params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike {
-    const listeners: Array<(e: Anthropic.MessageStreamEvent) => void> = [];
+  stream(params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike {
+    const listeners: Array<(e: Llm.MessageStreamEvent) => void> = [];
     const emitText = (text: string) => {
-      const event = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as Anthropic.MessageStreamEvent;
+      const event: Llm.MessageStreamEvent = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } };
       for (const l of listeners) l(event);
     };
     const final = (async () => {
@@ -718,7 +687,7 @@ export class OpenAiCompatClient implements LlmClient {
       return this.streamOnce(params, options?.signal, emitText);
     })();
     return {
-      on(event: 'streamEvent', listener: (e: Anthropic.MessageStreamEvent) => void) {
+      on(event: 'streamEvent', listener: (e: Llm.MessageStreamEvent) => void) {
         if (event === 'streamEvent') listeners.push(listener);
         return this;
       },
@@ -727,10 +696,10 @@ export class OpenAiCompatClient implements LlmClient {
   }
 
   private async streamOnce(
-    params: Anthropic.MessageCreateParamsNonStreaming,
+    params: Llm.MessageCreateParamsNonStreaming,
     external: AbortSignal | undefined,
     emitText: (text: string) => void,
-  ): Promise<Anthropic.Message> {
+  ): Promise<Llm.Message> {
     const info = this.opts.modelInfo(params.model);
     const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
     const tools = toChatTools(params.tools, ctx);
@@ -838,7 +807,7 @@ export class OpenAiCompatClient implements LlmClient {
       const message = fromChatResponse(json, params.model, ctx, this.opts.flavor);
       // Held text that turned out NOT to be a tool call (a JSON answer, a code block) is released now.
       if (mode === 'hold') {
-        const first = message.content.find(b => b.type === 'text') as Anthropic.TextBlock | undefined;
+        const first = message.content.find(b => b.type === 'text') as Llm.TextBlock | undefined;
         if (first) emitText(first.text);
       }
       return message;

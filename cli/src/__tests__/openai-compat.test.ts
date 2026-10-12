@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
-import { runTurn } from '../anthropic-loop.js';
+import type * as Llm from '../llm-types.js';
+import { runTurn } from '../llm-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { McpConnectionLike } from '../mcp-client.js';
 import { getModelInfo } from '../providers/registry.js';
@@ -47,8 +47,8 @@ function ctxFor(flavor: 'gemini' | 'deepseek' | 'mindgate', model: string, meta:
   };
 }
 
-const params = (messages: Anthropic.MessageParam[], extra: Partial<Anthropic.MessageCreateParamsNonStreaming> = {}) =>
-  ({ model: 'x', max_tokens: 100, messages, ...extra }) as Anthropic.MessageCreateParamsNonStreaming;
+const params = (messages: Llm.MessageParam[], extra: Partial<Llm.MessageCreateParamsNonStreaming> = {}) =>
+  ({ model: 'x', max_tokens: 100, messages, ...extra }) as Llm.MessageCreateParamsNonStreaming;
 
 // ─── request translation ─────────────────────────────────────────────────────
 
@@ -89,7 +89,7 @@ describe('toChatMessages', () => {
   });
 
   it('drops images for text-only models but forwards them (as data URLs) to vision models', () => {
-    const msg: Anthropic.MessageParam = {
+    const msg: Llm.MessageParam = {
       role: 'user',
       content: [
         { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
@@ -115,7 +115,7 @@ describe('toChatMessages', () => {
             { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'polish news' } },
             { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [{ type: 'web_search_result', title: 'TVN24', url: 'https://tvn24.pl', encrypted_content: 'x', page_age: null }] },
             { type: 'text', text: 'Here is the news.' },
-          ] as unknown as Anthropic.ContentBlockParam[],
+          ] as unknown as Llm.ContentBlockParam[],
         },
         { role: 'user', content: 'thanks' },
       ]),
@@ -131,7 +131,7 @@ describe('toChatMessages', () => {
   it('gemini: replays stored thought signatures and adds Google\'s documented stand-in only when none exists', () => {
     const meta = memoryMeta();
     meta.set('fc_real', { thoughtSignature: 'REAL-SIG' });
-    const history = (id: string): Anthropic.MessageParam[] => [
+    const history = (id: string): Llm.MessageParam[] => [
       { role: 'user', content: 'go' },
       { role: 'assistant', content: [{ type: 'tool_use', id, name: 'obsidian__get_path', input: { path: '' } }] },
       { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'ok' }] },
@@ -175,7 +175,7 @@ describe('toChatTools / schema handling', () => {
       [
         { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
         { name: 'echo', description: 'Echo', input_schema: { type: 'object', properties: { text: { type: 'string' } } } },
-      ] as Anthropic.MessageCreateParams['tools'],
+      ] as Llm.MessageCreateParams['tools'],
       ctxFor('deepseek', 'deepseek-chat'),
     );
     assert.equal(tools.length, 1);
@@ -228,7 +228,7 @@ describe('fromChatResponse', () => {
       'gemini',
     );
     assert.equal(msg.stop_reason, 'tool_use');
-    const use = msg.content.find(b => b.type === 'tool_use') as Anthropic.ToolUseBlock;
+    const use = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.deepEqual(use.input, { text: 'hi' });
     assert.deepEqual(meta.store.get('function-call-abc'), { thoughtSignature: 'SIG' });
   });
@@ -240,7 +240,7 @@ describe('fromChatResponse', () => {
       ctxFor('deepseek', 'deepseek-chat'),
       'deepseek',
     );
-    const use = msg.content[0] as Anthropic.ToolUseBlock;
+    const use = msg.content[0] as Llm.ToolUseBlock;
     assert.match(use.id, /^[a-zA-Z0-9_-]+$/, 'Anthropic requires ^[a-zA-Z0-9_-]+$ ids');
     assert.deepEqual(use.input, { __invalid_arguments: '{"a": ' });
   });
@@ -337,10 +337,10 @@ describe('OpenAiCompatClient', () => {
     };
     const registry = new ToolRegistry(['run_bash']);
     await registry.loadFrom([conn]);
-    const usages: Anthropic.Usage[] = [];
+    const usages: Llm.Usage[] = [];
 
     const history = await runTurn(
-      { anthropic: newClient(impl), model: 'deepseek-chat', tools: registry, systemPrompt: 'sys', confirm: async () => true, onUsage: u => usages.push(u) },
+      { llm: newClient(impl), model: 'deepseek-chat', tools: registry, systemPrompt: 'sys', confirm: async () => true, onUsage: u => usages.push(u) },
       [],
       'run echo hi',
     );
@@ -373,7 +373,7 @@ describe('OpenAiCompatClient', () => {
     });
     const ok = await newClient(flaky.impl).messages.create(params([{ role: 'user', content: 'hi' }]));
     assert.equal(attempts, 3);
-    assert.equal((ok.content[0] as Anthropic.TextBlock).text, 'finally');
+    assert.equal((ok.content[0] as Llm.TextBlock).text, 'finally');
 
     // An upstream that echoes the key back in its error body must not leak it.
     const leaky = fakeFetch(() => ({ status: 401, body: 'invalid key sk-live-SECRET-KEY provided' }));
@@ -412,7 +412,7 @@ const nestedTool = {
     },
     required: ['title', 'fields', 'gone'],
   },
-} as unknown as Anthropic.Tool;
+} as unknown as Llm.Tool;
 
 describe('toolSchemaMode', () => {
   it('flattenToolSchema keeps primitives, turns nested/combinator params into documented JSON strings, trims required', () => {
@@ -430,7 +430,7 @@ describe('toolSchemaMode', () => {
   it("'flat' models receive simplified schemas and get nested arguments decoded back to real values", () => {
     const ctx = ctxFor('mindgate', 'flash');
     assert.equal(ctx.modelInfo.toolSchemaMode, 'flat');
-    const tools = toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], ctx);
+    const tools = toChatTools([nestedTool] as Llm.MessageCreateParams['tools'], ctx);
     assert.equal(tools.length, 1);
     assert.equal((tools[0]!.function.parameters as { properties: Record<string, { type: string }> }).properties['fields']!.type, 'string');
 
@@ -438,16 +438,16 @@ describe('toolSchemaMode', () => {
       { choices: [{ finish_reason: 'tool_calls', message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'request_human_input', arguments: JSON.stringify({ title: 'T', fields: '[{"name":"x","type":"text"}]', choices: 'not json' }) } }] } }] },
       'flash', ctx, 'mindgate',
     );
-    const use = msg.content.find(b => b.type === 'tool_use') as Anthropic.ToolUseBlock;
+    const use = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.deepEqual((use.input as Record<string, unknown>)['fields'], [{ name: 'x', type: 'text' }]);
     assert.equal((use.input as Record<string, unknown>)['choices'], 'not json', 'undecodable values are left for schema validation to report');
   });
 
   it("'full' models are untouched and 'none' models get no tools at all", () => {
-    const full = toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], ctxFor('deepseek', 'deepseek-chat'));
+    const full = toChatTools([nestedTool] as Llm.MessageCreateParams['tools'], ctxFor('deepseek', 'deepseek-chat'));
     assert.equal((full[0]!.function.parameters as { properties: Record<string, { type: string }> }).properties['fields']!.type, 'array');
     const none = { ...ctxFor('mindgate', 'flash'), modelInfo: { ...getModelInfo('@mindgate/flash'), toolSchemaMode: 'none' as const } };
-    assert.deepEqual(toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], none), []);
+    assert.deepEqual(toChatTools([nestedTool] as Llm.MessageCreateParams['tools'], none), []);
   });
 });
 
@@ -479,7 +479,7 @@ describe('OpenAiCompatClient — MindGate tool-call parse failures', () => {
     assert.equal(bodies.length, 2, 'one failed attempt (no transient retries) + one tools-less retry');
     assert.ok(bodies[0]!.tools);
     assert.equal(bodies[1]!.tools, undefined);
-    const text = (res.content[0] as Anthropic.TextBlock).text;
+    const text = (res.content[0] as Llm.TextBlock).text;
     assert.match(text, /without tools/);
     assert.match(text, /Hello without tools/);
   });

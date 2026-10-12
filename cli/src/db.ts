@@ -85,19 +85,6 @@ export function runMigrations(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_gazeta_status ON gazeta_items(status);
 
-    CREATE TABLE IF NOT EXISTS batch_jobs (
-      id              TEXT PRIMARY KEY,
-      conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
-      custom_id       TEXT NOT NULL,
-      user_text       TEXT NOT NULL,
-      preview         TEXT NOT NULL,
-      status          TEXT NOT NULL DEFAULT 'pending',
-      result_text     TEXT,
-      submitted_at    TEXT NOT NULL DEFAULT (datetime('now')),
-      resolved_at     TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_batch_conv ON batch_jobs(conversation_id);
-    CREATE INDEX IF NOT EXISTS idx_batch_status ON batch_jobs(status);
 
     -- Phase 2: Custom Skills system
     -- allowed_tools is a JSON array of tool name strings (informational; not
@@ -135,16 +122,8 @@ export function runMigrations(db: Database.Database): void {
       updated_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- Per-provider soft spend cap (a warning, not a hard stop). Separate from
-    -- provider_keys so an env-supplied key can have a threshold too.
-    CREATE TABLE IF NOT EXISTS provider_limits (
-      provider         TEXT PRIMARY KEY,
-      warn_usd_monthly REAL,
-      warned_period    TEXT
-    );
-
     -- Phase 3: one row per billed API response. Not FK'd to conversations on
-    -- purpose: deleting a chat must not rewrite spend history.
+    -- purpose: deleting a chat must not rewrite usage history.
     CREATE TABLE IF NOT EXISTS usage_log (
       id              INTEGER PRIMARY KEY AUTOINCREMENT,
       ts              TEXT NOT NULL,
@@ -154,10 +133,7 @@ export function runMigrations(db: Database.Database): void {
       input_tokens    INTEGER NOT NULL DEFAULT 0,
       output_tokens   INTEGER NOT NULL DEFAULT 0,
       cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-      cost_usd        REAL NOT NULL DEFAULT 0,
-      pricing_known   INTEGER NOT NULL DEFAULT 1,
-      batch           INTEGER NOT NULL DEFAULT 0
+      cache_read_tokens  INTEGER NOT NULL DEFAULT 0
     );
     CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts);
     CREATE INDEX IF NOT EXISTS idx_usage_conv ON usage_log(conversation_id);
@@ -391,8 +367,8 @@ export function deleteConversation(db: Database.Database, id: string): boolean {
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 export interface MessageParam {
-  /** Present from getMessages(); a bare type-cast to Anthropic.MessageParam[] elsewhere in
-   * the codebase ignores it, and sanitizeHistory() in anthropic-loop.ts strips it before any
+  /** Present from getMessages(); a bare type-cast to Llm.MessageParam[] elsewhere in
+   * the codebase ignores it, and sanitizeHistory() in llm-loop.ts strips it before any
    * request actually reaches the API. */
   id?: number;
   role: string;
@@ -498,7 +474,7 @@ export function getLastActiveMessage(
  * Walks backward from (and including) `fromId` through the active branch to
  * find the nearest user message — the "anchor" a regenerate/retry re-sends.
  * Needed because a single logical turn can span several raw rows (one per
- * tool-loop round trip per anthropic-loop.ts), so "the message right before
+ * tool-loop round trip per llm-loop.ts), so "the message right before
  * this one" isn't necessarily the user turn that started it — pass null for
  * fromId to search from the end of the conversation (used by retry).
  */
@@ -655,8 +631,6 @@ export function dismissGazetaItem(db: Database.Database, id: string): boolean {
     .run(id);
   return result.changes > 0;
 }
-
-// (Batch jobs were removed with the Anthropic Batch API; the `batch_jobs` table is kept so old rows aren't lost.)
 
 // ─── Skills ───────────────────────────────────────────────────────────────────
 
@@ -981,7 +955,7 @@ export function logApprovalAudit(
   });
 }
 
-// ─── Phase 3: provider keys / limits / usage / tool-call meta ────────────────
+// ─── Phase 3: provider keys / usage / tool-call meta ────────────────
 
 export interface ProviderKeyRow {
   provider: string;
@@ -1016,30 +990,6 @@ export function upsertProviderKeyRow(
 
 export function deleteProviderKeyRow(db: Database.Database, provider: string): boolean {
   return db.prepare(`DELETE FROM provider_keys WHERE provider = ?`).run(provider).changes > 0;
-}
-
-export interface ProviderLimit {
-  warnUsdMonthly: number | null;
-  warnedPeriod: string | null;
-}
-
-export function getProviderLimit(db: Database.Database, provider: string): ProviderLimit {
-  const row = db
-    .prepare(`SELECT warn_usd_monthly AS warnUsdMonthly, warned_period AS warnedPeriod FROM provider_limits WHERE provider = ?`)
-    .get(provider) as ProviderLimit | undefined;
-  return row ?? { warnUsdMonthly: null, warnedPeriod: null };
-}
-
-export function setProviderWarnLimit(db: Database.Database, provider: string, warnUsdMonthly: number | null): void {
-  // Changing the threshold re-arms the warning for the current month.
-  db.prepare(
-    `INSERT INTO provider_limits (provider, warn_usd_monthly, warned_period) VALUES (?, ?, NULL)
-     ON CONFLICT(provider) DO UPDATE SET warn_usd_monthly = excluded.warn_usd_monthly, warned_period = NULL`,
-  ).run(provider, warnUsdMonthly);
-}
-
-export function markProviderWarned(db: Database.Database, provider: string, period: string): void {
-  db.prepare(`UPDATE provider_limits SET warned_period = ? WHERE provider = ?`).run(period, provider);
 }
 
 export function setToolCallMeta(db: Database.Database, toolCallId: string, provider: string, meta: Record<string, unknown>): void {

@@ -34,7 +34,7 @@ describe('ToolRegistry', () => {
     const registry = new ToolRegistry(['read_log', 'get_path']);
     await registry.loadFrom([fakeConnection('sandbox', sandboxTools), fakeConnection('obsidian', obsidianTools)]);
 
-    const names = registry.toAnthropicTools().map(t => t.name).sort();
+    const names = registry.toLlmTools().map(t => t.name).sort();
     assert.deepEqual(names, ['obsidian__get_path', 'obsidian__write_note', 'sandbox__read_log', 'sandbox__run_bash']);
   });
 

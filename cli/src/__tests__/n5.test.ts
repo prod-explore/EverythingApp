@@ -62,7 +62,7 @@ describe('N5 connectors', () => {
       const ok = await call(t.port, 'POST', '/api/custom-connectors', { name: 'n8n', url: 'https://n8n.example/mcp', token: 'tok123' });
       assert.equal(ok.status, 201);
       assert.equal(ok.json.error, null);
-      const tools = t.registry.toAnthropicTools();
+      const tools = t.registry.toLlmTools();
       assert.deepEqual(tools.map(x => [x.name, x.description]), [['n8n__ping', 'auth=tok123']]);
 
       const bad = await call(t.port, 'POST', '/api/custom-connectors', { name: 'broken', url: 'https://down.example/mcp' });
@@ -71,10 +71,10 @@ describe('N5 connectors', () => {
       assert.deepEqual(list.map((c: any) => [c.name, c.connected, c.toolCount, c.hasToken]), [['n8n', true, 1, true], ['broken', false, 0, false]]);
 
       await call(t.port, 'POST', '/api/custom-connectors/n8n/disable');
-      assert.equal(t.registry.toAnthropicTools().length, 0);
+      assert.equal(t.registry.toLlmTools().length, 0);
       assert.deepEqual(t.closed, ['n8n']);
       await call(t.port, 'POST', '/api/custom-connectors/n8n/reconnect');
-      assert.equal(t.registry.toAnthropicTools().length, 1);
+      assert.equal(t.registry.toLlmTools().length, 1);
       await call(t.port, 'DELETE', '/api/custom-connectors/n8n');
       assert.equal(t.connections.length, 0);
       assert.equal(t.router.vault.hasKey('connector:n8n').present, false);

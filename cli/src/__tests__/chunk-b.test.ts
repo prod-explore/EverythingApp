@@ -102,7 +102,7 @@ before(async () => {
     connections: [],
     llm: fakeAnthropicClient,
     authToken: AUTH,
-    config: { model: 'claude-test', autoApproveTools: [] },
+    config: { model: '@test/model', autoApproveTools: [] },
   });
   stopApp = built.stop;
   server = await listen(built.app);
@@ -273,11 +273,11 @@ test('createSubagentRun + resolveSubagentRun + listSubagentRuns round-trip', asy
   const db3 = openDb(':memory:');
   runMigrations(db3);
 
-  const conv = createConversation(db3, { title: 'parent', model: 'claude-test' });
+  const conv = createConversation(db3, { title: 'parent', model: '@test/model' });
   const run = createSubagentRun(db3, {
     conversationId: conv.id,
     goal: 'Do something',
-    model: 'claude-haiku',
+    model: '@test/small',
     allowedTools: ['sandbox__bash'],
   });
 
@@ -303,11 +303,11 @@ test('failSubagentRun marks the run as error with a message', async () => {
   const db4 = openDb(':memory:');
   runMigrations(db4);
 
-  const conv = createConversation(db4, { title: 'parent', model: 'claude-test' });
+  const conv = createConversation(db4, { title: 'parent', model: '@test/model' });
   const run = createSubagentRun(db4, {
     conversationId: conv.id,
     goal: 'Fail intentionally',
-    model: 'claude-haiku',
+    model: '@test/small',
     allowedTools: [],
   });
 

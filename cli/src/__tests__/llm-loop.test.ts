@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
-import { runTurn, type AnthropicLike } from '../anthropic-loop.js';
+import type * as Llm from '../llm-types.js';
+import { runTurn, type LlmClient } from '../llm-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { McpConnectionLike, McpToolInfo } from '../mcp-client.js';
 
@@ -18,16 +18,16 @@ function fakeConnection(name: string, tools: McpToolInfo[], calls: string[]): Mc
   };
 }
 
-/** Builds a minimally-valid fake Anthropic.Message — only the fields runTurn reads matter for the test. */
+/** Builds a minimally-valid fake Llm.Message — only the fields runTurn reads matter for the test. */
 function fakeMessage(
-  content: Anthropic.ContentBlock[],
-  stopReason: Anthropic.StopReason,
-): Anthropic.Message {
+  content: Llm.ContentBlock[],
+  stopReason: Llm.StopReason,
+): Llm.Message {
   return {
     id: 'msg_fake',
     container: null,
     content,
-    model: 'claude-sonnet-5',
+    model: '@test/model',
     role: 'assistant',
     stop_reason: stopReason,
     stop_sequence: null,
@@ -41,27 +41,27 @@ function fakeMessage(
       service_tier: null,
       cache_creation: null,
     },
-  } as unknown as Anthropic.Message;
+  } as unknown as Llm.Message;
 }
 
-function textBlock(text: string): Anthropic.ContentBlock {
-  return { type: 'text', text, citations: null } as unknown as Anthropic.ContentBlock;
+function textBlock(text: string): Llm.ContentBlock {
+  return { type: 'text', text, citations: null } as unknown as Llm.ContentBlock;
 }
 
-function toolUseBlock(id: string, name: string, input: Record<string, unknown>): Anthropic.ContentBlock {
-  return { type: 'tool_use', id, name, input } as unknown as Anthropic.ContentBlock;
+function toolUseBlock(id: string, name: string, input: Record<string, unknown>): Llm.ContentBlock {
+  return { type: 'tool_use', id, name, input } as unknown as Llm.ContentBlock;
 }
 
-function scriptedAnthropic(responses: Anthropic.Message[]): AnthropicLike & { calls: Anthropic.MessageCreateParamsNonStreaming[] } {
+function scriptedLlm(responses: Llm.Message[]): LlmClient & { calls: Llm.MessageCreateParamsNonStreaming[] } {
   let i = 0;
-  const calls: Anthropic.MessageCreateParamsNonStreaming[] = [];
+  const calls: Llm.MessageCreateParamsNonStreaming[] = [];
   return {
     calls,
     messages: {
       async create(params) {
         calls.push(params);
         const response = responses[i];
-        if (!response) throw new Error('scriptedAnthropic ran out of responses');
+        if (!response) throw new Error('scriptedLlm ran out of responses');
         i += 1;
         return response;
       },
@@ -88,11 +88,11 @@ describe('runTurn', () => {
   it('returns immediately on a plain text reply, no tool calls made', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls);
-    const anthropic = scriptedAnthropic([fakeMessage([textBlock('cześć')], 'end_turn')]);
+    const llm = scriptedLlm([fakeMessage([textBlock('cześć')], 'end_turn')]);
     const texts: string[] = [];
 
     const history = await runTurn(
-      { anthropic, model: 'claude-sonnet-5', tools, systemPrompt: 'sys', confirm: async () => true, onAssistantText: t => texts.push(t) },
+      { llm, model: '@test/model', tools, systemPrompt: 'sys', confirm: async () => true, onAssistantText: t => texts.push(t) },
       [],
       'hej',
     );
@@ -102,31 +102,28 @@ describe('runTurn', () => {
     assert.equal(history.length, 2); // user + assistant
   });
 
-  it('marks the system prompt and last tool def as cacheable (prompt caching)', async () => {
+  it('sends the system prompt as plain text and the tool definitions untouched', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls, ['read_log']);
-    const anthropic = scriptedAnthropic([fakeMessage([textBlock('cześć')], 'end_turn')]);
+    const llm = scriptedLlm([fakeMessage([textBlock('cześć')], 'end_turn')]);
 
     await runTurn(
-      { anthropic, model: 'claude-sonnet-5', tools, systemPrompt: 'sys prompt', confirm: async () => true },
+      { llm, model: '@test/model', tools, systemPrompt: 'sys prompt', confirm: async () => true },
       [],
       'hej',
     );
 
-    const [request] = anthropic.calls;
-    const system = request.system as Anthropic.TextBlockParam[];
-    assert.equal(system[0]?.cache_control?.type, 'ephemeral');
-
-    const toolDefs = request.tools as Anthropic.Tool[];
-    assert.equal(toolDefs.at(-1)?.cache_control?.type, 'ephemeral');
-    // Only the last tool def carries the breakpoint — caching a prefix doesn't need every entry marked.
-    assert.equal(toolDefs[0]?.cache_control, undefined);
+    const [request] = llm.calls;
+    assert.equal(request.system, 'sys prompt');
+    const toolDefs = request.tools as Llm.Tool[];
+    assert.ok(toolDefs.length > 0);
+    assert.equal(JSON.stringify(request).includes('cache_control'), false);
   });
 
   it('executes an approved tool call and feeds the result back for a second turn', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls);
-    const anthropic = scriptedAnthropic([
+    const llm = scriptedLlm([
       fakeMessage([toolUseBlock('t1', 'sandbox__run_bash', { command: 'ls' })], 'tool_use'),
       fakeMessage([textBlock('gotowe')], 'end_turn'),
     ]);
@@ -134,8 +131,8 @@ describe('runTurn', () => {
 
     const history = await runTurn(
       {
-        anthropic,
-        model: 'claude-sonnet-5',
+        llm,
+        model: '@test/model',
         tools,
         systemPrompt: 'sys',
         confirm: async () => {
@@ -158,27 +155,27 @@ describe('runTurn', () => {
   it('does not execute the tool when the approval gate denies it, and tells the model why', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls);
-    const anthropic = scriptedAnthropic([
+    const llm = scriptedLlm([
       fakeMessage([toolUseBlock('t1', 'sandbox__run_bash', { command: 'rm -rf /' })], 'tool_use'),
       fakeMessage([textBlock('ok, nie robię tego')], 'end_turn'),
     ]);
 
     const history = await runTurn(
-      { anthropic, model: 'claude-sonnet-5', tools, systemPrompt: 'sys', confirm: async () => false },
+      { llm, model: '@test/model', tools, systemPrompt: 'sys', confirm: async () => false },
       [],
       'zrób coś ryzykownego',
     );
 
     assert.deepEqual(calls, []); // tool never actually ran
-    const toolResultMsg = history[2] as Anthropic.MessageParam;
-    const block = (toolResultMsg.content as Anthropic.ToolResultBlockParam[])[0];
+    const toolResultMsg = history[2] as Llm.MessageParam;
+    const block = (toolResultMsg.content as Llm.ToolResultBlockParam[])[0];
     assert.equal(block.is_error, true);
   });
 
   it('skips the confirm step entirely for whitelisted (read-only) tools', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls, ['read_log']);
-    const anthropic = scriptedAnthropic([
+    const llm = scriptedLlm([
       fakeMessage([toolUseBlock('t1', 'sandbox__read_log', {})], 'tool_use'),
       fakeMessage([textBlock('oto log')], 'end_turn'),
     ]);
@@ -186,8 +183,8 @@ describe('runTurn', () => {
 
     await runTurn(
       {
-        anthropic,
-        model: 'claude-sonnet-5',
+        llm,
+        model: '@test/model',
         tools,
         systemPrompt: 'sys',
         confirm: async () => {
@@ -223,15 +220,15 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
     const registry = new ToolRegistry(['browser_act']); // auto-approve to skip the confirm() prompt in this test
     await registry.loadFrom([connectionCapturingArgs('playwright', ['browser_act'], calls)]);
 
-    const anthropic = scriptedAnthropic([
+    const llm = scriptedLlm([
       fakeMessage([toolUseBlock('t1', 'playwright__browser_act', { action: 'click', ref: 1, label: 'Search' })], 'tool_use'),
       fakeMessage([textBlock('done')], 'end_turn'),
     ]);
 
     await runTurn(
       {
-        anthropic,
-        model: 'claude-sonnet-5',
+        llm,
+        model: '@test/model',
         tools: registry,
         systemPrompt: 'sys',
         confirm: async () => true,
@@ -252,15 +249,15 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
     const registry = new ToolRegistry(['browse_url']);
     await registry.loadFrom([connectionCapturingArgs('playwright', ['browse_url'], calls)]);
 
-    const anthropic = scriptedAnthropic([
+    const llm = scriptedLlm([
       fakeMessage([toolUseBlock('t1', 'playwright__browse_url', { url: 'https://example.com', extract: 'title' })], 'tool_use'),
       fakeMessage([textBlock('done')], 'end_turn'),
     ]);
 
     await runTurn(
       {
-        anthropic,
-        model: 'claude-sonnet-5',
+        llm,
+        model: '@test/model',
         tools: registry,
         systemPrompt: 'sys',
         confirm: async () => true,
@@ -276,7 +273,7 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
 });
 
 describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () => {
-  const askTool: Anthropic.Tool = {
+  const askTool: Llm.Tool = {
     name: 'ask_user',
     description: 'queue a question',
     input_schema: { type: 'object', properties: { q: { type: 'string' } } },
@@ -286,14 +283,14 @@ describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () 
     const registry = new ToolRegistry([]);
     const seenInputs: Record<string, unknown>[] = [];
     const confirmCalls: string[] = [];
-    const client = scriptedAnthropic([
+    const client = scriptedLlm([
       fakeMessage([toolUseBlock('tu_1', 'ask_user', { q: 'why?' })], 'tool_use'),
       fakeMessage([textBlock('done')], 'end_turn'),
     ]);
 
     const history = await runTurn(
       {
-        anthropic: client,
+        llm: client,
         model: 'm',
         tools: registry,
         systemPrompt: 's',
@@ -307,9 +304,9 @@ describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () 
     assert.deepEqual(seenInputs, [{ q: 'why?' }]);
     assert.deepEqual(confirmCalls, [], 'a virtual tool without requiresApproval must not hit the approval gate');
     // The model must see the virtual tool's definition…
-    assert.ok((client.calls[0]!.tools as Anthropic.Tool[]).some(t => t.name === 'ask_user'));
+    assert.ok((client.calls[0]!.tools as Llm.Tool[]).some(t => t.name === 'ask_user'));
     // …and a real result (not "Unknown tool") for the real tool_use id.
-    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    const results = history.at(-2)!.content as Llm.ToolResultBlockParam[];
     assert.equal(results[0]!.tool_use_id, 'tu_1');
     assert.equal(results[0]!.content, 'queued');
     assert.notEqual(results[0]!.is_error, true);
@@ -319,13 +316,13 @@ describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () 
     const registry = new ToolRegistry([]);
     let ran = false;
     const confirmCalls: string[] = [];
-    const client = scriptedAnthropic([
+    const client = scriptedLlm([
       fakeMessage([toolUseBlock('tu_1', 'ask_user', {})], 'tool_use'),
       fakeMessage([textBlock('ok')], 'end_turn'),
     ]);
     const history = await runTurn(
       {
-        anthropic: client,
+        llm: client,
         model: 'm',
         tools: registry,
         systemPrompt: 's',
@@ -337,18 +334,18 @@ describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () 
     );
     assert.deepEqual(confirmCalls, ['ask_user']);
     assert.equal(ran, false);
-    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    const results = history.at(-2)!.content as Llm.ToolResultBlockParam[];
     assert.equal(results[0]!.is_error, true);
   });
 
   it('turns a throwing virtual-tool handler into an is_error result instead of crashing the turn', async () => {
-    const client = scriptedAnthropic([
+    const client = scriptedLlm([
       fakeMessage([toolUseBlock('tu_1', 'ask_user', {})], 'tool_use'),
       fakeMessage([textBlock('recovered')], 'end_turn'),
     ]);
     const history = await runTurn(
       {
-        anthropic: client,
+        llm: client,
         model: 'm',
         tools: new ToolRegistry([]),
         systemPrompt: 's',
@@ -358,7 +355,7 @@ describe('runTurn — virtual tools (executed in-loop by the orchestrator)', () 
       [],
       'hi',
     );
-    const results = history.at(-2)!.content as Anthropic.ToolResultBlockParam[];
+    const results = history.at(-2)!.content as Llm.ToolResultBlockParam[];
     assert.equal(results[0]!.is_error, true);
     assert.match(String(results[0]!.content), /boom/);
   });
@@ -369,13 +366,13 @@ describe('runTurn — kill switch while parked on the approval gate', () => {
     const calls: string[] = [];
     const registry = await registryWithSandbox(calls);
     const controller = new AbortController();
-    const client = scriptedAnthropic([
+    const client = scriptedLlm([
       fakeMessage([toolUseBlock('tu_1', 'sandbox__run_bash', { command: 'ls' })], 'tool_use'),
     ]);
     await assert.rejects(
       runTurn(
         {
-          anthropic: client,
+          llm: client,
           model: 'm',
           tools: registry,
           systemPrompt: 's',
@@ -393,9 +390,9 @@ describe('runTurn — kill switch while parked on the approval gate', () => {
 });
 
 describe('runTurn — streaming text deltas (N2b)', () => {
-  const baseDeps = (client: AnthropicLike, extra: Record<string, unknown> = {}) => ({
-    anthropic: client,
-    model: 'claude-sonnet-5',
+  const baseDeps = (client: LlmClient, extra: Record<string, unknown> = {}) => ({
+    llm: client,
+    model: '@test/model',
     tools: new ToolRegistry([]),
     systemPrompt: 'sys',
     confirm: async () => true,
@@ -404,24 +401,24 @@ describe('runTurn — streaming text deltas (N2b)', () => {
 
   it('forwards text deltas live, then still reports the complete block via onAssistantText', async () => {
     let createCalls = 0;
-    const client: AnthropicLike = {
+    const client: LlmClient = {
       messages: {
         async create() {
           createCalls++;
           throw new Error('create must not be used when stream is available');
         },
         stream() {
-          let listener: ((e: Anthropic.MessageStreamEvent) => void) | undefined;
+          let listener: ((e: Llm.MessageStreamEvent) => void) | undefined;
           return {
             on(_event, l) {
               listener = l;
             },
             async finalMessage() {
               for (const text of ['Hel', 'lo']) {
-                listener?.({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as Anthropic.MessageStreamEvent);
+                listener?.({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } as Llm.MessageStreamEvent);
               }
               // Non-text deltas (tool input JSON) must be ignored.
-              listener?.({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } } as Anthropic.MessageStreamEvent);
+              listener?.({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{}' } } as unknown as Llm.MessageStreamEvent);
               return fakeMessage([textBlock('Hello')], 'end_turn');
             },
           };
@@ -441,7 +438,7 @@ describe('runTurn — streaming text deltas (N2b)', () => {
   });
 
   it('falls back to create() when the client has no stream (e.g. the OpenAI-compatible adapter)', async () => {
-    const client: AnthropicLike = {
+    const client: LlmClient = {
       messages: {
         async create() {
           return fakeMessage([textBlock('whole')], 'end_turn');
@@ -461,7 +458,7 @@ describe('runTurn — streaming text deltas (N2b)', () => {
 
   it('does not stream when nobody listens for deltas (subagents, batch)', async () => {
     let streamed = false;
-    const client: AnthropicLike = {
+    const client: LlmClient = {
       messages: {
         async create() {
           return fakeMessage([textBlock('x')], 'end_turn');
@@ -495,11 +492,11 @@ describe('runTurn — _project_id injection (N3: one sandbox per project)', () =
     ]);
     await runTurn(
       {
-        anthropic: scriptedAnthropic([
+        llm: scriptedLlm([
           fakeMessage([toolUseBlock('t1', `sandbox__${toolName}`, modelArgs)], 'tool_use'),
           fakeMessage([textBlock('done')], 'end_turn'),
         ]),
-        model: 'claude-sonnet-5',
+        model: '@test/model',
         tools: registry,
         systemPrompt: 'sys',
         confirm: async () => true,

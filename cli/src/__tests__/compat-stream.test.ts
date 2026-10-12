@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { OpenAiCompatClient } from '../providers/openai-compat.js';
 import { getModelInfo } from '../providers/registry.js';
 
@@ -17,7 +17,7 @@ function client(fetchImpl: typeof fetch, flavor: 'deepseek' | 'gemini' | 'generi
   return new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id, {}), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
 }
 
-const params = { model: 'deepseek-chat', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Anthropic.MessageCreateParamsNonStreaming;
+const params = { model: 'deepseek-chat', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Llm.MessageCreateParamsNonStreaming;
 
 describe('OpenAI-compat streaming (N2b)', () => {
   it('emits text deltas live and assembles tool_calls split across chunks', async () => {
@@ -40,8 +40,8 @@ describe('OpenAI-compat streaming (N2b)', () => {
     assert.equal(sent.stream, true);
     assert.deepEqual(deltas, ['Let me ', 'check.']);
     assert.equal(msg.stop_reason, 'tool_use');
-    const text = msg.content.find(b => b.type === 'text') as Anthropic.TextBlock;
-    const tool = msg.content.find(b => b.type === 'tool_use') as Anthropic.ToolUseBlock;
+    const text = msg.content.find(b => b.type === 'text') as Llm.TextBlock;
+    const tool = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.equal(text.text, 'Let me check.');
     assert.equal(tool.name, 'srv__x');
     assert.deepEqual(tool.input, { a: 42 });
@@ -57,7 +57,7 @@ describe('OpenAI-compat streaming (N2b)', () => {
       return n++ === 0 ? new Response('busy', { status: 400 }) : new Response(JSON.stringify(ok), { status: 200, headers: { 'content-type': 'application/json' } });
     }) as typeof fetch);
     const msg = await c.messages.stream!(params).finalMessage();
-    assert.equal((msg.content[0] as Anthropic.TextBlock).text, 'plain');
+    assert.equal((msg.content[0] as Llm.TextBlock).text, 'plain');
     assert.deepEqual(bodies.map(b => b.stream), [true, false]);
 
     const gBodies: any[] = [];

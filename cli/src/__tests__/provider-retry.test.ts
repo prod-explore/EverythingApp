@@ -1,11 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { getModelInfo } from '../providers/registry.js';
 import { OpenAiCompatClient, ProviderHttpError, retryDelayMs, type RetryInfo } from '../providers/openai-compat.js';
 
 const ok = { choices: [{ finish_reason: 'stop', message: { content: 'done' } }], usage: { prompt_tokens: 1, completion_tokens: 1 } };
-const req = { model: 'gemini-3.5-flash-lite', max_tokens: 50, messages: [{ role: 'user', content: 'hi' }] } as Anthropic.MessageCreateParamsNonStreaming;
+const req = { model: 'gemini-3.5-flash-lite', max_tokens: 50, messages: [{ role: 'user', content: 'hi' }] } as Llm.MessageCreateParamsNonStreaming;
 
 function scripted(steps: Array<{ status: number; body?: unknown; headers?: Record<string, string> } | 'network'>) {
   let i = 0;
@@ -52,7 +52,7 @@ describe('budgeted retry (provider peak hours)', () => {
     const f = scripted([...Array(6).fill({ status: 429, body: 'quota' }), { status: 200, body: ok }]);
     const { c, sleeps, retries } = client(f.impl, { retryBudgetMs: 12 * 3_600_000 });
     const res = await c.messages.create(req);
-    assert.equal((res.content[0] as Anthropic.TextBlock).text, 'done');
+    assert.equal((res.content[0] as Llm.TextBlock).text, 'done');
     assert.equal(f.calls(), 7);
     assert.equal(sleeps.length, 6);
     assert.ok(sleeps.every(ms => ms >= 1000 && ms <= 300_000));

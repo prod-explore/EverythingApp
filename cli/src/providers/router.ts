@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { LlmClient } from '../anthropic-loop.js';
+import type { LlmClient } from '../llm-loop.js';
 import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { ModelCatalog, type CatalogModel, type DiscoveryResult } from './catalog.js';
 import { KeyVault } from './key-vault.js';
@@ -50,7 +50,7 @@ export interface ResolvedModel {
   client: LlmClient;
 }
 
-export type PickerModel = ModelInfo & { available: boolean; providerLabel: string; pricingKnown: boolean };
+export type PickerModel = ModelInfo & { available: boolean; providerLabel: string };
 
 export interface RouterOptions {
   db: Database.Database;
@@ -97,11 +97,11 @@ export class ProviderRouter {
   // ── keys ──────────────────────────────────────────────────────────────────
 
   private resolveKey(provider: ProviderRecord): string | null {
-    const cached = this.keyCache.get(provider.keyRef);
+    const cached = this.keyCache.get(provider.slug);
     if (cached) return cached;
-    const fromVault = this.vault.read(provider.keyRef);
+    const fromVault = this.vault.read(provider.slug);
     if (fromVault.status === 'ok') {
-      this.keyCache.set(provider.keyRef, fromVault.key);
+      this.keyCache.set(provider.slug, fromVault.key);
       return fromVault.key;
     }
     // Keyless local servers (LM Studio, vLLM on the LAN) are allowed when the provider says so.
@@ -110,15 +110,15 @@ export class ProviderRouter {
 
   saveKey(slug: ProviderId, apiKey: string): { last4: string } {
     const p = this.requireProvider(slug);
-    const result = this.vault.set(p.keyRef, apiKey);
-    this.keyCache.delete(p.keyRef);
+    const result = this.vault.set(p.slug, apiKey);
+    this.keyCache.delete(p.slug);
     return result;
   }
 
   removeKey(slug: ProviderId): boolean {
     const p = this.requireProvider(slug);
-    const removed = this.vault.delete(p.keyRef);
-    this.keyCache.delete(p.keyRef);
+    const removed = this.vault.delete(p.slug);
+    this.keyCache.delete(p.slug);
     return removed;
   }
 
@@ -130,16 +130,15 @@ export class ProviderRouter {
 
   /** Removes a provider with its models and its stored key. */
   removeProvider(slug: ProviderId): boolean {
-    const removed = this.catalog.remove(slug);
-    if (!removed) return false;
-    this.vault.delete(removed.keyRef);
-    this.keyCache.delete(removed.keyRef);
+    if (!this.catalog.remove(slug)) return false;
+    this.vault.delete(slug);
+    this.keyCache.delete(slug);
     return true;
   }
 
   status(): ProviderStatus[] {
     return this.catalog.list().map(p => {
-      const stored = this.vault.hasKey(p.keyRef);
+      const stored = this.vault.hasKey(p.slug);
       const key = this.resolveKey(p);
       const models = this.catalog.providerModels(p.slug);
       return {
@@ -171,7 +170,7 @@ export class ProviderRouter {
   }
 
   private notConfigured(provider: ProviderRecord): ProviderNotConfiguredError {
-    if (this.vault.hasKey(provider.keyRef).present) {
+    if (this.vault.hasKey(provider.slug).present) {
       return new ProviderNotConfiguredError(
         provider.slug,
         `The stored ${provider.label} key can't be decrypted with the current KEY_VAULT_SECRET — re-enter it in Settings → Models.`,
@@ -188,17 +187,17 @@ export class ProviderRouter {
       fetchImpl: this.opts.fetchImpl,
       ...(provider.flavor === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
       onRetry: info => this.onProviderRetry?.(info),
-      modelInfo: id => getModelInfo(id, this.env),
+      modelInfo: id => getModelInfo(id),
       upstreamModel: id => parseModelId(id)?.upstream ?? id,
       meta: withMeta
-        ? { get: id => getToolCallMeta(this.opts.db, id, provider.keyRef), set: (id, meta) => setToolCallMeta(this.opts.db, id, provider.keyRef, meta) }
+        ? { get: id => getToolCallMeta(this.opts.db, id, provider.slug), set: (id, meta) => setToolCallMeta(this.opts.db, id, provider.slug, meta) }
         : { get: () => null, set: () => {} },
     });
   }
 
   clientFor(modelId: string): ResolvedModel {
     if (this.opts.llmOverride) {
-      const info = getModelInfo(modelId, this.env);
+      const info = getModelInfo(modelId);
       return { provider: info.provider, info, client: this.opts.llmOverride };
     }
     const id = modelId;
@@ -214,7 +213,7 @@ export class ProviderRouter {
     if (!known.enabled) throw new UnknownModelError(modelId, `Model "${known.label}" is switched off in Settings → Models.`);
     const key = this.resolveKey(provider);
     if (key === null) throw this.notConfigured(provider);
-    return { provider: provider.slug, info: getModelInfo(id, this.env), client: this.makeClient(provider, key) };
+    return { provider: provider.slug, info: getModelInfo(id), client: this.makeClient(provider, key) };
   }
 
   /** True when a turn on `modelId` could start right now (model known and enabled, provider has its key). */
@@ -226,9 +225,9 @@ export class ProviderRouter {
   models(): PickerModel[] {
     const providers = new Map(this.catalog.list().map(p => [p.slug, p] as const));
     return this.catalog.enabledModels().map(m => {
-      const info = getModelInfo(m.id, this.env);
+      const info = getModelInfo(m.id);
       const p = providers.get(info.provider)!;
-      return { ...info, providerLabel: p.label, available: this.opts.llmOverride ? true : this.resolveKey(p) !== null, pricingKnown: info.pricing !== null };
+      return { ...info, providerLabel: p.label, available: this.opts.llmOverride ? true : this.resolveKey(p) !== null };
     });
   }
 

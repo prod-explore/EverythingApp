@@ -32,7 +32,7 @@ import {
  * JSON round-tripping of message content, foreign-key-less cleanup — is
  * worth covering directly rather than only indirectly via route tests.
  *
- * Does NOT cover the Anthropic API round trip itself (anthropic-loop.ts) —
+ * Does NOT cover the Anthropic API round trip itself (llm-loop.ts) —
  * that needs a real or mocked model response, which is a separate,
  * heavier kind of test from this one.
  */
@@ -106,10 +106,10 @@ describe('db.ts integration', () => {
 
   it('updateConversation only touches the fields provided, and reports whether anything matched', () => {
     const { id } = createConversation(db, { title: 'original' });
-    assert.equal(updateConversation(db, id, { model: 'claude-opus-5' }), true);
+    assert.equal(updateConversation(db, id, { model: '@test/model-b' }), true);
     const conv = getConversation(db, id);
     assert.equal(conv!.title, 'original'); // untouched
-    assert.equal(conv!.model, 'claude-opus-5');
+    assert.equal(conv!.model, '@test/model-b');
     assert.equal(updateConversation(db, 'does-not-exist', { title: 'x' }), false);
   });
 

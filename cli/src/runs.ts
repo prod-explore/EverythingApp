@@ -12,7 +12,6 @@ export const ACTIVE_STATUSES: RunStatus[] = ['running', 'waiting_input', 'waitin
 export interface RunUsage {
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
 }
 
 export interface RunRow {
@@ -29,8 +28,6 @@ export interface RunRow {
   goal: string;
   tools: string[];
   depth: number;
-  /** Every model step goes through the Batch API (50% cheaper, minutes per step). */
-  batch: boolean;
   status: RunStatus;
   result: string | null;
   error: string | null;
@@ -66,7 +63,7 @@ export function migrateRuns(db: Database.Database): void {
       status                     TEXT NOT NULL DEFAULT 'running',
       result                     TEXT,
       error                      TEXT,
-      usage                      TEXT NOT NULL DEFAULT '{"inputTokens":0,"outputTokens":0,"costUsd":0}',
+      usage                      TEXT NOT NULL DEFAULT '{"inputTokens":0,"outputTokens":0}',
       heartbeat_at               TEXT,
       created_at                 TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       finished_at                TEXT
@@ -86,8 +83,6 @@ export function migrateRuns(db: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS idx_run_messages ON run_messages(run_id, delivered);
   `);
-  const cols = db.prepare(`PRAGMA table_info(runs)`).all() as Array<{ name: string }>;
-  if (!cols.some(c => c.name === 'batch')) db.exec(`ALTER TABLE runs ADD COLUMN batch INTEGER NOT NULL DEFAULT 0`);
 }
 
 function toRow(r: Record<string, unknown>): RunRow {
@@ -103,7 +98,6 @@ function toRow(r: Record<string, unknown>): RunRow {
     goal: r['goal'] as string,
     tools: JSON.parse(r['tools'] as string) as string[],
     depth: r['depth'] as number,
-    batch: Boolean(r['batch']),
     status: r['status'] as RunStatus,
     result: (r['result'] as string | null) ?? null,
     error: (r['error'] as string | null) ?? null,
@@ -127,12 +121,11 @@ export function createRun(
     goal: string;
     tools?: string[];
     depth?: number;
-    batch?: boolean;
   },
 ): RunRow {
   const row = db.prepare(`
-    INSERT INTO runs (parent_run_id, root_run_id, project_id, conversation_id, transcript_conversation_id, label, model, goal, tools, depth, batch, heartbeat_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    INSERT INTO runs (parent_run_id, root_run_id, project_id, conversation_id, transcript_conversation_id, label, model, goal, tools, depth, heartbeat_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))
     RETURNING *
   `).get(
     opts.parentRunId ?? null,
@@ -145,7 +138,6 @@ export function createRun(
     opts.goal.slice(0, 4000),
     JSON.stringify(opts.tools ?? []),
     opts.depth ?? 0,
-    opts.batch ? 1 : 0,
   ) as Record<string, unknown>;
   if (!opts.rootRunId) {
     db.prepare(`UPDATE runs SET root_run_id = id WHERE id = ?`).run(row['id']);
@@ -189,7 +181,6 @@ export function addRunUsage(db: Database.Database, id: string, delta: RunUsage):
   const usage = {
     inputTokens: run.usage.inputTokens + delta.inputTokens,
     outputTokens: run.usage.outputTokens + delta.outputTokens,
-    costUsd: run.usage.costUsd + delta.costUsd,
   };
   db.prepare(`UPDATE runs SET usage = ? WHERE id = ?`).run(JSON.stringify(usage), id);
   return usage;
@@ -200,8 +191,8 @@ export function treeUsage(db: Database.Database, rootRunId: string): RunUsage {
   const rows = db.prepare(`SELECT usage FROM runs WHERE root_run_id = ?`).all(rootRunId) as Array<{ usage: string }>;
   return rows.reduce<RunUsage>((acc, r) => {
     const u = JSON.parse(r.usage) as RunUsage;
-    return { inputTokens: acc.inputTokens + u.inputTokens, outputTokens: acc.outputTokens + u.outputTokens, costUsd: acc.costUsd + u.costUsd };
-  }, { inputTokens: 0, outputTokens: 0, costUsd: 0 });
+    return { inputTokens: acc.inputTokens + u.inputTokens, outputTokens: acc.outputTokens + u.outputTokens };
+  }, { inputTokens: 0, outputTokens: 0 });
 }
 
 export function countTreeRuns(db: Database.Database, rootRunId: string): number {

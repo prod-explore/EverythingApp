@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { openDb, runMigrations } from '../db.js';
 import { seedBuiltinCatalog } from './catalog-fixture.js';
 import { OpenAiCompatClient, recoverJsonToolCalls } from '../providers/openai-compat.js';
@@ -25,7 +25,7 @@ describe('recoverJsonToolCalls', () => {
   });
 });
 
-const params = { model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Anthropic.MessageCreateParamsNonStreaming;
+const params = { model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Llm.MessageCreateParamsNonStreaming;
 const mk = (fetchImpl: typeof fetch, flavor: 'mindgate' | 'deepseek' = 'mindgate') =>
   new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id, {}), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
 const json = (content: string) => new Response(JSON.stringify({ id: 'r', model: 'm', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -39,7 +39,7 @@ describe('MindGate text tool calls', () => {
     const msg = await mk((async () => json('```json\n{"name":"srv__x","arguments":{"a":5}}\n```')) as typeof fetch).messages.create(params);
     assert.equal(msg.stop_reason, 'tool_use');
     assert.equal(msg.content.some(b => b.type === 'text'), false);
-    const tool = msg.content.find(b => b.type === 'tool_use') as Anthropic.ToolUseBlock;
+    const tool = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.deepEqual(tool.input, { a: 5 });
   });
   it('does not touch the same reply for other flavors', async () => {

@@ -1,8 +1,7 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from './llm-types.js';
 import type Database from 'better-sqlite3';
 import { createGazetaItem, type GazetaItem } from './db.js';
-import type { AnthropicLike } from './anthropic-loop.js';
-import { cacheableSystem } from './anthropic-loop.js';
+import type { LlmClient } from './llm-loop.js';
 
 export type { GazetaItem };
 
@@ -130,9 +129,9 @@ export function handleRequestHumanInput(
  */
 export async function generateDailySummary(
   db: Database.Database,
-  anthropic: AnthropicLike,
+  llm: LlmClient,
   model: string,
-  onUsage?: (u: Anthropic.Usage) => void,
+  onUsage?: (u: Llm.Usage) => void,
 ): Promise<string> {
   const systemPrompt = 'You are a concise daily briefing assistant. Summarize the provided items in plain markdown. Be brief.';
 
@@ -151,10 +150,10 @@ export async function generateDailySummary(
     .map((item, i) => `${i + 1}. [${item.type}] ${item.title}\n${item.description ?? ''}`)
     .join('\n\n');
 
-  const response = await anthropic.messages.create({
+  const response = await llm.messages.create({
     model,
     max_tokens: 1024,
-    system: cacheableSystem(systemPrompt),
+    system: systemPrompt,
     messages: [{ role: 'user', content: `Summarize these ${pending.length} pending items:\n\n${itemsText}` }],
   });
 

@@ -97,7 +97,7 @@ export function createN5Routes(deps: N5Deps) {
         connected: connections.some(c => c.name === r.name),
         error: connectorErrors.get(r.name) ?? null,
         hasToken: vault.hasKey(`connector:${r.name}`).present,
-        toolCount: registry.toAnthropicTools().filter(t => t.name.startsWith(`${r.name}__`)).length,
+        toolCount: registry.toLlmTools().filter(t => t.name.startsWith(`${r.name}__`)).length,
       })),
     });
   });

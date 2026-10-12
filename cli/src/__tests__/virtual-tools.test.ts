@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { buildApp } from '../server.js';
 import { ProviderRouter } from '../providers/router.js';
 import { openDb, runMigrations, listGazetaItems, getMessages } from '../db.js';
@@ -15,7 +15,7 @@ import { openDb, runMigrations, listGazetaItems, getMessages } from '../db.js';
 const TOKEN = 't';
 const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
 const msg = (content: unknown[], stop: string) =>
-  ({ id: 'm', container: null, content, model: 'claude-sonnet-5', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Anthropic.Message;
+  ({ id: 'm', container: null, content, model: '@test/model-a', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Llm.Message;
 
 function req(port: number, method: string, path: string, body?: unknown): Promise<{ status: number; json: any }> {
   return new Promise((resolve, reject) => {
@@ -46,11 +46,11 @@ const waitFor = async (cond: () => boolean, ms = 3000) => {
 
 describe('request_human_input as an in-loop virtual tool', () => {
   it('creates exactly one Gazeta item, never hits the approval gate, gives the model a real result, and does not duplicate on later turns', async () => {
-    const seen: Anthropic.MessageParam[][] = [];
+    const seen: Llm.MessageParam[][] = [];
     let call = 0;
     const client = {
       messages: {
-        async create(p: Anthropic.MessageCreateParamsNonStreaming) {
+        async create(p: Llm.MessageCreateParamsNonStreaming) {
           seen.push(JSON.parse(JSON.stringify(p.messages)));
           call++;
           if (call === 1) return msg([{ type: 'tool_use', id: 'toolu_1', name: 'request_human_input', input: { title: 'Q1', description: 'details' } }], 'tool_use');
@@ -85,7 +85,7 @@ describe('request_human_input as an in-loop virtual tool', () => {
       assert.deepEqual((await req(port, 'GET', '/api/pending-approvals')).json.pending, [], 'virtual tool must not park in the approval gate');
       assert.equal(listGazetaItems(db).length, 1);
 
-      const toolResult = (seen[1]!.at(-1)!.content as Anthropic.ToolResultBlockParam[])[0]!;
+      const toolResult = (seen[1]!.at(-1)!.content as Llm.ToolResultBlockParam[])[0]!;
       assert.equal(toolResult.tool_use_id, 'toolu_1');
       assert.notEqual(toolResult.is_error, true);
       assert.match(String(toolResult.content), /The user answered:\s*yes/);
@@ -104,12 +104,12 @@ describe('request_human_input as an in-loop virtual tool', () => {
 });
 
 describe('Gazeta as one inbox (N6)', () => {
-  async function boot(script: (call: number, p: Anthropic.MessageCreateParamsNonStreaming) => Anthropic.Message) {
+  async function boot(script: (call: number, p: Llm.MessageCreateParamsNonStreaming) => Llm.Message) {
     let call = 0;
-    const seen: Anthropic.MessageCreateParamsNonStreaming[] = [];
+    const seen: Llm.MessageCreateParamsNonStreaming[] = [];
     const client = {
       messages: {
-        async create(p: Anthropic.MessageCreateParamsNonStreaming) { seen.push(JSON.parse(JSON.stringify(p))); return script(++call, p); },
+        async create(p: Llm.MessageCreateParamsNonStreaming) { seen.push(JSON.parse(JSON.stringify(p))); return script(++call, p); },
         batches: { create() { throw new Error('unused'); }, retrieve() { throw new Error('unused'); }, results() { throw new Error('unused'); } },
       },
     };

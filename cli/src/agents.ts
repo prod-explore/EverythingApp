@@ -1,8 +1,8 @@
 import { withModelIdentity } from './providers/identity.js';
 import type Database from 'better-sqlite3';
 import { allowPaidAgents, isFreeModel, resolveSlot } from './slots.js';
-import type Anthropic from '@anthropic-ai/sdk';
-import { runTurn, StepLimitError, type LlmClient, type VirtualTool, type ConversationDeps } from './anthropic-loop.js';
+import type * as Llm from './llm-types.js';
+import { runTurn, StepLimitError, type LlmClient, type VirtualTool, type ConversationDeps } from './llm-loop.js';
 
 type ConversationBrowserPolicy = NonNullable<ConversationDeps['browserPolicy']>;
 import type { ToolRegistry } from './tool-registry.js';
@@ -34,7 +34,7 @@ import {
  *   list_agents     get_run     stop_agent
  *
  * Guards: worker tools ⊆ parent tools (narrowing only); depth, spawns-per-tree, steps and a per-tree
- * budget (soft warning + hard stop); stop/kill switch stops the whole subtree; one approval gate with
+ * token budget (soft warning + hard stop); stop/kill switch stops the whole subtree; one approval gate with
  * an agent label; a queue per provider (cloud: a few in parallel, local: one at a time).
  */
 
@@ -42,9 +42,8 @@ export interface AgentLimits {
   maxDepth: number;
   maxSpawnsPerTree: number;
   maxSteps: number;
-  /** Soft (warning) and hard (stop the tree) budget per run tree, USD. Unpriced models count 0 → tokens cap too. */
-  softBudgetUsd: number;
-  hardBudgetUsd: number;
+  /** Soft (warning) and hard (stop the tree) token budget per run tree. The app keeps no prices, so budgets are in tokens. */
+  softBudgetTokens: number;
   hardBudgetTokens: number;
   /** Concurrent model calls per provider. */
   providerConcurrency: Partial<Record<string, number>>;
@@ -53,14 +52,13 @@ export interface AgentLimits {
 
 export function limitsFromEnv(env: NodeJS.ProcessEnv = process.env): AgentLimits {
   const num = (k: string, d: number) => (env[k] && Number.isFinite(Number(env[k])) ? Number(env[k]) : d);
-  const hard = num('AGENT_TREE_BUDGET_USD', 2);
+  const hard = num('AGENT_TREE_MAX_TOKENS', 3_000_000);
   return {
     maxDepth: num('AGENT_MAX_DEPTH', 2),
     maxSpawnsPerTree: num('AGENT_MAX_SPAWNS', 12),
     maxSteps: num('AGENT_MAX_STEPS', 40),
-    softBudgetUsd: num('AGENT_TREE_SOFT_BUDGET_USD', hard / 2),
-    hardBudgetUsd: hard,
-    hardBudgetTokens: num('AGENT_TREE_MAX_TOKENS', 3_000_000),
+    softBudgetTokens: num('AGENT_TREE_SOFT_MAX_TOKENS', hard / 2),
+    hardBudgetTokens: hard,
     // Local inference (MindGate / Ollama / LM Studio) can only serve one request at a time on the Pi side.
     providerConcurrency: { mindgate: num('AGENT_CONCURRENCY_LOCAL', 1), ollama: num('AGENT_CONCURRENCY_LOCAL', 1), local: num('AGENT_CONCURRENCY_LOCAL', 1) },
     defaultConcurrency: num('AGENT_CONCURRENCY_CLOUD', 3),
@@ -100,7 +98,7 @@ export interface AgentManagerDeps {
   sse: SSEManager;
   limits?: AgentLimits;
   /** Usage of every worker API call → the usage ledger; returns its cost. */
-  recordUsage: (u: { conversationId: string | null; provider: ProviderId; model: string; usage: Anthropic.Usage }) => number;
+  recordUsage: (u: { conversationId: string | null; provider: ProviderId; model: string; usage: Llm.Usage }) => void;
   /** The project's browser policy for worker browser calls. */
   browserPolicyOf?: (projectId: string | null) => ConversationBrowserPolicy | undefined;
   /** Extra virtual tools every worker gets (e.g. request_human_input wired to Gazeta with the run's label). */
@@ -143,7 +141,7 @@ export class AgentManager {
 
   /** Allowed tool names for a run: root = everything in the registry; workers = their (already narrowed) list. */
   private toolsOf(run: RunRow): string[] {
-    return run.depth === 0 && run.tools.length === 0 ? this.deps.registry.toAnthropicTools().map(t => t.name) : run.tools;
+    return run.depth === 0 && run.tools.length === 0 ? this.deps.registry.toLlmTools().map(t => t.name) : run.tools;
   }
 
   /**
@@ -187,7 +185,7 @@ export class AgentManager {
       return { error: `spawn limit reached for this task (max ${this.limits.maxSpawnsPerTree} agents)` };
     }
     const usage = treeUsage(db, parent.rootRunId);
-    if (usage.costUsd >= this.limits.hardBudgetUsd || usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
+    if (usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
       return { error: 'budget for this task is exhausted — no more agents can be started' };
     }
     try {
@@ -237,13 +235,13 @@ export class AgentManager {
     if (!TERMINAL(run.status)) return { error: 'agent is still running' };
     if (!run.transcriptConversationId) return { error: 'this agent has no saved transcript to continue from' };
     const usage = treeUsage(db, run.rootRunId);
-    if (usage.costUsd >= this.limits.hardBudgetUsd || usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
+    if (usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
       return { error: 'budget for this task is exhausted' };
     }
     try { this.deps.router.clientFor(run.model); } catch (err) { return { error: `model unavailable: ${(err as Error).message}` }; }
 
-    const stored = getMessages(db, run.transcriptConversationId) as Array<Anthropic.MessageParam & { id?: number }>;
-    const history = stored.map(m => ({ role: m.role, content: m.content }) as Anthropic.MessageParam);
+    const stored = getMessages(db, run.transcriptConversationId) as Array<Llm.MessageParam & { id?: number }>;
+    const history = stored.map(m => ({ role: m.role, content: m.content }) as Llm.MessageParam);
     const lastMessageId = stored.length ? (stored[stored.length - 1]!.id ?? null) : null;
 
     setRunStatus(db, run.id, 'running');
@@ -263,7 +261,7 @@ export class AgentManager {
    * Runs the agent loop. `resume` continues a finished agent: its saved transcript is the history and the
    * follow-up message is the new user turn (only the new messages are appended to the transcript).
    */
-  private async execute(run: RunRow, controller: AbortController, resume?: { history: Anthropic.MessageParam[]; lastMessageId: number | null; message: string }): Promise<void> {
+  private async execute(run: RunRow, controller: AbortController, resume?: { history: Llm.MessageParam[]; lastMessageId: number | null; message: string }): Promise<void> {
     const { db, router, registry, approval } = this.deps;
     const signal = controller.signal;
     const heartbeat = setInterval(() => heartbeatRun(db, run.id), 15_000);
@@ -283,7 +281,7 @@ export class AgentManager {
       const history = await runTurn(
         {
           // Queue every model call through the provider's semaphore.
-          anthropic: queuedClient(client as LlmClient, sem, signal),
+          llm: queuedClient(client as LlmClient, sem, signal),
           model: run.model,
           maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
           tools,
@@ -310,8 +308,8 @@ export class AgentManager {
             }
           },
           onUsage: usage => {
-            const costUsd = this.deps.recordUsage({ conversationId: run.conversationId, provider, model: run.model, usage });
-            addRunUsage(db, run.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, costUsd });
+            this.deps.recordUsage({ conversationId: run.conversationId, provider, model: run.model, usage });
+            addRunUsage(db, run.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens });
             this.enforceBudget(run);
           },
         },
@@ -347,13 +345,13 @@ export class AgentManager {
   private enforceBudget(run: RunRow): void {
     const usage = treeUsage(this.deps.db, run.rootRunId);
     const tokens = usage.inputTokens + usage.outputTokens;
-    if (usage.costUsd >= this.limits.hardBudgetUsd || tokens >= this.limits.hardBudgetTokens) {
-      this.stopTree(run.rootRunId, `budget exhausted ($${usage.costUsd.toFixed(2)}, ${tokens} tokens)`, { includeRoot: false });
-    } else if (usage.costUsd >= this.limits.softBudgetUsd && !this.softWarned.has(run.rootRunId)) {
+    if (tokens >= this.limits.hardBudgetTokens) {
+      this.stopTree(run.rootRunId, `budget exhausted (${tokens} tokens)`, { includeRoot: false });
+    } else if (tokens >= this.limits.softBudgetTokens && !this.softWarned.has(run.rootRunId)) {
       this.softWarned.add(run.rootRunId);
       postRunMessage(this.deps.db, {
         runId: run.rootRunId, fromRunId: null, fromLabel: 'budget (system)',
-        body: `This task's agents have used $${usage.costUsd.toFixed(2)} of the $${this.limits.hardBudgetUsd.toFixed(2)} budget. Wrap up soon.`,
+        body: `This task's agents have used ${tokens} of the ${this.limits.hardBudgetTokens} token budget. Wrap up soon.`,
       });
       if (run.conversationId) this.deps.sse.emit(run.conversationId, 'agent:budget_warning', { rootRunId: run.rootRunId, usage });
     }
@@ -493,7 +491,7 @@ export class AgentManager {
           if (!me) return { text: 'no run context', isError: true };
           const usage = treeUsage(db, me.rootRunId);
           const runs = listRuns(db, { rootRunId: me.rootRunId }).filter(r => r.id !== me.rootRunId);
-          return { text: `${runs.length} agent(s); task spend $${usage.costUsd.toFixed(3)} of $${this.limits.hardBudgetUsd}.\n` + runs.map(describe).join('\n') };
+          return { text: `${runs.length} agent(s); task used ${usage.inputTokens + usage.outputTokens} of ${this.limits.hardBudgetTokens} tokens.\n` + runs.map(describe).join('\n') };
         },
       },
       {
@@ -532,7 +530,7 @@ function queuedClient(client: LlmClient, sem: Semaphore, signal: AbortSignal): L
     ...client,
     messages: {
       ...client.messages,
-      create: (async (params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }) => {
+      create: (async (params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }) => {
         const release = await sem.acquire(signal);
         try { return await client.messages.create(params, options); } finally { release(); }
       }) as LlmClient['messages']['create'],
@@ -542,7 +540,7 @@ function queuedClient(client: LlmClient, sem: Semaphore, signal: AbortSignal): L
   } as LlmClient;
 }
 
-function lastAssistantText(history: Anthropic.MessageParam[]): string {
+function lastAssistantText(history: Llm.MessageParam[]): string {
   for (let i = history.length - 1; i >= 0; i--) {
     const msg = history[i]!;
     if (msg.role !== 'assistant') continue;

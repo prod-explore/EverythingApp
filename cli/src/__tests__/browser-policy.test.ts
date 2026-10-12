@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
-import { runTurn, browserInjectionSignal } from '../anthropic-loop.js';
+import type * as Llm from '../llm-types.js';
+import { runTurn, browserInjectionSignal } from '../llm-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { McpConnectionLike } from '../mcp-client.js';
 import { openDb, runMigrations } from '../db.js';
@@ -9,7 +9,7 @@ import { WebApprovalGate } from '../web-approval.js';
 
 const usage = { input_tokens: 1, output_tokens: 1, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
 const message = (content: unknown[], stop: string) =>
-  ({ id: 'm', container: null, content, model: 'm', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Anthropic.Message;
+  ({ id: 'm', container: null, content, model: 'm', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Llm.Message;
 
 describe('browserInjectionSignal', () => {
   it('reads the [browser-meta] first line and ignores everything else', () => {
@@ -42,7 +42,7 @@ describe('browser tools in the loop', () => {
     let n = 0;
     await runTurn(
       {
-        anthropic: {
+        llm: {
           messages: {
             async create() {
               n++;

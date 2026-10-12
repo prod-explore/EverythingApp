@@ -35,7 +35,7 @@ describe('projects + conversations API', () => {
     db = openDb(':memory:');
     runMigrations(db);
     const router = new ProviderRouter({ db, env: {} as NodeJS.ProcessEnv, fetchImpl: (async () => new Response('{}')) as typeof fetch });
-    built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [] } });
+    built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '@test/model-a', autoApproveTools: [] } });
     server = built.app.listen(0);
     port = (server.address() as AddressInfo).port;
   });

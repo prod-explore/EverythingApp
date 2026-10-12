@@ -1,15 +1,11 @@
 import type Database from 'better-sqlite3';
-import { getSetting, setSetting } from '../db.js';
 import type { CompatFlavor } from './openai-compat.js';
 import {
-  findPreset,
   formatModelId,
   isModelKind,
-  presetBaseUrl,
   setCatalogSnapshot,
   type ModelInfo,
   type ModelKind,
-  type Pricing,
   type ProviderRecord,
   type ToolSchemaMode,
 } from './registry.js';
@@ -19,8 +15,8 @@ import {
  * adding a provider, discovering its models (`GET {base}/models`), switching a model off, tagging it — and the
  * rest of the app only ever sees the resulting `ModelInfo`s (via the snapshot in registry.ts).
  *
- * A model's effective metadata is layered, later wins:  built-in hint  <  what the provider reported  <  what the
- * user set in Settings. A provider that reports nothing but ids (plain OpenAI-compatible) therefore still works,
+ * A model's effective metadata is layered, later wins:  what the provider reported  <  what the user set in
+ * Settings. A provider that reports nothing but ids (plain OpenAI-compatible) therefore still works,
  * and a gateway that reports richer metadata (kind, tags, context, status — MindGate) is picked up automatically.
  */
 
@@ -44,8 +40,6 @@ export interface ModelFields {
   toolSchemaMode?: ToolSchemaMode;
   contextLength?: number;
   minOutputTokens?: number;
-  /** USD per million tokens. */
-  pricing?: { input: number; output: number };
   status?: 'online' | 'asleep' | 'waking';
 }
 
@@ -104,8 +98,6 @@ export function sanitizeFields(raw: unknown): ModelFields {
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
   const minOut = finiteNum(o['minOutputTokens']);
   if (minOut !== undefined) f.minOutputTokens = Math.trunc(minOut);
-  const p = o['pricing'] as Record<string, unknown> | null | undefined;
-  if (p && finiteNum(p['input']) !== undefined && finiteNum(p['output']) !== undefined) f.pricing = { input: p['input'] as number, output: p['output'] as number };
   if (o['status'] === 'online' || o['status'] === 'asleep' || o['status'] === 'waking') f.status = o['status'];
   return f;
 }
@@ -121,9 +113,9 @@ function guessKind(id: string): ModelKind {
 
 /**
  * One entry of `GET {base}/models` → our ModelFields. Understands the plain OpenAI shape (`id` only), OpenRouter's
- * extensions (`name`, `context_length`, `pricing.prompt/completion` as USD per token, `architecture.input_modalities`,
+ * extensions (`name`, `context_length`, `pricing` — only "free" is used —, `architecture.input_modalities`,
  * `supported_parameters`) and the gateway extensions defined for MindGate: `kind`, `tags`, `description`,
- * `supports` (tools / vision / reasoning), `status`, `pricing.input/output` as USD per million tokens.
+ * `supports` (tools / vision / reasoning), `tool_schema`, `status`.
  */
 export function parseDiscoveredModel(raw: unknown): { id: string; reported: ModelFields } | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -152,23 +144,15 @@ export function parseDiscoveredModel(raw: unknown): { id: string; reported: Mode
   if (arch && Array.isArray(arch.input_modalities) && arch.input_modalities.includes('image')) f.supportsImages = true;
   if (Array.isArray(o['supported_parameters']) && !o['supported_parameters'].includes('tools')) f.toolSchemaMode = 'none';
 
-  const p = o['pricing'] as Record<string, unknown> | undefined;
-  if (p && typeof p === 'object') {
-    const perToken = (v: unknown) => (typeof v === 'string' || typeof v === 'number' ? Number(v) : NaN);
-    const prompt = perToken(p['prompt']);
-    const completion = perToken(p['completion']);
-    if (Number.isFinite(prompt) && Number.isFinite(completion) && prompt >= 0 && completion >= 0) {
-      f.pricing = { input: prompt * 1e6, output: completion * 1e6 };
-    } else if (finiteNum(p['input']) !== undefined && finiteNum(p['output']) !== undefined) {
-      f.pricing = { input: p['input'] as number, output: p['output'] as number };
-    }
+  // The app keeps no prices (that is the gateway's job). The one thing taken from a reported price is "costs
+  // nothing" — OpenRouter lists `:free` models that way — because the `free` tag drives the cost guard.
+  const price = o['pricing'] as Record<string, unknown> | undefined;
+  if (!f.tags && price && typeof price === 'object') {
+    const zero = (v: unknown) => (typeof v === 'string' || typeof v === 'number') && Number(v) === 0;
+    if ((zero(price['prompt']) && zero(price['completion'])) || (zero(price['input']) && zero(price['output']))) f.tags = ['free'];
   }
-  // Priced at zero and not labelled otherwise: it is a free model.
-  if (!f.tags && f.pricing && f.pricing.input === 0 && f.pricing.output === 0) f.tags = ['free'];
   return { id, reported: f };
 }
-
-const toPricing = (p: { input: number; output: number }): Pricing => ({ input: p.input, output: p.output, cacheWrite: p.input, cacheRead: p.input / 10 });
 
 const parseJson = (s: unknown): ModelFields => {
   if (typeof s !== 'string') return {};
@@ -187,7 +171,6 @@ export function migrateCatalogSchema(db: Database.Database): void {
       flavor       TEXT NOT NULL DEFAULT 'generic',
       enabled      INTEGER NOT NULL DEFAULT 1,
       concurrency  INTEGER,
-      key_ref      TEXT NOT NULL,
       position     INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -205,10 +188,7 @@ export function migrateCatalogSchema(db: Database.Database): void {
   `);
 }
 
-const tableExists = (db: Database.Database, name: string): boolean =>
-  !!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?`).get(name);
-
-interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null; key_ref: string }
+interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null }
 interface ModelRow { provider: string; model_id: string; enabled: number; source: string; reported: string; overrides: string }
 
 const toRecord = (r: ProviderRow): ProviderRecord => ({
@@ -219,7 +199,6 @@ const toRecord = (r: ProviderRow): ProviderRecord => ({
   flavor: isFlavor(r.flavor) ? r.flavor : 'generic',
   enabled: r.enabled === 1,
   concurrency: r.concurrency,
-  keyRef: r.key_ref,
 });
 
 export interface DiscoveryResult {
@@ -235,8 +214,6 @@ export class ModelCatalog {
     private readonly env: NodeJS.ProcessEnv = process.env,
   ) {
     migrateCatalogSchema(db);
-    this.importLegacy();
-    this.migrateStoredModelIds();
     this.sync();
   }
 
@@ -254,8 +231,8 @@ export class ModelCatalog {
   create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; keyRef?: string }): ProviderRecord {
     const pos = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM providers`).get() as { p: number }).p;
     this.db
-      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, key_ref, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, input.keyRef ?? input.slug, pos);
+      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, pos);
     this.sync();
     return this.get(input.slug)!;
   }
@@ -281,16 +258,15 @@ export class ModelCatalog {
     return true;
   }
 
-  /** Removes the provider and its models; returns the vault row name so the caller can drop the key. */
-  remove(slug: string): { keyRef: string } | null {
-    const p = this.get(slug);
-    if (!p) return null;
+  /** Removes the provider and its models (its key lives in the vault under the slug; the caller drops that). */
+  remove(slug: string): boolean {
+    if (!this.get(slug)) return false;
     this.db.transaction(() => {
       this.db.prepare(`DELETE FROM provider_models WHERE provider = ?`).run(slug);
       this.db.prepare(`DELETE FROM providers WHERE slug = ?`).run(slug);
     })();
     this.sync();
-    return { keyRef: p.keyRef };
+    return true;
   }
 
   // ── models ─────────────────────────────────────────────────────────────────
@@ -404,7 +380,6 @@ export class ModelCatalog {
       const provider = providers.get(r.provider)!;
       const rep = parseJson(r.reported);
       const ov = parseJson(r.overrides);
-      const pricing = ov.pricing ? toPricing(ov.pricing) : rep.pricing ? toPricing(rep.pricing) : null;
       const tags = ov.tags ?? rep.tags ?? [];
       return {
         id: formatModelId(r.provider, r.model_id),
@@ -414,7 +389,6 @@ export class ModelCatalog {
         kind: ov.kind ?? rep.kind ?? 'chat',
         tags,
         description: ov.description ?? rep.description ?? '',
-        pricing,
         supportsImages: ov.supportsImages ?? rep.supportsImages ?? false,
         // Thinking models spend output tokens on reasoning before the answer: Gemini always does, others say so with the tag.
         minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (provider.flavor === 'gemini' || tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
@@ -438,91 +412,4 @@ export class ModelCatalog {
     }
     setCatalogSnapshot({ providers, models });
   }
-
-  // ── one-time import of the pre-unification setup ───────────────────────────
-
-  /**
-   * Before the unification the app had four hard-wired providers (anthropic, gemini, deepseek, mindgate) plus
-   * "custom providers" from Settings. Providers that were actually in use are carried over — custom ones with
-   * their model lists, built-in ones when a key was stored for them — and stored model ids are rewritten to
-   * `@provider/model`.
-   * Anthropic is gone on purpose: a leftover Anthropic key stays in the vault, unused.
-   */
-  private importLegacy(): void {
-    if (getSetting(this.db, 'catalog_v1')) return;
-    this.db.transaction(() => {
-      const hasKeys = tableExists(this.db, 'provider_keys');
-      const keyed = new Set<string>(hasKeys ? (this.db.prepare(`SELECT provider FROM provider_keys`).all() as Array<{ provider: string }>).map(r => r.provider) : []);
-
-      if (tableExists(this.db, 'custom_providers')) {
-        const rows = this.db.prepare(`SELECT * FROM custom_providers ORDER BY created_at`).all() as Array<Record<string, unknown>>;
-        for (const r of rows) {
-          const slug = String(r['slug']);
-          if (!SLUG_RE.test(slug) || this.get(slug)) continue;
-          this.create({ slug, label: String(r['label'] ?? slug), baseUrl: String(r['base_url']), keyOptional: r['key_optional'] === 1, flavor: 'generic', keyRef: `custom:${slug}` });
-          let models: unknown[] = [];
-          try { models = JSON.parse(String(r['models'] ?? '[]')) as unknown[]; } catch { /* no models */ }
-          for (const m of models) {
-            const o = (m ?? {}) as Record<string, unknown>;
-            if (typeof o['id'] === 'string') this.addManual(slug, o['id'], sanitizeFields({ label: o['label'], supportsImages: o['supportsImages'], toolSchemaMode: o['toolSchemaMode'], pricing: o['pricing'] }));
-          }
-        }
-      }
-
-      // Built-in providers that had a stored key come over as providers; their models appear with the first "Refresh models".
-      for (const slug of ['mindgate', 'gemini', 'deepseek']) {
-        const preset = findPreset(slug);
-        if (!preset || !keyed.has(slug) || this.get(slug)) continue;
-        this.create({ slug, label: preset.label, baseUrl: presetBaseUrl(preset, this.env), keyOptional: preset.keyOptional, flavor: preset.flavor, concurrency: preset.concurrency });
-      }
-
-      setSetting(this.db, 'catalog_v1', '1');
-    })();
-  }
-
-  /**
-   * Model ids stored before the provider unification were bare and the provider was implied by the name. One-time
-   * rewrite to `@provider/model` everywhere they are kept. The rule needs no list of model names: the old app had
-   * exactly four providers — `claude-*` (Anthropic, gone: left alone), `gemini*`, `deepseek*`, and everything else
-   * was a MindGate model.
-   */
-  private migrateStoredModelIds(): void {
-    if (getSetting(this.db, 'catalog_v2')) return;
-    this.db.transaction(() => {
-      const remap = (table: string, column: string, where = '') => {
-        if (!tableExists(this.db, table)) return;
-        const rows = this.db.prepare(`SELECT DISTINCT ${column} AS v FROM ${table} WHERE ${column} IS NOT NULL ${where}`).all() as Array<{ v: string }>;
-        for (const { v } of rows) {
-          const next = legacyModelId(v);
-          if (next !== v) this.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ? ${where}`).run(next, v);
-        }
-      };
-      remap('conversations', 'model');
-      remap('approval_grants', 'subject_id', `AND subject_type = 'model'`);
-      remap('usage_log', 'model');
-      remap('runs', 'model');
-      remap('subagent_runs', 'model');
-
-      // A default pointing at a model that no longer exists (e.g. the old "claude-sonnet-5") is cleared, so new
-      // chats pick a usable model instead of failing; one that is in the catalog is kept.
-      const current = getSetting(this.db, 'default_model');
-      if (current) {
-        const next = legacyModelId(current);
-        const parsed = /^@([a-z0-9][a-z0-9-]{0,31})\/(.+)$/.exec(next);
-        const exists = parsed && this.db.prepare(`SELECT 1 FROM provider_models WHERE provider = ? AND model_id = ?`).get(parsed[1], parsed[2]);
-        setSetting(this.db, 'default_model', exists ? next : '');
-      }
-      setSetting(this.db, 'catalog_v2', '1');
-    })();
-  }
-}
-
-/** Bare pre-unification id → canonical id (see migrateStoredModelIds); canonical ids and `claude-*` pass through. */
-export function legacyModelId(raw: string): string {
-  if (!raw || /^@[a-z0-9][a-z0-9-]{0,31}\/.+$/.test(raw)) return raw;
-  const id = raw.toLowerCase();
-  if (id.startsWith('claude')) return raw;
-  if (id.startsWith('gemini')) return formatModelId('gemini', raw);
-  if (id.startsWith('deepseek')) return formatModelId('deepseek', raw);
-  return formatModelId('mindgate', raw);
 }

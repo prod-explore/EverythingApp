@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { OpenAiCompatClient, ProviderHttpError } from '../providers/openai-compat.js';
 import { getModelInfo } from '../providers/registry.js';
 
@@ -18,7 +18,7 @@ function client(handler: (url: string, n: number) => Response) {
 }
 
 const ask = (c: OpenAiCompatClient) =>
-  c.messages.create({ model: 'flash', max_tokens: 50, messages: [{ role: 'user', content: 'hi' }] } as Anthropic.MessageCreateParamsNonStreaming);
+  c.messages.create({ model: 'flash', max_tokens: 50, messages: [{ role: 'user', content: 'hi' }] } as Llm.MessageCreateParamsNonStreaming);
 
 describe('gateway adapter', () => {
   it('listModels returns data[] (or models[]) and sends the key', async () => {

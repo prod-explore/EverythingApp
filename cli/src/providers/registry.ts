@@ -20,14 +20,6 @@ export const isModelKind = (v: unknown): v is ModelKind => typeof v === 'string'
 
 export type ToolSchemaMode = 'full' | 'flat' | 'none';
 
-/** USD per million tokens. */
-export interface Pricing {
-  input: number;
-  output: number;
-  cacheWrite: number;
-  cacheRead: number;
-}
-
 export interface ModelInfo {
   /** Canonical id: `@<provider>/<upstream>`. */
   id: string;
@@ -40,8 +32,6 @@ export interface ModelInfo {
   tags: string[];
   /** One line for the orchestrator's model list. */
   description: string;
-  /** null = we don't know this model's price; the ledger records the call with cost 0 and flags it as unpriced. */
-  pricing: Pricing | null;
   supportsImages: boolean;
   /**
    * Floor for max_tokens. Reasoning models spend the output budget on thinking first, so the loop's default
@@ -75,8 +65,6 @@ export interface ProviderRecord {
   enabled: boolean;
   /** Concurrent model calls for agent workers; null = default (3). Local inference: 1. */
   concurrency: number | null;
-  /** Row name in the key vault (`gemini`, or `custom:<slug>` for providers created before the unification). */
-  keyRef: string;
 }
 
 // ─── Model ids ───────────────────────────────────────────────────────────────
@@ -115,40 +103,8 @@ export function providerLabel(slug: string): string {
 }
 
 /** Every model in the catalog (enabled or not), in the order providers/models were added. */
-export function listCatalog(env: NodeJS.ProcessEnv = process.env): ModelInfo[] {
-  return [...snapshot.models.values()].map(m => withPricingOverride(m, env));
-}
-
-/**
- * MODEL_PRICING_JSON='{"@gemini/gemini-3.8-flash":{"input":0.3,"output":0.5}}' — per-model price overrides
- * (USD per million tokens) without a code change; keys may be the canonical id or the bare upstream id.
- * Unspecified cacheWrite defaults to `input`, cacheRead to input/10. Also how you price a model nobody priced.
- */
-function loadOverrides(env: NodeJS.ProcessEnv): Record<string, Partial<Pricing>> {
-  const raw = env['MODEL_PRICING_JSON'];
-  if (!raw) return {};
-  try {
-    const parsed = JSON.parse(raw) as unknown;
-    return typeof parsed === 'object' && parsed !== null ? (parsed as Record<string, Partial<Pricing>>) : {};
-  } catch {
-    console.warn('[pricing] MODEL_PRICING_JSON is not valid JSON — ignoring it.');
-    return {};
-  }
-}
-
-function withPricingOverride(base: ModelInfo, env: NodeJS.ProcessEnv): ModelInfo {
-  const overrides = loadOverrides(env);
-  const override = overrides[base.id] ?? overrides[base.upstream];
-  if (!override || typeof override.input !== 'number' || typeof override.output !== 'number') return base;
-  return {
-    ...base,
-    pricing: {
-      input: override.input,
-      output: override.output,
-      cacheWrite: override.cacheWrite ?? override.input,
-      cacheRead: override.cacheRead ?? override.input / 10,
-    },
-  };
+export function listCatalog(): ModelInfo[] {
+  return [...snapshot.models.values()];
 }
 
 /** A model nobody told us about (old conversation, typo, provider removed): conservative defaults, never throws. */
@@ -163,13 +119,12 @@ function fallbackInfo(id: string): ModelInfo {
     kind: 'chat',
     tags: [],
     description: '',
-    pricing: null,
     supportsImages: false,
   };
 }
 
-export function getModelInfo(modelId: string, env: NodeJS.ProcessEnv = process.env): ModelInfo {
-  return withPricingOverride(snapshot.models.get(modelId) ?? fallbackInfo(modelId), env);
+export function getModelInfo(modelId: string): ModelInfo {
+  return snapshot.models.get(modelId) ?? fallbackInfo(modelId);
 }
 
 /** False for a model that can't call tools — the app is an agent framework, so such a model is not offered anywhere. */

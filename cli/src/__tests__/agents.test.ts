@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { AgentManager, type AgentLimits } from '../agents.js';
-import { runTurn } from '../anthropic-loop.js';
+import { runTurn } from '../llm-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import { WebApprovalGate } from '../web-approval.js';
 import { SSEManager } from '../sse.js';
@@ -16,7 +16,7 @@ import { ProviderRouter } from '../providers/router.js';
 
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
 const message = (content: unknown[], stop: string) =>
-  ({ id: 'm', container: null, content, model: 'm', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Anthropic.Message;
+  ({ id: 'm', container: null, content, model: 'm', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Llm.Message;
 const text = (t: string) => ({ type: 'text', text: t, citations: null });
 const toolUse = (id: string, name: string, input: Record<string, unknown> = {}) => ({ type: 'tool_use', id, name, input });
 const tick = () => new Promise(r => setTimeout(r, 5));
@@ -26,7 +26,7 @@ const LIMITS: AgentLimits = {
   providerConcurrency: {}, defaultConcurrency: 3,
 };
 
-type Script = (p: Anthropic.MessageCreateParamsNonStreaming) => Anthropic.Message | Promise<Anthropic.Message>;
+type Script = (p: Llm.MessageCreateParamsNonStreaming) => Llm.Message | Promise<Llm.Message>;
 
 async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; autoApprove?: string[]; cost?: number } = {}) {
   const db = openDb(':memory:');
@@ -45,12 +45,12 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
   };
   const registry = new ToolRegistry(opts.autoApprove ?? ['x', 'y']);
   await registry.loadFrom([conn]);
-  const requests: Anthropic.MessageCreateParamsNonStreaming[] = [];
+  const requests: Llm.MessageCreateParamsNonStreaming[] = [];
   let active = 0;
   let maxActive = 0;
   const client = {
     messages: {
-      async create(p: Anthropic.MessageCreateParamsNonStreaming) {
+      async create(p: Llm.MessageCreateParamsNonStreaming) {
         requests.push(p);
         active++; maxActive = Math.max(maxActive, active);
         try { await tick(); return await script(p); } finally { active--; }
@@ -75,8 +75,8 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
   return { db, conv, agents, root, controller, requests, executed, gate, router, maxActive: () => maxActive };
 }
 
-const isWorker = (p: Anthropic.MessageCreateParamsNonStreaming) => JSON.stringify(p.system).includes('worker agent');
-const toolNames = (p: Anthropic.MessageCreateParamsNonStreaming) => ((p.tools ?? []) as Anthropic.Tool[]).map(t => t.name);
+const isWorker = (p: Llm.MessageCreateParamsNonStreaming) => JSON.stringify(p.system).includes('worker agent');
+const toolNames = (p: Llm.MessageCreateParamsNonStreaming) => ((p.tools ?? []) as Llm.Tool[]).map(t => t.name);
 
 describe('runs table', () => {
   it('tracks trees, usage, mailbox and interrupts orphans at startup', () => {
@@ -102,12 +102,12 @@ describe('runs table', () => {
 
 describe('runTurn inbox', () => {
   it('delivers drained messages into the latest user turn at a step boundary', async () => {
-    const seen: Anthropic.MessageParam[][] = [];
+    const seen: Llm.MessageParam[][] = [];
     let n = 0;
     const inbox = [['[message from a]\nfirst'], [], []];
     await runTurn(
       {
-        anthropic: { messages: { async create(p: Anthropic.MessageCreateParamsNonStreaming) { seen.push(structuredClone(p.messages)); return n++ === 0 ? message([toolUse('t1', 'v')], 'tool_use') : message([text('ok')], 'end_turn'); } } },
+        llm: { messages: { async create(p: Llm.MessageCreateParamsNonStreaming) { seen.push(structuredClone(p.messages)); return n++ === 0 ? message([toolUse('t1', 'v')], 'tool_use') : message([text('ok')], 'end_turn'); } } },
         model: 'm', tools: new ToolRegistry([]), systemPrompt: 's', confirm: async () => true,
         virtualTools: [{ definition: { name: 'v', description: 'v', input_schema: { type: 'object' } }, handler: async () => ({ text: 'done' }) }],
         drainInbox: () => inbox.shift() ?? [],

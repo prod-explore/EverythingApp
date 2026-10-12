@@ -5,12 +5,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from './llm-types.js';
 import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
-import { runTurn, type LlmClient, type VirtualTool } from './anthropic-loop.js';
+import { runTurn, type LlmClient, type VirtualTool } from './llm-loop.js';
 import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
@@ -73,8 +73,6 @@ import {
   getConversationSkills,
   attachSkill,
   detachSkill,
-  setProviderWarnLimit,
-  getProviderLimit,
   createArtifact, getArtifactsTotalBytes,
   listArtifacts,
   getArtifact,
@@ -96,7 +94,7 @@ const DEFAULT_SYSTEM_PROMPT = `You are a personal AI assistant running inside Ev
 
 
 /** Plain text of the assistant messages a turn produced — input for the free-tier title. */
-function textOfHistory(msgs: Anthropic.MessageParam[]): string {
+function textOfHistory(msgs: Llm.MessageParam[]): string {
   return msgs
     .filter(m => m.role === 'assistant')
     .map(m => (typeof m.content === 'string' ? m.content : (m.content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text ?? '').join(' ')))
@@ -118,16 +116,16 @@ type SupportedImageType = (typeof SUPPORTED_IMAGE_TYPES)[number];
 const MAX_ATTACHMENT_BASE64_LENGTH = 8_000_000;
 
 /**
- * Builds the content to send to Anthropic (and to persist) from a composer
+ * Builds the content to send to the model (and to persist) from a composer
  * submission: plain text, or text + inline image attachments. Returns null
  * when there's nothing usable to send (Phase 1 — images only; other file
  * types are a follow-up, see the Full Build Roadmap in the vault).
  */
-function buildMessageContent(rawContent: unknown, rawAttachments: unknown): Anthropic.MessageParam['content'] | null {
+function buildMessageContent(rawContent: unknown, rawAttachments: unknown): Llm.MessageParam['content'] | null {
   const text = typeof rawContent === 'string' ? rawContent : '';
   const attachments = Array.isArray(rawAttachments) ? rawAttachments : [];
 
-  const imageBlocks: Anthropic.ImageBlockParam[] = [];
+  const imageBlocks: Llm.ImageBlockParam[] = [];
   for (const a of attachments) {
     if (typeof a !== 'object' || a === null) continue;
     const mediaType = (a as Record<string, unknown>)['mediaType'];
@@ -144,7 +142,7 @@ function buildMessageContent(rawContent: unknown, rawAttachments: unknown): Anth
   if (imageBlocks.length === 0) {
     return text.trim() ? text : null;
   }
-  const blocks: Anthropic.ContentBlockParam[] = [...imageBlocks];
+  const blocks: Llm.ContentBlockParam[] = [...imageBlocks];
   if (text.trim()) blocks.push({ type: 'text', text });
   return blocks;
 }
@@ -256,7 +254,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
-  console.log(`[tools] loaded ${registry.toAnthropicTools().length} tools from MCP`);
+  console.log(`[tools] loaded ${registry.toLlmTools().length} tools from MCP`);
 
   // ─── N5: custom providers + UI connectors ──────────────────────────────────
   migrateN5(db);
@@ -292,7 +290,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   });
 
   // request_human_input / spawn_agent are orchestrator-executed virtual tools (see VirtualTool in
-  // anthropic-loop.ts) and work with any provider. Web access is a tool (browser connector), not a model feature.
+  // llm-loop.ts) and work with any provider. Web access is a tool (browser connector), not a model feature.
 
   const isString = (v: unknown): v is string => typeof v === 'string';
 
@@ -302,9 +300,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     db, router, registry, approval: approvalGate, sse,
     browserPolicyOf: projectId => browserPolicyOf(projectId),
     recordUsage: ({ conversationId, provider, model, usage }) => {
-      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage });
-      if (warning) sse.emitAll('usage:warning', warning);
-      return costUsd;
+      ledger.record({ conversationId, provider, model, usage });
     },
     workerExtraTools: (run, signal) => [
       humanInputTool({ convId: run.conversationId ?? '', projectId: run.projectId, runId: run.id, agent: run.label }, signal),
@@ -359,7 +355,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
 
   function humanInputTool(origin: Origin, _signal?: AbortSignal): VirtualTool {
     return {
-      definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Anthropic.Tool,
+      definition: REQUEST_HUMAN_INPUT_TOOL as unknown as Llm.Tool,
       handler: async (input, ctx) => {
         const title = isString(input.title) ? input.title.trim() : '';
         const description = isString(input.description) ? input.description.trim() : '';
@@ -405,7 +401,7 @@ ${formatHumanResponse(response)}` };
 
   function reportTool(origin: Origin): VirtualTool {
     return {
-      definition: POST_REPORT_TOOL as unknown as Anthropic.Tool,
+      definition: POST_REPORT_TOOL as unknown as Llm.Tool,
       handler: async input => {
         const title = isString(input.title) ? input.title.trim() : '';
         const body = isString(input.body) ? input.body.trim() : '';
@@ -611,7 +607,7 @@ ${formatHumanResponse(response)}` };
   // ─── Connectors ───────────────────────────────────────────────────────────
   app.get('/api/connectors', (_req, res) => {
     const data = connections.map(conn => {
-      const tools = registry.toAnthropicTools().filter(t => t.name.startsWith(`${conn.name}__`));
+      const tools = registry.toLlmTools().filter(t => t.name.startsWith(`${conn.name}__`));
       return {
         name: conn.name,
         connected: true, // if it's in the list, it connected at startup
@@ -821,8 +817,8 @@ ${formatHumanResponse(response)}` };
   function kickoffLiveTurn(
     convId: string,
     conv: NonNullable<ReturnType<typeof getConversation>>,
-    historyBeforeTurn: Anthropic.MessageParam[],
-    content: Anthropic.MessageParam['content'],
+    historyBeforeTurn: Llm.MessageParam[],
+    content: Llm.MessageParam['content'],
     userMessageId: number,
   ): number {
     const counter = (turnCounters.get(convId) ?? 0) + 1;
@@ -854,8 +850,7 @@ ${formatHumanResponse(response)}` };
       }
       // `||` not `??`: an empty-string setting (e.g. global_system_prompt
       // saved as "" from the Settings UI) must fall through to the default
-      // too — `??` only catches null/undefined, and Anthropic's API rejects
-      // a system text block with cache_control on empty text.
+      // too — `??` only catches null/undefined.
       let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
       // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
@@ -892,7 +887,7 @@ ${formatHumanResponse(response)}` };
 
         const updatedHistory = await runTurn(
           {
-            anthropic: client,
+            llm: client,
             model: effectiveModel,
             maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
             tools: registry,
@@ -921,9 +916,8 @@ ${m.body}`),
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });
             },
             onUsage: usage => {
-              const { costUsd, warning } = ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
-              addRunUsage(db, rootRun.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, costUsd });
-              if (warning) sse.emitAll('usage:warning', warning);
+              ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
+              addRunUsage(db, rootRun.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens });
             },
           },
           historyBeforeTurn,
@@ -1005,8 +999,8 @@ ${m.body}`),
     if (!anchor) return { ok: false, status: 404, error: 'no prior user message found to regenerate from' };
 
     deactivateMessagesFrom(db, convId, anchor.id);
-    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
-    const resendContent = anchor.content as Anthropic.MessageParam['content'];
+    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
+    const resendContent = anchor.content as Llm.MessageParam['content'];
     const userMessageId = appendMessage(db, convId, 'user', resendContent, anchor.parentId);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, resendContent, userMessageId);
     return { ok: true, turnId };
@@ -1032,7 +1026,7 @@ ${m.body}`),
     // Live turn — runs detached from the HTTP request. historyBeforeTurn is
     // read BEFORE the optimistic append below, so it never includes the
     // message we're about to store.
-    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
     const userMessageId = appendMessage(db, convId, 'user', content);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
     res.json({ ok: true, turnId });
@@ -1069,7 +1063,7 @@ ${m.body}`),
     }
 
     deactivateMessagesFrom(db, convId, afterId !== null ? afterId + 1 : 0);
-    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
     const userMessageId = appendMessage(db, convId, 'user', content, afterId);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
     res.json({ ok: true, turnId });
@@ -1249,7 +1243,7 @@ ${formatHumanResponse(response)}`;
     // Idle chat: append as a user message and start a turn so the agent continues.
     const conv = getConversation(db, convId);
     if (!conv) return;
-    const historyBeforeTurn = getMessages(db, convId) as Anthropic.MessageParam[];
+    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
     const userMessageId = appendMessage(db, convId, 'user', text);
     kickoffLiveTurn(convId, conv, historyBeforeTurn, text, userMessageId);
   }
@@ -1439,7 +1433,7 @@ ${formatHumanResponse(response)}`;
     res.json({
       vaultEnabled: router.vault.enabled,
       vaultDisabledReason: router.vault.disabledReason,
-      providers: router.status().map(p => ({ ...p, warnUsdMonthly: getProviderLimit(db, p.id).warnUsdMonthly })),
+      providers: router.status(),
       presets: router.availablePresets(),
     });
   });
@@ -1533,26 +1527,11 @@ ${formatHumanResponse(response)}`;
     res.json(await router.refreshModels(p.slug));
   });
 
-  app.put('/api/providers/:id/limits', (req, res) => {
-    const p = providerOr404(req.params.id, res);
-    if (!p) return;
-    const v = req.body?.warnUsdMonthly;
-    if (v !== null && !(typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1_000_000)) {
-      res.status(400).json({ error: 'expected { warnUsdMonthly: number > 0 | null }' });
-      return;
-    }
-    setProviderWarnLimit(db, p.slug, v);
-    res.json({ ok: true });
-  });
-
-  const stripPricing = <T extends { pricing: unknown }>({ pricing, ...rest }: T) => ({ ...rest, pricingKnown: pricing !== null });
-
   /** Every model of one provider (also the switched-off ones) with their effective metadata — the Settings editor. */
   app.get('/api/providers/:id/models', (req, res) => {
     const p = providerOr404(req.params.id, res);
     if (!p) return;
-    // The editor also gets the effective price (USD per million tokens) so it can be shown and overridden.
-    res.json({ models: router.providerModels(p.slug).map(({ pricing, ...rest }) => ({ ...rest, pricingKnown: pricing !== null, pricing: pricing ? { input: pricing.input, output: pricing.output } : null })) });
+    res.json({ models: router.providerModels(p.slug) });
   });
 
   /** Adds a model id by hand — for a provider without /models, or one that hides some. */
@@ -1567,13 +1546,13 @@ ${formatHumanResponse(response)}`;
 
   /** Pickers: enabled models of enabled providers (each flagged `available` when its provider has a key). Filter on `kind`. */
   app.get('/api/models', (_req, res) => {
-    res.json({ models: router.models().map(stripPricing) });
+    res.json({ models: router.models() });
   });
 
   /** Switch a model on/off or set its metadata; a field set to null goes back to what the provider reports. */
   app.patch('/api/models', (req, res) => {
     const { id, enabled, ...fields } = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'expected { id, enabled?, label?, kind?, tags?, description?, supportsImages?, toolSchemaMode?, pricing? }' }); return; }
+    if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'expected { id, enabled?, label?, kind?, tags?, description?, supportsImages?, toolSchemaMode? }' }); return; }
     const ok = router.catalog.updateModel(id, { enabled: typeof enabled === 'boolean' ? enabled : undefined, fields });
     if (!ok) { res.status(404).json({ error: 'unknown model' }); return; }
     res.json({ ok: true });
@@ -1585,7 +1564,7 @@ ${formatHumanResponse(response)}`;
     res.json({ ok: true });
   });
 
-  // ─── Turn status (legacy polling compat) ──────────────────────────────────
+  // ─── Turn status (re-sync after a reconnect) ──────────────────────────────────────────────────────────────
   app.get('/api/conversations/:id/status', (req, res) => {
     const state = getTurnState(req.params.id);
     res.json({ ...state, usage: ledger.headline() });

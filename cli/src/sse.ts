@@ -19,7 +19,6 @@ export type SSEEventName =
   | 'agent:finished'
   | 'agent:budget_warning'
   | 'artifact:new'
-  | 'usage:warning'
   | 'provider:retry'
   | 'keepalive';
 

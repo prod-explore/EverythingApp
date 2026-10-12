@@ -1,6 +1,6 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from './llm-types.js';
 import type Database from 'better-sqlite3';
-import type { LlmClient } from './anthropic-loop.js';
+import type { LlmClient } from './llm-loop.js';
 import { resolveSlot } from './slots.js';
 import type { ProviderRouter } from './providers/router.js';
 import type { ProviderId } from './providers/registry.js';
@@ -23,15 +23,15 @@ export function backgroundModel(db: Database.Database, router: ProviderRouter): 
   return { model, provider, client: client as LlmClient };
 }
 
-const textOf = (m: Anthropic.Message): string =>
-  m.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join(' ').trim();
+const textOf = (m: Llm.Message): string =>
+  m.content.filter((b): b is Llm.TextBlock => b.type === 'text').map(b => b.text).join(' ').trim();
 
 /** "Fix the login redirect bug" → a ≤6-word title; null when the model gave nothing usable. */
 export async function generateTitle(
   bg: BackgroundModel,
   userText: string,
   assistantText: string,
-  onUsage?: (u: Anthropic.Usage) => void,
+  onUsage?: (u: Llm.Usage) => void,
 ): Promise<string | null> {
   const res = await bg.client.messages.create({
     model: bg.model,

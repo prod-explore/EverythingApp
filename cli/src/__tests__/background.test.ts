@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { backgroundModel, generateTitle } from '../background.js';
 import { truncateToolOutput } from '../output-truncator.js';
 import { openDb, runMigrations } from '../db.js';
@@ -10,7 +10,7 @@ import { setSlots } from '../slots.js';
 import type { ProviderRouter } from '../providers/router.js';
 
 const usage = { input_tokens: 3, output_tokens: 2, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
-const reply = (t: string) => ({ id: 'm', content: [{ type: 'text', text: t, citations: null }], model: 'm', role: 'assistant', stop_reason: 'end_turn', stop_sequence: null, type: 'message', usage }) as unknown as Anthropic.Message;
+const reply = (t: string) => ({ id: 'm', content: [{ type: 'text', text: t, citations: null }], model: 'm', role: 'assistant', stop_reason: 'end_turn', stop_sequence: null, type: 'message', usage }) as unknown as Llm.Message;
 
 describe('background (free tier) calls', () => {
   it('cleans the generated title and reports usage', async () => {

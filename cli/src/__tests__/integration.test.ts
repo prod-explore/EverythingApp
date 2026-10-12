@@ -2,7 +2,7 @@ import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from '../llm-types.js';
 import { buildApp, type BuiltApp } from '../server.js';
 import { openDb, runMigrations, getMessages } from '../db.js';
 
@@ -11,13 +11,13 @@ type Db = ReturnType<typeof openDb>;
 const AUTH_TOKEN = 'integration-test-token';
 const FAKE_REPLY_TEXT = 'Hello from the fake model.';
 
-/** Minimally-valid fake Anthropic.Message — mirrors the helper in anthropic-loop.test.ts. */
-function fakeMessage(text: string): Anthropic.Message {
+/** Minimally-valid fake Llm.Message — mirrors the helper in anthropic-loop.test.ts. */
+function fakeMessage(text: string): Llm.Message {
   return {
     id: 'msg_fake',
     container: null,
     content: [{ type: 'text', text, citations: null }],
-    model: 'claude-sonnet-5',
+    model: '@test/model-a',
     role: 'assistant',
     stop_reason: 'end_turn',
     stop_sequence: null,
@@ -31,7 +31,7 @@ function fakeMessage(text: string): Anthropic.Message {
       service_tier: null,
       cache_creation: null,
     },
-  } as unknown as Anthropic.Message;
+  } as unknown as Llm.Message;
 }
 
 /**
@@ -140,7 +140,7 @@ describe('integration: end-to-end turn over HTTP', () => {
       connections: [],
       llm: fakeAnthropicClient(FAKE_REPLY_TEXT),
       authToken: AUTH_TOKEN,
-      config: { model: 'claude-sonnet-5', autoApproveTools: [] },
+      config: { model: '@test/model-a', autoApproveTools: [] },
     });
     server = built.app.listen(0);
     await new Promise<void>(resolve => server.once('listening', () => resolve()));

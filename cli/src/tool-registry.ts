@@ -1,6 +1,6 @@
 import type { McpConnectionLike, McpToolCallResult } from './mcp-client.js';
 
-export interface AnthropicToolDef {
+export interface ToolDef {
   name: string;
   description: string;
   input_schema: Record<string, unknown>;
@@ -73,7 +73,7 @@ export class ToolRegistry {
     return undefined;
   }
 
-  toAnthropicTools(): AnthropicToolDef[] {
+  toLlmTools(): ToolDef[] {
     return [...this.tools.values()].map(t => ({
       name: t.exposedName,
       description: t.description,

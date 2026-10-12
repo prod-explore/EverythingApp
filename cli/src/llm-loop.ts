@@ -1,36 +1,31 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type * as Llm from './llm-types.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { truncateToolOutput } from './output-truncator.js';
 
 /**
- * The one method the tool loop needs from any provider. Anthropic's SDK client
- * satisfies it as-is; the OpenAI-compatible adapter (providers/openai-compat.ts)
- * implements it by translating to/from chat-completions, so this loop never
- * knows or cares which provider it is talking to. Also what tests inject.
+ * The one method the tool loop needs from any provider. The OpenAI-compatible adapter
+ * (providers/openai-compat.ts) implements it by translating to/from chat-completions, so this loop
+ * never knows or cares which provider it is talking to. Also what tests inject.
  */
 export interface LlmClient {
   messages: {
     create(
-      params: Anthropic.MessageCreateParamsNonStreaming,
+      params: Llm.MessageCreateParamsNonStreaming,
       options?: { signal?: AbortSignal },
-    ): Promise<Anthropic.Message>;
+    ): Promise<Llm.Message>;
     /**
-     * Optional streaming variant. Anthropic's SDK client has it; providers that don't
-     * (the OpenAI-compatible adapter) simply fall back to `create` — nothing breaks, the
-     * reply just arrives in one piece instead of token by token.
+     * Optional streaming variant. A client without it (Gemini, test doubles) simply falls back to
+     * `create` — nothing breaks, the reply just arrives in one piece instead of token by token.
      */
-    stream?(params: Anthropic.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike;
+    stream?(params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike;
   };
 }
 
-/** The slice of the SDK's MessageStream the loop uses. */
+/** What the loop needs from a streaming call. */
 export interface MessageStreamLike {
-  on(event: 'streamEvent', listener: (event: Anthropic.MessageStreamEvent) => void): unknown;
-  finalMessage(): Promise<Anthropic.Message>;
+  on(event: 'streamEvent', listener: (event: Llm.MessageStreamEvent) => void): unknown;
+  finalMessage(): Promise<Llm.Message>;
 }
-
-/** @deprecated pre-Phase-3 name, kept so existing imports/tests keep working. */
-export type AnthropicLike = LlmClient;
 
 /**
  * In-process tool the orchestrator itself executes (e.g. request_human_input,
@@ -46,15 +41,15 @@ export interface VirtualToolContext {
 }
 
 export interface VirtualTool {
-  definition: Anthropic.Tool;
+  definition: Llm.Tool;
   /** Route through the approval gate before running. Default: false. */
   requiresApproval?: boolean;
   handler(input: Record<string, unknown>, ctx: VirtualToolContext): Promise<{ text: string; isError?: boolean }>;
 }
 
 export interface ConversationDeps {
-  /** Any provider's client — despite the historical field name. */
-  anthropic: LlmClient;
+  /** The model client (any provider). */
+  llm: LlmClient;
   model: string;
   maxTokens?: number;
   tools: ToolRegistry;
@@ -79,7 +74,7 @@ export interface ConversationDeps {
   /** Called right before a tool actually executes (after approval). */
   onToolStart?: (toolLabel: string) => void;
   /** Called once per API response with that response's usage. */
-  onUsage?: (usage: Anthropic.Usage) => void;
+  onUsage?: (usage: Llm.Usage) => void;
   /** Called after each tool call with the full (un-truncated) output — for UI display. */
   onToolResult?: (toolName: string, fullOutput: string, truncatedOutput: string, isError: boolean) => void;
   /** Hard cap on model round-trips in this turn (runaway-loop guard, used for subagents). Unlimited when unset. */
@@ -177,21 +172,20 @@ function needsConversationId(exposedName: string): boolean {
 
 /**
  * db.ts round-trips messages through JSON.stringify/parse with no schema
- * enforcement, and every caller hands the result to us as `Anthropic.
- * MessageParam[]` via a bare type cast — not an actual guarantee about
- * what's in there. Strip anything Anthropic's API doesn't define before it
- * ever reaches `messages.create`/`batches.create`, so a stray field (e.g. a
- * frontend-only `id` that leaked into a stored message) gets dropped here
- * instead of surfacing as an opaque 400 from the API mid-turn.
+ * enforcement, and every caller hands the result to us as `Llm.MessageParam[]`
+ * via a bare type cast — not an actual guarantee about what's in there. Strip
+ * anything the message format doesn't define before it reaches `messages.create`,
+ * so a stray field (e.g. a frontend-only `id` that leaked into a stored message)
+ * gets dropped here instead of surfacing as an opaque 400 from the provider mid-turn.
  */
-export function sanitizeHistory(history: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+export function sanitizeHistory(history: Llm.MessageParam[]): Llm.MessageParam[] {
   return history.map(msg => ({
     role: msg.role,
     content: typeof msg.content === 'string' ? msg.content : msg.content.map(sanitizeBlock),
   }));
 }
 
-function sanitizeBlock(block: Anthropic.ContentBlockParam): Anthropic.ContentBlockParam {
+function sanitizeBlock(block: Llm.ContentBlockParam): Llm.ContentBlockParam {
   switch (block.type) {
     case 'text':
       return { type: 'text', text: block.text };
@@ -207,56 +201,20 @@ function sanitizeBlock(block: Anthropic.ContentBlockParam): Anthropic.ContentBlo
 }
 
 /**
- * System prompt + tool definitions are identical on every single request in
- * a session — the textbook case for prompt caching. Marking the last block
- * in each with cache_control caches everything up to and including it.
- */
-export function cacheableSystem(systemPrompt: string): Anthropic.TextBlockParam[] {
-  return [{ type: 'text', text: systemPrompt, cache_control: { type: 'ephemeral' } }];
-}
-
-function cacheableTools(tools: Anthropic.ToolUnion[]): Anthropic.ToolUnion[] {
-  if (tools.length === 0) return tools;
-  const withCache = [...tools];
-  const last = withCache[withCache.length - 1];
-  withCache[withCache.length - 1] = { ...last, cache_control: { type: 'ephemeral' } };
-  return withCache;
-}
-
-/**
- * Rolling cache breakpoint on the growing conversation. System + tools are cached, but in a tool loop the
- * history grows every step — without a breakpoint at its end each step re-bills the whole transcript at the
- * full input price. Applied to a COPY of the request only: the stored history must never carry cache_control
- * (the API allows 4 breakpoints per request, and stale ones would pile up).
- */
-export function withHistoryCache(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
-  const last = messages[messages.length - 1];
-  if (!last) return messages;
-  const blocks: Anthropic.ContentBlockParam[] =
-    typeof last.content === 'string' ? (last.content ? [{ type: 'text', text: last.content }] : []) : [...last.content];
-  const i = blocks.length - 1;
-  const tail = blocks[i];
-  // thinking blocks cannot carry cache_control; fall back to uncached rather than fail the request
-  if (!tail || tail.type === 'thinking' || tail.type === 'redacted_thinking') return messages;
-  blocks[i] = { ...tail, cache_control: { type: 'ephemeral' } } as Anthropic.ContentBlockParam;
-  return [...messages.slice(0, -1), { ...last, content: blocks }];
-}
-
-/**
- * Runs one user turn to completion: sends the message, and if Claude asks to
+ * Runs one user turn to completion: sends the message, and if the model asks to
  * use tools, executes them (through the Approval Gate where required) and
- * feeds the results back — repeating until Claude replies with plain text
+ * feeds the results back — repeating until the model replies with plain text
  * instead of another tool_use. Returns the updated history.
  */
 export async function runTurn(
   deps: ConversationDeps,
-  history: Anthropic.MessageParam[],
-  userContent: Anthropic.MessageParam['content'],
-): Promise<Anthropic.MessageParam[]> {
-  const messages: Anthropic.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userContent }];
+  history: Llm.MessageParam[],
+  userContent: Llm.MessageParam['content'],
+): Promise<Llm.MessageParam[]> {
+  const messages: Llm.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userContent }];
   const virtualByName = new Map((deps.virtualTools ?? []).map(v => [v.definition.name, v]));
-  const toolDefs: Anthropic.ToolUnion[] = [
-    ...(deps.tools.toAnthropicTools() as Anthropic.Tool[]),
+  const toolDefs: Llm.Tool[] = [
+    ...(deps.tools.toLlmTools() as Llm.Tool[]),
     ...(deps.virtualTools ?? []).map(v => v.definition),
   ];
 
@@ -280,19 +238,19 @@ export async function runTurn(
       messages[messages.length - 1] = { role: 'user', content: blocks };
     }
 
-    const params: Anthropic.MessageCreateParamsNonStreaming = {
+    const params: Llm.MessageCreateParamsNonStreaming = {
       model: deps.model,
       max_tokens: deps.maxTokens ?? 4096,
-      system: cacheableSystem(deps.systemPrompt),
-      tools: toolDefs.length > 0 ? cacheableTools(toolDefs) : undefined,
-      messages: withHistoryCache(messages),
+      system: deps.systemPrompt,
+      tools: toolDefs.length > 0 ? toolDefs : undefined,
+      messages,
     };
     // Lets the kill switch cancel a request that's already in flight, not just the next one.
     const options = { signal: deps.signal };
     const onTextDelta = deps.onTextDelta;
-    let response: Anthropic.Message;
-    if (onTextDelta && deps.anthropic.messages.stream) {
-      const stream = deps.anthropic.messages.stream(params, options);
+    let response: Llm.Message;
+    if (onTextDelta && deps.llm.messages.stream) {
+      const stream = deps.llm.messages.stream(params, options);
       stream.on('streamEvent', event => {
         if (event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text) {
           onTextDelta({ block: event.index, text: event.delta.text });
@@ -300,7 +258,7 @@ export async function runTurn(
       });
       response = await stream.finalMessage();
     } else {
-      response = await deps.anthropic.messages.create(params, options);
+      response = await deps.llm.messages.create(params, options);
     }
 
     messages.push({ role: 'assistant', content: response.content });
@@ -313,14 +271,14 @@ export async function runTurn(
     }
 
     const toolUses = response.content.filter(
-      (b): b is Anthropic.ToolUseBlock => b.type === 'tool_use',
+      (b): b is Llm.ToolUseBlock => b.type === 'tool_use',
     );
 
     if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
       return messages;
     }
 
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
+    const toolResults: Llm.ToolResultBlockParam[] = [];
     for (const use of toolUses) {
       // Kill switch check before each tool execution
       if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
