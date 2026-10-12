@@ -177,10 +177,12 @@ services:
       - sandbox-mcp
       - playwright-mcp
       - git-proxy
+    container_name: everythingapp-web
     restart: unless-stopped
     networks:
       - sandbox-internal
       - browser-egress  # only to call playwright-mcp; the browser's own requests are guarded (urlSafety.ts)
+      - futumore-network
 
 networks:
   # Sandbox stack — zero overlap with Skarpa Bytom or any other Compose stack.
@@ -193,6 +195,9 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-ea-browser
+
+  futumore-network:
+    external: true
 
 volumes:
   everythingapp_web_data:
