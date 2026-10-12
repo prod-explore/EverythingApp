@@ -40,7 +40,6 @@ export interface ModelFields {
   toolSchemaMode?: ToolSchemaMode;
   contextLength?: number;
   minOutputTokens?: number;
-  status?: 'online' | 'asleep' | 'waking';
 }
 
 export type ModelSource = 'discovered' | 'manual' | 'seed';
@@ -98,7 +97,6 @@ export function sanitizeFields(raw: unknown): ModelFields {
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
   const minOut = finiteNum(o['minOutputTokens']);
   if (minOut !== undefined) f.minOutputTokens = Math.trunc(minOut);
-  if (o['status'] === 'online' || o['status'] === 'asleep' || o['status'] === 'waking') f.status = o['status'];
   return f;
 }
 
@@ -115,7 +113,7 @@ function guessKind(id: string): ModelKind {
  * One entry of `GET {base}/models` → our ModelFields. Understands the plain OpenAI shape (`id` only), OpenRouter's
  * extensions (`name`, `context_length`, `pricing` — only "free" is used —, `architecture.input_modalities`,
  * `supported_parameters`) and the gateway extensions defined for MindGate: `kind`, `tags`, `description`,
- * `supports` (tools / vision / reasoning), `tool_schema`, `status`.
+ * `supports` (tools / vision / reasoning), `tool_schema`.
  */
 export function parseDiscoveredModel(raw: unknown): { id: string; reported: ModelFields } | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -132,7 +130,6 @@ export function parseDiscoveredModel(raw: unknown): { id: string; reported: Mode
   if (typeof o['description'] === 'string' && o['description'].trim()) f.description = o['description'].trim().slice(0, 300);
   const ctx = finiteNum(o['context_length']) ?? finiteNum(o['contextLength']);
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
-  if (o['status'] === 'online' || o['status'] === 'asleep' || o['status'] === 'waking') f.status = o['status'];
 
   if (Array.isArray(o['supports'])) {
     const supports = o['supports'].filter((s): s is string => typeof s === 'string');
@@ -394,7 +391,6 @@ export class ModelCatalog {
         minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (provider.flavor === 'gemini' || tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
         toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode,
         contextLength: ov.contextLength ?? rep.contextLength,
-        status: rep.status,
         enabled: r.enabled === 1,
         source: (r.source === 'manual' || r.source === 'seed' ? r.source : 'discovered') as ModelSource,
         overridden: Object.keys(ov),

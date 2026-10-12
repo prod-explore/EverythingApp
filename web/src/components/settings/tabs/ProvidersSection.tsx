@@ -33,18 +33,6 @@ type Note = { ok: boolean; text: string } | null;
 
 // ─── model editor ───────────────────────────────────────────────────────────
 
-const STATUS_STYLE = { online: 'bg-success', waking: 'bg-warning', asleep: 'bg-fg-tertiary' } as const;
-
-/** A gateway that manages sleeping nodes (MindGate) reports per model whether it can answer right now. */
-function StatusDot({ status }: { status: 'online' | 'asleep' | 'waking' }) {
-  return (
-    <span className="inline-flex items-center gap-1 text-[10px] text-fg-tertiary" title={status === 'asleep' ? 'The node is asleep — the first request wakes it, which takes a while' : status}>
-      <span className={`inline-block h-1.5 w-1.5 rounded-full ${STATUS_STYLE[status]}`} />
-      {status}
-    </span>
-  );
-}
-
 function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void }) {
   const [tags, setTags] = useState(m.tags.join(', '));
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +53,6 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-xs font-medium text-fg" title={m.description || m.label}>{m.label}</span>
-            {m.status && <StatusDot status={m.status} />}
             {m.toolSchemaMode === 'none' && <span className="rounded bg-bg-tertiary px-1 text-[10px] text-danger" title="No tool calls — this model is not offered for chat">no tools</span>}
           </div>
           <code className="block truncate text-[11px] text-fg-tertiary">{m.upstream}</code>
@@ -130,7 +117,7 @@ function ModelsEditor({ p, onChanged }: { p: ProviderInfo; onChanged: () => void
       </div>
       {models.length === 0 && <p className="text-xs text-fg-tertiary">No models yet — use “Refresh models”, or add an id by hand below.</p>}
       <ul className="max-h-72 space-y-1 overflow-y-auto">
-        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}:${m.status ?? ''}:${m.toolSchemaMode ?? ''}`} m={m} onChanged={changed} />)}
+        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}:${m.toolSchemaMode ?? ''}`} m={m} onChanged={changed} />)}
       </ul>
       {shown.length > 200 && <p className="text-xs text-fg-tertiary">Showing 200 of {shown.length} — narrow the filter.</p>}
       <div className="flex gap-2">
@@ -215,9 +202,6 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
       </div>
       <p className="mb-3 mt-1 text-xs text-fg-tertiary">
         {status} · {p.enabledModelCount}/{p.modelCount} models on
-        {p.statusCounts && Object.keys(p.statusCounts).length > 0 && (
-          <> · {(['online', 'waking', 'asleep'] as const).filter(k => p.statusCounts![k]).map(k => `${p.statusCounts![k]} ${k}`).join(', ')}</>
-        )}
       </p>
 
       {!p.keyOptional && (
@@ -362,17 +346,6 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
   const [message, setMessage] = useState<string | null>(null);
   const reload = useCallback(() => { getProviders().then(setData).catch(() => {}); }, []);
   useEffect(reload, [reload]);
-  // A gateway that reports per-model availability (MindGate) is asked again whenever this page opens, so the statuses are current.
-  useEffect(() => {
-    let cancelled = false;
-    void getProviders().then(async r => {
-      const live = r.providers.filter(p => p.flavor === 'mindgate' && p.enabled && p.configured);
-      if (live.length === 0) return;
-      await Promise.all(live.map(p => refreshProviderModels(p.id).catch(() => {})));
-      if (!cancelled) reload();
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [reload]);
   const changed = useCallback(() => { reload(); onChanged(); }, [reload, onChanged]);
 
   if (!data) return <p className="text-xs text-fg-tertiary">Loading providers…</p>;
@@ -388,7 +361,7 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
         <p className="text-xs text-fg-tertiary">Nothing set up yet. Add MindGate (your hub) or any API directly.</p>
       )}
       {data.providers.map(p => (
-        <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.modelCount}:${JSON.stringify(p.statusCounts ?? {})}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />
+        <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.modelCount}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />
       ))}
       <AddProvider presets={data.presets} vaultEnabled={data.vaultEnabled} onAdded={m => { setMessage(m); changed(); }} />
       {message && <p className="text-xs text-fg-secondary">{message}</p>}

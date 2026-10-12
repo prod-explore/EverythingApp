@@ -211,8 +211,6 @@ export interface ProviderInfo {
   keyHint: string;
   modelCount: number;
   enabledModelCount: number;
-  /** How many of the enabled models a gateway reports as online / waking / asleep (empty for providers that report nothing). */
-  statusCounts?: Partial<Record<'online' | 'asleep' | 'waking', number>>;
 }
 
 /** A starting point for "Add provider" — it only pre-fills the same form every provider goes through. */
@@ -245,7 +243,6 @@ export interface ModelOption {
   supportsImages: boolean;
   /** 'none' = the model cannot call tools; the app does not offer such models for chat. */
   toolSchemaMode?: 'full' | 'flat' | 'none';
-  status?: 'online' | 'asleep' | 'waking';
 }
 
 /** A model in the Settings editor — also the switched-off ones. `overridden` lists the fields the user changed. */

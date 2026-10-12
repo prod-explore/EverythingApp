@@ -20,7 +20,6 @@ EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions
 | `description` | gateway | One line shown to the orchestrator and as a tooltip |
 | `supports` | gateway | Array, e.g. `["tools","vision"]`. No `"tools"` → the model is never offered tools |
 | `tool_schema` | gateway | `full` \| `flat` \| `none` — how tool schemas are sent (`flat` for small models that cannot emit nested JSON) |
-| `status` | gateway | `online` \| `asleep` \| `waking` (a local node behind Wake-on-LAN); shown next to the model in Settings and the pickers |
 | `name`, `context_length`, `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, context, vision, tool support |
 
 **The app keeps no prices** — money is the gateway's business; the app counts tokens only. The one thing taken from a price is “costs nothing”: a model a provider lists at price 0 (OpenRouter `:free`) with no explicit tags gets the `free` tag. Metadata is layered **provider-reported < your override**; there is no built-in model list. Override anything per model in the editor (kind, tags, description).
@@ -40,11 +39,9 @@ A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the
 
 **Cost guard:** a chat running on a `free` model can only start `free` workers, unless *Allow agents to use paid models* is on. `spawn_agent` takes `model` (an exact id) or `tag` (first usable model with it). The orchestrator's system prompt contains a generated list of the installed models with their tags and the slot assignments, so it always matches what is actually set up.
 
-## Availability in Settings
+## Waiting and retries
 
-Providers that report `status` (MindGate) are re-queried whenever *Settings → Models* opens, and each provider card shows how many of its models are online / waking / asleep. This is the only place availability is surfaced; a failing request still shows the usual retry banner in the chat.
-
-## Retries
+The app does not track whether a model is “up”. Ordinary APIs are always online; MindGate may have to wake a sleeping node first (Wake-on-LAN is MindGate's job), so a MindGate request is simply allowed to take long — 15 minutes by default, `MINDGATE_TIMEOUT_MS` to change — and the chat waits for the answer.
 
 Transient failures (HTTP 408/429/5xx, network errors) are retried with backoff and shown as a banner; Gemini additionally has a long retry budget (`GEMINI_RETRY_BUDGET_HOURS`, 12 h). `budget_exhausted` from a gateway is never retried.
 

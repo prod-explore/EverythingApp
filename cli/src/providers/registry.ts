@@ -47,8 +47,6 @@ export interface ModelInfo {
    */
   toolSchemaMode?: ToolSchemaMode;
   contextLength?: number;
-  /** Reported by a gateway that manages sleeping nodes (e.g. MindGate with WOL). */
-  status?: 'online' | 'asleep' | 'waking';
   /** false = switched off in Settings; kept in the catalog so it can be re-enabled. Default true. */
   enabled?: boolean;
 }

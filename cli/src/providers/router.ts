@@ -42,8 +42,6 @@ export interface ProviderStatus {
   keyHint: string;
   modelCount: number;
   enabledModelCount: number;
-  /** Enabled models by the availability the gateway reported (only providers that report it). */
-  statusCounts: Partial<Record<'online' | 'asleep' | 'waking', number>>;
 }
 
 export interface ResolvedModel {
@@ -66,6 +64,15 @@ export interface RouterOptions {
 }
 
 /** Gemini's free tier rate-limits hard at peak hours: keep retrying for this long (GEMINI_RETRY_BUDGET_HOURS, 0 = classic 2 retries). */
+/**
+ * MindGate may have to wake a sleeping node (Wake-on-LAN) before it can answer; the gateway owns that, the app just
+ * waits. A MindGate request is therefore allowed far longer than the 3 minutes other providers get.
+ */
+export function mindgateTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const n = Number(env['MINDGATE_TIMEOUT_MS']);
+  return Number.isFinite(n) && n > 0 ? n : 15 * 60_000;
+}
+
 function geminiRetryBudgetMs(env: NodeJS.ProcessEnv): number | undefined {
   const raw = env['GEMINI_RETRY_BUDGET_HOURS'];
   const hours = raw === undefined || raw === '' ? 12 : Number(raw);
@@ -158,7 +165,6 @@ export class ProviderRouter {
         keyHint: findPreset(p.slug)?.keyHint ?? '',
         modelCount: models.length,
         enabledModelCount: models.filter(m => m.enabled).length,
-        statusCounts: models.filter(m => m.enabled && m.status).reduce<ProviderStatus['statusCounts']>((acc, m) => ({ ...acc, [m.status!]: (acc[m.status!] ?? 0) + 1 }), {}),
       };
     });
   }
@@ -189,6 +195,7 @@ export class ProviderRouter {
       apiKey,
       fetchImpl: this.opts.fetchImpl,
       ...(provider.flavor === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
+      ...(provider.flavor === 'mindgate' ? { timeoutMs: mindgateTimeoutMs(this.env) } : {}),
       onRetry: info => this.onProviderRetry?.(info),
       modelInfo: id => getModelInfo(id),
       upstreamModel: id => parseModelId(id)?.upstream ?? id,

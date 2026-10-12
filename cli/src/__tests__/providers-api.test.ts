@@ -30,7 +30,7 @@ function req(port: number, method: string, path: string, body?: unknown): Promis
 /** A gateway that lists models (with MindGate-style extensions) and accepts exactly one key. */
 const GATEWAY_MODELS = {
   data: [
-    { id: 'flash', kind: 'chat', tags: ['free'], description: 'Fast and free', supports: ['tools'], status: 'waking' },
+    { id: 'flash', kind: 'chat', tags: ['free'], description: 'Fast and free', supports: ['tools'] },
     { id: 'big', kind: 'chat', tags: ['reasoning', 'coder'], pricing: { input: 3, output: 15 } },
     { id: 'whisper', kind: 'stt' },
   ],
@@ -101,9 +101,6 @@ describe('providers API', () => {
     assert.equal(models.find((m: any) => m.id === '@mindgate/whisper').kind, 'stt');
     const big = models.find((m: any) => m.id === '@mindgate/big');
     assert.ok(!('pricing' in big) && !('pricingKnown' in big), 'the app exposes no prices');
-    assert.equal(flash.status, 'waking', 'the gateway-reported availability reaches the pickers');
-    const mg = (await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'mindgate');
-    assert.deepEqual(mg.statusCounts, { waking: 1 });
   });
 
   it('a plain API is added through the very same call', async () => {

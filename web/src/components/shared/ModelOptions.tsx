@@ -20,7 +20,6 @@ export function ModelOptions({ models, current }: { models: ModelOption[]; curre
                 {m.label}
                 {tagSuffix(m)}
                 {m.available ? '' : ' — no key'}
-                {m.available && m.status && m.status !== 'online' ? ` — ${m.status}` : ''}
               </option>
             ))}
           </optgroup>

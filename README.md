@@ -1,7 +1,7 @@
 # EverythingApp
 
 [![CI](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml/badge.svg)](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-706%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-707%20passing-brightgreen)
 ![node](https://img.shields.io/badge/node-22-339933)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
@@ -109,7 +109,7 @@ Deployment notes for a Raspberry Pi (egress guard, Nginx + HTTPS) are in [`deplo
 ## Development
 
 ```bash
-cd cli && npm test            # 320 tests (node:test, in-memory SQLite, fake providers)
+cd cli && npm test            # 321 tests (node:test, in-memory SQLite, fake providers)
 cd git-proxy && npm test      #  40
 cd sandbox-mcp && npm test    #  18
 cd sandbox-supervisor && npm test  # 78

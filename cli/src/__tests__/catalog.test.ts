@@ -24,11 +24,11 @@ describe('parseDiscoveredModel', () => {
   it('reads the MindGate extensions: kind, tags, description, supports, tool_schema, status', () => {
     const m = parseDiscoveredModel({
       id: 'coder', kind: 'chat', tags: ['Coder', 'free', 'bad tag!', 'free'], description: 'Writes code', supports: ['tools', 'vision'],
-      status: 'asleep', pricing: { input: 1.5, output: 6 },
+      pricing: { input: 1.5, output: 6 },
     })!;
     assert.equal(m.reported.tags!.includes('free'), true);
     assert.deepEqual(m.reported, {
-      kind: 'chat', tags: ['coder', 'free'], description: 'Writes code', supportsImages: true, status: 'asleep',
+      kind: 'chat', tags: ['coder', 'free'], description: 'Writes code', supportsImages: true,
     });
     assert.equal('pricing' in m.reported, false, 'the app keeps no prices');
     assert.equal(parseDiscoveredModel({ id: 'a', supports: ['vision'] })!.reported.toolSchemaMode, 'none', 'no "tools" in supports = no tool calls');
