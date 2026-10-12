@@ -6,8 +6,7 @@
 #   1. docker build -t everything-sandbox:latest ./sandbox-supervisor/sandbox-image/
 #   2. Copy .env.example → .env and fill in all required values
 #   3. For GitHub: set GITHUB_PAT in .env
-#   4. For n8n: set N8N_USER, N8N_PASSWORD, N8N_RESEND_API_KEY in .env
-#   5. For Playwright: set PLAYWRIGHT_MCP_API_KEY in .env
+#   4. For Playwright: set PLAYWRIGHT_MCP_API_KEY in .env
 
 services:
   sandbox-supervisor:
@@ -178,9 +177,6 @@ services:
       # so no separate API key needed for the connector URL.
       MCP_GITHUB_URL: http://github-mcp:3004/mcp
       MCP_GITHUB_API_KEY: ${GITHUB_PAT:-}
-      # n8n connector (once workflows are deployed)
-      # MCP_N8N_URL: http://n8n:5678/mcp/your-trigger-path
-      # MCP_N8N_API_KEY: ${N8N_MCP_API_KEY:-}
       MCP_OBSIDIAN_URL: ${MCP_OBSIDIAN_URL:-}
       MCP_OBSIDIAN_API_KEY: ${MCP_OBSIDIAN_API_KEY:-}
       # N3: workspace Explorer / checkpoints (byte reads + in-sandbox git only).
@@ -207,43 +203,9 @@ services:
       - sandbox-internal
       - browser-egress  # only to call playwright-mcp; the browser's own requests are guarded (urlSafety.ts)
 
-  # n8n pipeline orchestrator — self-hosted, ISOLATED network.
-  # CRITICAL: n8n is on n8n-net, NOT sandbox-internal.
-  # Only its MCP endpoint is reachable from the app via the shared n8n-net attachment.
-  # n8n never has access to the sandbox containers or the supervisor.
-  # Uses its OWN Resend account/domain — NEVER share with Skarpa Bytom (§0).
-  n8n:
-    image: n8nio/n8n:latest
-    environment:
-      N8N_BASIC_AUTH_ACTIVE: "true"
-      N8N_BASIC_AUTH_USER: ${N8N_USER:?N8N_USER is required}
-      N8N_BASIC_AUTH_PASSWORD: ${N8N_PASSWORD:?N8N_PASSWORD is required}
-      N8N_SECURE_COOKIE: "false"        # Pi sits behind Nginx TLS
-      N8N_MCP_ACCESS_ENABLED: "true"   # MCP Server Trigger (n8n ≥ 2.20.0)
-      N8N_PORT: 5678
-      # SEPARATE Resend key for n8n — not the Skarpa Bytom key.
-      RESEND_API_KEY: ${N8N_RESEND_API_KEY:-}
-      N8N_HOST: ${N8N_HOST:-localhost}
-      WEBHOOK_URL: ${N8N_WEBHOOK_URL:-http://localhost:5678/}
-    ports:
-      - "127.0.0.1:5678:5678"
-    volumes:
-      - n8n_data:/home/node/.n8n
-    restart: unless-stopped
-    # n8n is on BOTH networks: n8n-net (its own isolated network) and
-    # sandbox-internal (only so the app can reach its MCP endpoint).
-    # It still cannot reach the sandbox containers or supervisor.
-    networks:
-      - n8n-net
-      - sandbox-internal
-
 networks:
   # Sandbox stack — zero overlap with Skarpa Bytom or any other Compose stack.
   sandbox-internal:
-    driver: bridge
-
-  # n8n's own isolated network — pipeline internal communication.
-  n8n-net:
     driver: bridge
 
   # Browser agent: internet-facing. The fixed bridge name lets deploy/egress-guard.sh drop
@@ -255,4 +217,4 @@ networks:
 
 volumes:
   everythingapp_web_data:
-  n8n_data:
+
