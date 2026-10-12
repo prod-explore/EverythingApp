@@ -1,9 +1,10 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type Anthropic from '@anthropic-ai/sdk';
-import Database from 'better-sqlite3';
+import { openDb, runMigrations } from '../db.js';
+import { seedBuiltinCatalog } from './catalog-fixture.js';
 import { OpenAiCompatClient, recoverJsonToolCalls } from '../providers/openai-compat.js';
-import { getModelInfo, isKnownModelId } from '../providers/registry.js';
+import { getModelInfo, normalizeModelId } from '../providers/registry.js';
 import { ProviderRouter, UnknownModelError } from '../providers/router.js';
 import { withModelIdentity } from '../providers/identity.js';
 
@@ -68,20 +69,25 @@ describe('MindGate text tool calls', () => {
 });
 
 describe('unknown model ids', () => {
-  it('isKnownModelId accepts routable ids and rejects the rest', () => {
-    for (const id of ['claude-sonnet-4-5', 'gemini-3.5-flash-lite', 'deepseek-chat', 'flash', 'mindgate-x', 'pipeline:p']) assert.equal(isKnownModelId(id, {}), true, id);
-    assert.equal(isKnownModelId('google/gemini-2.0-flash-lite', {}), false);
-    assert.equal(isKnownModelId('gpt-4o', {}), false);
-    assert.equal(isKnownModelId('custom-priced', { MODEL_PRICING_JSON: '{"custom-priced":{"input":1,"output":2}}' }), true);
+  it('normalizeModelId maps legacy ids onto the canonical form and leaves the rest alone', () => {
+    assert.equal(normalizeModelId('@mindgate/flash'), '@mindgate/flash');
+    assert.equal(normalizeModelId('gemini-3.5-flash-lite'), '@gemini/gemini-3.5-flash-lite');
+    assert.equal(normalizeModelId('deepseek-chat'), '@deepseek/deepseek-chat');
+    assert.equal(normalizeModelId('flash'), '@mindgate/flash');
+    assert.equal(normalizeModelId('gpt-4o'), 'gpt-4o');
+    assert.equal(normalizeModelId('claude-sonnet-4-5'), 'claude-sonnet-4-5');
   });
   it('router.clientFor throws a readable error', () => {
-    const router = new ProviderRouter({ db: new Database(':memory:'), env: {} });
+    const db = openDb(':memory:');
+    runMigrations(db);
+    const router = new ProviderRouter({ db, env: {} });
     assert.throws(() => router.clientFor('google/gemini-2.0-flash-lite'), (e: Error) => e instanceof UnknownModelError && /Unknown model "google\/gemini-2\.0-flash-lite"/.test(e.message));
   });
 });
 
 describe('model identity', () => {
   it('appends the real model label and provider', () => {
+    seedBuiltinCatalog();
     const out = withModelIdentity('Base prompt.', 'gemini-3.5-flash-lite', {});
     assert.match(out, /^Base prompt\.\n\n/);
     assert.match(out, /Gemini/);

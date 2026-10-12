@@ -8,7 +8,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', hint: 'Start a new conversation' },
   { name: 'export', hint: 'Download this chat as Markdown' },
   { name: 'sandbox', hint: 'Toggle the sandbox for this chat' },
-  { name: 'batch', hint: 'Send the next message via the Batch API (cheaper, resolves later)' },
   { name: 'agents', hint: 'Open the Agents panel' },
   { name: 'files', hint: 'Open the Files panel' },
   { name: 'search', hint: 'Search all conversations' },

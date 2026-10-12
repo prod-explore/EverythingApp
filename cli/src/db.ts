@@ -284,7 +284,8 @@ export function runMigrations(db: Database.Database): void {
     `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
   );
   seedSetting.run('global_system_prompt', '');
-  seedSetting.run('default_model', 'claude-sonnet-5');
+  // Empty = automatic (a usable free model, else any chat model); the `chat` model slot in Settings sets it.
+  seedSetting.run('default_model', '');
   seedSetting.run('custom_instructions', '');
 }
 
@@ -655,55 +656,7 @@ export function dismissGazetaItem(db: Database.Database, id: string): boolean {
   return result.changes > 0;
 }
 
-// ─── Batch jobs ───────────────────────────────────────────────────────────────
-
-export interface BatchJob {
-  id: string;
-  conversationId: string;
-  customId: string;
-  userText: string;
-  preview: string;
-  status: string;
-  resultText: string | null;
-  submittedAt: string;
-  resolvedAt: string | null;
-}
-
-export function createBatchJob(
-  db: Database.Database,
-  job: { id: string; conversationId: string; customId: string; userText: string; preview: string },
-): void {
-  db.prepare(
-    `INSERT INTO batch_jobs (id, conversation_id, custom_id, user_text, preview) VALUES (?, ?, ?, ?, ?)`,
-  ).run(job.id, job.conversationId, job.customId, job.userText, job.preview);
-}
-
-export function listBatchJobs(
-  db: Database.Database,
-  opts: { conversationId?: string; status?: string } = {},
-): BatchJob[] {
-  let sql = `SELECT id, conversation_id as conversationId, custom_id as customId,
-               user_text as userText, preview, status, result_text as resultText,
-               submitted_at as submittedAt, resolved_at as resolvedAt
-             FROM batch_jobs`;
-  const conditions: string[] = [];
-  const values: string[] = [];
-  if (opts.conversationId) { conditions.push('conversation_id = ?'); values.push(opts.conversationId); }
-  if (opts.status) { conditions.push('status = ?'); values.push(opts.status); }
-  if (conditions.length) sql += ` WHERE ${conditions.join(' AND ')}`;
-  sql += ` ORDER BY submitted_at DESC`;
-  return db.prepare(sql).all(...values) as BatchJob[];
-}
-
-export function resolveBatchJob(db: Database.Database, id: string, status: string, resultText?: string): void {
-  db.prepare(
-    `UPDATE batch_jobs SET status = ?, result_text = ?, resolved_at = datetime('now') WHERE id = ?`,
-  ).run(status, resultText ?? null, id);
-}
-
-export function getPendingBatchJobs(db: Database.Database): BatchJob[] {
-  return listBatchJobs(db, { status: 'pending' });
-}
+// (Batch jobs were removed with the Anthropic Batch API; the `batch_jobs` table is kept so old rows aren't lost.)
 
 // ─── Skills ───────────────────────────────────────────────────────────────────
 

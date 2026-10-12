@@ -144,7 +144,6 @@ services:
       context: .
       dockerfile: cli/Dockerfile
     environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}  # optional legacy fallback
       KEY_VAULT_SECRET: ${KEY_VAULT_SECRET:?KEY_VAULT_SECRET is required}
       SERVER_AUTH_TOKEN: ${SERVER_AUTH_TOKEN:?SERVER_AUTH_TOKEN is required}
       SERVER_PASSWORD: ${SERVER_PASSWORD:-}

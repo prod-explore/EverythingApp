@@ -22,10 +22,6 @@ import {
   listGazetaItems,
   respondToGazetaItem,
   dismissGazetaItem,
-  createBatchJob,
-  listBatchJobs,
-  resolveBatchJob,
-  getPendingBatchJobs,
 } from '../db.js';
 
 /**
@@ -158,18 +154,5 @@ describe('db.ts integration', () => {
     const itemId = createGazetaItem(db, { type: 'daily_summary', title: 'Today' });
     assert.equal(dismissGazetaItem(db, itemId), true);
     assert.equal(listGazetaItems(db, 'pending').some(i => i.id === itemId), false);
-  });
-
-  it('batch jobs: created as pending, resolving removes it from the pending list', () => {
-    const { id: convId } = createConversation(db, { title: 'batch conv' });
-    createBatchJob(db, { id: 'batch_1', conversationId: convId, customId: 'req_1', userText: 'research X', preview: 'research X' });
-
-    assert.ok(getPendingBatchJobs(db).some(j => j.id === 'batch_1'));
-    resolveBatchJob(db, 'batch_1', 'succeeded', 'X is...');
-    assert.equal(getPendingBatchJobs(db).some(j => j.id === 'batch_1'), false);
-
-    const resolved = listBatchJobs(db, { conversationId: convId }).find(j => j.id === 'batch_1');
-    assert.equal(resolved!.status, 'succeeded');
-    assert.equal(resolved!.resultText, 'X is...');
   });
 });

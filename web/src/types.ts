@@ -99,18 +99,6 @@ export interface GazetaQuery {
   limit?: number;
 }
 
-export interface BatchJob {
-  id: string;
-  conversationId: string;
-  customId: string;
-  userText: string;
-  preview: string;
-  status: 'pending' | 'succeeded' | 'errored' | 'expired';
-  resultText: string | null;
-  submittedAt: string;
-  resolvedAt: string | null;
-}
-
 export interface PendingApproval {
   id: string;
   conversationId: string;
@@ -201,33 +189,79 @@ export interface Skill {
 
 // ─── Phase 3: providers, models, usage ───────────────────────────────────
 
-export type ProviderId = 'anthropic' | 'gemini' | 'deepseek' | 'mindgate';
+export type ProviderId = string;
+
+export type ModelKind = 'chat' | 'image' | 'tts' | 'stt' | 'embedding';
+export const MODEL_KINDS: ModelKind[] = ['chat', 'image', 'tts', 'stt', 'embedding'];
+export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
 
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
+  baseUrl: string;
+  flavor: CompatFlavor;
+  enabled: boolean;
+  keyOptional: boolean;
+  concurrency: number | null;
   configured: boolean;
-  source: 'vault' | 'env' | null;
+  source: 'vault' | null;
   last4: string | null;
   needsReentry: boolean;
   keyHint: string;
+  modelCount: number;
+  enabledModelCount: number;
   warnUsdMonthly: number | null;
+}
+
+/** A starting point for "Add provider" — it only pre-fills the same form every provider goes through. */
+export interface ProviderPreset {
+  slug: string;
+  label: string;
+  baseUrl: string;
+  flavor: CompatFlavor;
+  keyOptional: boolean;
+  keyHint: string;
 }
 
 export interface ProvidersResponse {
   vaultEnabled: boolean;
   vaultDisabledReason: string | null;
   providers: ProviderInfo[];
+  presets: ProviderPreset[];
 }
 
+/** A model as the pickers see it (enabled models of enabled providers). */
 export interface ModelOption {
   id: string;
   provider: ProviderId;
+  providerLabel: string;
   label: string;
+  kind: ModelKind;
+  tags: string[];
+  description: string;
   available: boolean;
   pricingKnown: boolean;
   supportsImages: boolean;
-  supportsBatch: boolean;
+  status?: 'online' | 'asleep' | 'waking';
+}
+
+/** A model in the Settings editor — also the switched-off ones. `overridden` lists the fields the user changed. */
+export interface CatalogModelRow extends Omit<ModelOption, 'available' | 'providerLabel'> {
+  /** The id as the provider itself names it. */
+  upstream: string;
+  enabled: boolean;
+  source: 'discovered' | 'manual' | 'seed';
+  overridden: string[];
+}
+
+export type SlotKey = 'chat' | 'helper' | 'subagent' | 'escalation';
+
+export interface SlotsResponse {
+  /** What the user picked ('' = automatic). */
+  slots: Record<SlotKey, string>;
+  /** What each slot resolves to right now (null = nothing usable). */
+  resolved: Record<SlotKey, string | null>;
+  allowPaidAgents: boolean;
 }
 
 export type UsageRange = 'today' | '7d' | '30d' | 'month' | 'all';

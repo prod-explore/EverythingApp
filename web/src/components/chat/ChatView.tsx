@@ -75,7 +75,7 @@ export function ChatView({
           </SelectionToolbarPrimitive.Quote>
         </SelectionToolbarPrimitive.Root>
         <ChatQuestions conversationId={conversationId} />
-        <Composer conversationId={conversationId} error={error} onRetry={retry} />
+        <Composer error={error} onRetry={retry} />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );

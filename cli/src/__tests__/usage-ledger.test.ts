@@ -7,7 +7,9 @@ function setup(nowIso = '2026-09-18T10:00:00.000Z') {
   const db = openDb(':memory:');
   runMigrations(db);
   let now = new Date(nowIso);
-  const ledger = new UsageLedger(db, () => now, {});
+  // The catalog ships no price list — claude-sonnet-5 is priced through the override like any other model.
+  const env = { MODEL_PRICING_JSON: '{"claude-sonnet-5":{"input":2,"output":10,"cacheRead":0.2}}' } as NodeJS.ProcessEnv;
+  const ledger = new UsageLedger(db, () => now, env);
   return { db, ledger, setNow: (iso: string) => void (now = new Date(iso)) };
 }
 

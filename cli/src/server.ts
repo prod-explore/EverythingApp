@@ -5,7 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import Anthropic from '@anthropic-ai/sdk';
+import type Anthropic from '@anthropic-ai/sdk';
 import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
@@ -16,13 +16,13 @@ import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
 import { generateDailySummary } from './gazeta.js';
-import { submitBatch, checkBatch, type AnthropicBatchLike } from './batch.js';
 import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { withModelIdentity } from './providers/identity.js';
-import { ProviderRouter, ProviderNotConfiguredError, UnknownModelError } from './providers/router.js';
-import { isProviderId } from './providers/registry.js';
+import { ProviderRouter } from './providers/router.js';
+import { SLUG_RE, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
+import { findPreset, getModelInfo, normalizeModelId, presetBaseUrl } from './providers/registry.js';
 import { SSEManager } from './sse.js';
-import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, createBatchResultItem, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
+import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
 import { parseCommandPolicy } from './command-policy.js';
 import { PolicyStore, policyFilePath } from './policy-file.js';
 import { AgentManager } from './agents.js';
@@ -36,7 +36,7 @@ import { createN5Routes, migrateN5 } from './n5-routes.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { createAuth, type Auth } from './session.js';
-import { DEFAULT_TIER_MODELS, TIERS, defaultChatModel, isTier, setTierModels, tierModels } from './tiers.js';
+import { SLOT_KEYS, allowPaidAgents, getSlots, isFreeModel, isSlotKey, modelsPrompt, resolveSlot, setAllowPaidAgents, setSlots } from './slots.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
   openDb,
@@ -65,10 +65,6 @@ import {
   expireGazetaItem,
   createGazetaItem,
   onGazetaItemCreated,
-  createBatchJob,
-  listBatchJobs,
-  resolveBatchJob,
-  getPendingBatchJobs,
   listSkills,
   getSkill,
   createSkill,
@@ -98,7 +94,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const DEFAULT_SYSTEM_PROMPT = `You are a personal AI assistant running inside EverythingApp, a self-hosted, bring-your-own-key AI workspace. You have access to tools exposed by connected MCP servers. Every tool call with a side effect goes through the Approval Gate — if one is rejected, tell the user and suggest an alternative instead of retrying the same call in a loop. When you need non-urgent input from the user, use the request_human_input tool to queue it in their Gazeta inbox. Be concise and direct.`;
 
-const BATCH_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 /** Plain text of the assistant messages a turn produced — input for the free-tier title. */
 function textOfHistory(msgs: Anthropic.MessageParam[]): string {
@@ -220,10 +215,10 @@ async function main(): Promise<void> {
 /**
  * Assembles the Express app: tool registry, shared services (approval gate,
  * usage tracker, SSE manager), every /api route, static frontend serving,
- * and the background batch-check + SSE-keepalive intervals.
+ * and the background digest + SSE-keepalive intervals.
  *
  * Split out from main() so integration tests can build a real app against a
- * fake Anthropic client (LlmClient & AnthropicBatchLike) and an
+ * fake model client (LlmClient) and an
  * in-memory db, with zero MCP connections and no live API key. main() still
  * owns app.listen() and process-level concerns (real MCP connect(), graceful
  * shutdown, SIGTERM/SIGINT) — a test can listen on an ephemeral port itself,
@@ -234,14 +229,14 @@ export interface BuildAppOptions {
   /** Shell inside the sandbox — tests inject a fake; defaults to the real supervisor. */
   sandboxExec?: SandboxExec;
   connections: McpConnection[];
-  /** Provider resolution + key vault. Omit in tests to get a router whose Anthropic client is `anthropic`. */
+  /** Provider resolution + key vault. Omit in tests to get a router that serves every model from `llm`. */
   router?: ProviderRouter;
-  /** Test double for the Anthropic client — only used when `router` is omitted. */
-  anthropic?: LlmClient & AnthropicBatchLike;
+  /** Test double for the model client — only used when `router` is omitted. */
+  llm?: LlmClient;
   authToken: string;
   /** Password for the browser login form (SERVER_PASSWORD). Defaults to authToken. */
   password?: string;
-  config: Pick<Config, 'model' | 'autoApproveTools' | 'webSearchEnabled'>;
+  config: Pick<Config, 'model' | 'autoApproveTools'>;
   /** Path of policy.json; omitted/null disables the file (tests). main() passes policyFilePath(). */
   policyFile?: string | null;
 }
@@ -249,7 +244,7 @@ export interface BuildAppOptions {
 export interface BuiltApp {
   app: express.Express;
   sse: SSEManager;
-  /** Clears the background batch-check and SSE-keepalive intervals. Does not close the db or MCP connections — the caller owns those. */
+  /** Clears the background digest and SSE-keepalive intervals. Does not close the db or MCP connections — the caller owns those. */
   stop: () => void;
   auth: Auth;
 }
@@ -257,7 +252,7 @@ export interface BuiltApp {
 export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const { db, connections, authToken, config } = opts;
   const auth = createAuth({ db, authToken, password: opts.password });
-  const router = opts.router ?? new ProviderRouter({ db, anthropicOverride: opts.anthropic });
+  const router = opts.router ?? new ProviderRouter({ db, llmOverride: opts.llm });
 
   const registry = new ToolRegistry(config.autoApproveTools);
   await registry.loadFrom(connections);
@@ -276,12 +271,12 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const sse = new SSEManager();
   // A provider is busy (e.g. Gemini free tier at peak hours): we keep retrying quietly — log it and tell the UI.
   /**
-   * Model for chats that have none of their own: the user's explicit default, an explicit ANTHROPIC_MODEL env, then
-   * the FREE tier (Gemini Flash-Lite) when it is usable, else the configured fallback. Claude is a manual choice.
+   * Model for chats that have none of their own: the `chat` slot — the user's explicit default, else a usable `free`
+   * model, else any usable chat model — and finally the configured DEFAULT_MODEL (may be empty: then the turn says
+   * that no model is set up yet).
    */
-  const modelAvailable = (id: string) => { try { router.clientFor(id); return true; } catch { return false; } };
   const defaultModelId = (): string =>
-    getSetting(db, 'default_model') || process.env['ANTHROPIC_MODEL'] || defaultChatModel(tierModels(db), modelAvailable) || config.model;
+    resolveSlot(db, 'chat', router.chatCandidates(), id => router.isAvailable(id)) || config.model;
 
   router.onProviderRetry = info => {
     console.warn(`[provider] ${info.provider} busy (${info.status}) — retry #${info.attempt} in ${Math.round(info.delayMs / 1000)}s, giving up in ${Math.round(info.remainingMs / 60_000)} min`);
@@ -296,10 +291,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestProjectConversation(db, projectId),
   });
 
-  // web_search is executed on Anthropic's side, so it only exists for Anthropic
-  // models. request_human_input / spawn_agent are orchestrator-executed
-  // virtual tools (see VirtualTool in anthropic-loop.ts) and work with any provider.
-  const webSearchTool: Anthropic.ToolUnion = { type: 'web_search_20250305' as const, name: 'web_search' as const, max_uses: 5 };
+  // request_human_input / spawn_agent are orchestrator-executed virtual tools (see VirtualTool in
+  // anthropic-loop.ts) and work with any provider. Web access is a tool (browser connector), not a model feature.
 
   const isString = (v: unknown): v is string => typeof v === 'string';
 
@@ -308,8 +301,8 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const agents = new AgentManager({
     db, router, registry, approval: approvalGate, sse,
     browserPolicyOf: projectId => browserPolicyOf(projectId),
-    recordUsage: ({ conversationId, provider, model, usage, batch }) => {
-      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage, batch });
+    recordUsage: ({ conversationId, provider, model, usage }) => {
+      const { costUsd, warning } = ledger.record({ conversationId, provider, model, usage });
       if (warning) sse.emitAll('usage:warning', warning);
       return costUsd;
     },
@@ -451,45 +444,6 @@ ${formatHumanResponse(response)}` };
     return turnStates.get(convId) ?? { id: 0, status: 'idle' };
   }
 
-  // ─── Background batch checker ─────────────────────────────────────────────
-  async function resolvePendingBatches(skipConvId?: string): Promise<void> {
-    const pending = getPendingBatchJobs(db);
-    if (pending.length === 0) return;
-    for (const job of pending) {
-      if (skipConvId && job.conversationId === skipConvId) continue;
-      try {
-        const anthropicClient = router.anthropic();
-        if (!anthropicClient) continue; // key removed since submission — leave the job pending rather than dropping it
-        const resolution = await checkBatch(anthropicClient, {
-          batchId: job.id,
-          customId: job.customId,
-          submittedAt: job.submittedAt,
-          preview: job.preview,
-        });
-        if (!resolution) continue;
-        resolveBatchJob(db, job.id, resolution.status, resolution.text);
-        if (resolution.usage) {
-          ledger.record({
-            conversationId: job.conversationId,
-            provider: 'anthropic',
-            model: resolution.model ?? defaultModelId(),
-            usage: resolution.usage,
-            batch: true,
-          });
-        }
-        if (resolution.status === 'succeeded' && resolution.text) {
-          appendMessage(db, job.conversationId, 'assistant', resolution.text);
-          // Create a gazeta item so user sees the batch result
-          createBatchResultItem(db, { ...job, resultText: resolution.text });
-          sse.emit(job.conversationId, 'batch:resolved', { jobId: job.id, convId: job.conversationId });
-          sse.emitAll('gazeta:new', { type: 'batch_result' });
-        }
-      } catch (err) {
-        console.error(`[batch] error checking ${job.id}:`, (err as Error).message);
-      }
-    }
-  }
-
   // ─── Express setup ────────────────────────────────────────────────────────
   const app = express();
   app.set('trust proxy', 1);
@@ -623,21 +577,35 @@ ${formatHumanResponse(response)}` };
     res.json({ ok: true });
   });
 
-  // ─── Model tiers (free / cheap / standard / strong → concrete model ids) ───
-  app.get('/api/tiers', (_req, res) => {
-    res.json({ tiers: TIERS, models: tierModels(db), defaults: DEFAULT_TIER_MODELS, defaultChatModel: defaultModelId() });
+  // ─── Model slots (chat / helper / subagent / escalation → concrete model ids) ───
+  function slotsPayload() {
+    const candidates = router.chatCandidates();
+    const available = (id: string) => router.isAvailable(id);
+    const resolved = Object.fromEntries(SLOT_KEYS.map(k => [k, resolveSlot(db, k, candidates, available)]));
+    return { slots: getSlots(db), resolved, allowPaidAgents: allowPaidAgents(db) };
+  }
+
+  app.get('/api/slots', (_req, res) => {
+    res.json(slotsPayload());
   });
 
-  app.put('/api/tiers', (req, res) => {
+  app.put('/api/slots', (req, res) => {
     const body = (req.body ?? {}) as Record<string, unknown>;
-    const known = new Set(router.models().map(m => m.id));
-    const patch: Partial<Record<(typeof TIERS)[number], string>> = {};
-    for (const [tier, id] of Object.entries(body)) {
-      if (!isTier(tier) || typeof id !== 'string' || !id) { res.status(400).json({ error: `expected { ${TIERS.join('?, ')}?: modelId }` }); return; }
-      if (!known.has(id)) { res.status(400).json({ error: `unknown model "${id}" for tier "${tier}"` }); return; }
-      patch[tier] = id;
+    const known = new Set(router.chatCandidates().map(m => m.id));
+    const patch: Partial<Record<(typeof SLOT_KEYS)[number], string>> = {};
+    for (const [slot, value] of Object.entries(body)) {
+      if (slot === 'allowPaidAgents') {
+        if (typeof value !== 'boolean') { res.status(400).json({ error: 'allowPaidAgents must be a boolean' }); return; }
+        setAllowPaidAgents(db, value);
+        continue;
+      }
+      if (!isSlotKey(slot) || typeof value !== 'string') { res.status(400).json({ error: `expected { ${SLOT_KEYS.join('?, ')}?: modelId | "" , allowPaidAgents?: boolean }` }); return; }
+      const id = value ? normalizeModelId(value) : '';
+      if (id && !known.has(id)) { res.status(400).json({ error: `unknown or disabled chat model "${value}" for slot "${slot}"` }); return; }
+      patch[slot] = id;
     }
-    res.json({ models: setTierModels(db, patch) });
+    setSlots(db, patch);
+    res.json(slotsPayload());
   });
 
   // ─── Connectors ───────────────────────────────────────────────────────────
@@ -880,6 +848,16 @@ ${formatHumanResponse(response)}` };
       // a system text block with cache_control on empty text.
       let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
+      // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
+      const agentModels = router.chatCandidates().filter(m => m.available);
+      if (agentModels.length > 0) {
+        const block = modelsPrompt(agentModels, {
+          subagent: resolveSlot(db, 'subagent', agentModels, id => router.isAvailable(id)),
+          escalation: resolveSlot(db, 'escalation', agentModels, id => router.isAvailable(id)),
+        }, { parentIsFree: isFreeModel(getModelInfo(effectiveModel)), allowPaid: allowPaidAgents(db) });
+        if (block) effectiveSystem += '\n\n' + block;
+      }
+
       // Inject prompts from Skills attached to this conversation (Phase 2).
       // Each non-empty skill prompt is appended after a separator so the model
       // can distinguish skill instructions from the base system prompt.
@@ -899,8 +877,8 @@ ${formatHumanResponse(response)}` };
       try {
         // Inside the try on purpose: a missing/undecryptable key must surface as an
         // ordinary turn:error the UI already knows how to show, not a crash.
+        if (!effectiveModel) throw new Error('No model is set up yet — add a provider in Settings → Models.');
         const { provider, info, client } = router.clientFor(effectiveModel);
-        const serverTools: Anthropic.ToolUnion[] = info.supportsWebSearch && config.webSearchEnabled ? [webSearchTool] : [];
 
         const updatedHistory = await runTurn(
           {
@@ -909,7 +887,6 @@ ${formatHumanResponse(response)}` };
             maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
             tools: registry,
             systemPrompt: effectiveSystem,
-            serverTools,
             virtualTools: buildVirtualTools(convId, rootRun.id, controller.signal),
             drainInbox: () => drainRunMessages(db, rootRun.id).map(m => `[message from ${m.fromLabel}]
 ${m.body}`),
@@ -1028,7 +1005,7 @@ ${m.body}`),
   // ─── Send message ─────────────────────────────────────────────────────────
   app.post('/api/conversations/:id/message', (req, res) => {
     const convId = req.params.id;
-    const { content: rawContent, text, batch, attachments } = req.body ?? {};
+    const { content: rawContent, text, attachments } = req.body ?? {};
     const content = buildMessageContent(rawContent ?? text, attachments);
 
     if (content === null) {
@@ -1039,43 +1016,6 @@ ${m.body}`),
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
     if (getTurnState(convId).status === 'running') {
       res.status(409).json({ error: 'a turn is already running in this conversation' });
-      return;
-    }
-
-    // Batch mode — submit to Anthropic Batch API instead
-    if (batch) {
-      if (typeof content !== 'string') {
-        res.status(400).json({ error: 'attachments are not supported in batch mode yet' });
-        return;
-      }
-      const history = getMessages(db, convId);
-      const effectiveModel = conv.model || defaultModelId();
-      const effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
-
-      let batchClient: ReturnType<typeof router.anthropic>;
-      try {
-        const resolved = router.clientFor(effectiveModel);
-        if (!resolved.info.supportsBatch) {
-          res.status(400).json({ error: `Batch mode is only available for Anthropic models (this conversation uses ${effectiveModel}).` });
-          return;
-        }
-        batchClient = router.anthropic();
-      } catch (err) {
-        res.status(err instanceof ProviderNotConfiguredError || err instanceof UnknownModelError ? 400 : 500).json({ error: (err as Error).message });
-        return;
-      }
-      if (!batchClient) { res.status(400).json({ error: 'No Anthropic API key configured — add one in Settings → Models.' }); return; }
-      const client = batchClient;
-      void (async () => {
-        try {
-          const entry = await submitBatch(client, effectiveModel, effectiveSystem, history as Anthropic.MessageParam[], content);
-          appendMessage(db, convId, 'user', content);
-          createBatchJob(db, { id: entry.batchId, conversationId: convId, customId: entry.customId, userText: content, preview: entry.preview });
-          res.json({ ok: true, batchId: entry.batchId });
-        } catch (err) {
-          res.status(500).json({ error: router.redact((err as Error).message) });
-        }
-      })();
       return;
     }
 
@@ -1361,15 +1301,6 @@ ${formatHumanResponse(response)}`;
     res.json({ ok: true });
   });
 
-  // ─── Batch jobs ───────────────────────────────────────────────────────────
-  app.get('/api/batches', (_req, res) => {
-    res.json({ jobs: listBatchJobs(db) });
-  });
-
-  app.get('/api/conversations/:id/batches', (req, res) => {
-    res.json({ jobs: listBatchJobs(db, { conversationId: req.params.id }) });
-  });
-
   // ─── §6b Chunk B: Artifacts ───────────────────────────────────────────────
   // Files are stored under EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/).
   // The DB row holds only metadata; the file content is served directly from disk.
@@ -1483,35 +1414,83 @@ ${formatHumanResponse(response)}`;
     res.json(ledger.report(range, tzOffset));
   });
 
-  // ─── Providers & key vault ────────────────────────────────────────────────
-  // Keys are write-only over this API: they go in via PUT and never come back
-  // out — only presence, source and the last four characters are ever returned.
-  function providerIdOr404(raw: string, res: express.Response): ReturnType<typeof asProviderId> {
-    const id = asProviderId(raw);
-    if (!id) res.status(404).json({ error: `unknown provider '${raw}'` });
-    return id;
+  // ─── Providers, models & key vault ────────────────────────────────────────
+  // One flow for every provider: base URL + key → test (GET /models) → model list saved. MindGate, Gemini,
+  // OpenRouter and a LAN server go through exactly the same routes. Keys are write-only over this API: they go
+  // in via POST/PUT and never come back out — only presence and the last four characters are ever returned.
+  function providerOr404(raw: string, res: express.Response): NonNullable<ReturnType<typeof router.catalog.get>> | null {
+    const p = router.catalog.get(raw);
+    if (!p) res.status(404).json({ error: `unknown provider '${raw}'` });
+    return p ?? null;
   }
-  function asProviderId(raw: string) {
-    return isProviderId(raw) ? raw : null;
-  }
+  const validKey = (key: unknown): key is string => typeof key === 'string' && key.trim().length >= 8 && key.length <= 512 && !/\s/.test(key.trim());
 
   app.get('/api/providers', (_req, res) => {
     res.json({
       vaultEnabled: router.vault.enabled,
       vaultDisabledReason: router.vault.disabledReason,
       providers: router.status().map(p => ({ ...p, warnUsdMonthly: getProviderLimit(db, p.id).warnUsdMonthly })),
+      presets: router.availablePresets(),
     });
   });
 
-  app.get('/api/models', (_req, res) => {
-    res.json({ models: router.models().filter(m => !m.hidden).map(({ pricing, ...m }) => ({ ...m, pricingKnown: pricing !== null })) });
+  app.post('/api/providers', async (req, res) => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const preset = typeof b['preset'] === 'string' ? findPreset(b['preset']) : undefined;
+    const slug = (typeof b['slug'] === 'string' ? b['slug'] : preset?.slug ?? '').trim().toLowerCase();
+    const baseUrl = normalizeBaseUrl(b['baseUrl'] ?? (preset ? presetBaseUrl(preset) : undefined));
+    if (!SLUG_RE.test(slug)) { res.status(400).json({ error: 'slug: lowercase letters, digits and dashes (max 32)' }); return; }
+    if (!baseUrl) { res.status(400).json({ error: 'baseUrl must be an http(s) URL without credentials, e.g. https://openrouter.ai/api/v1' }); return; }
+    if (router.catalog.get(slug)) { res.status(409).json({ error: 'a provider with this slug already exists' }); return; }
+    const apiKey = typeof b['apiKey'] === 'string' && b['apiKey'].trim() ? b['apiKey'].trim() : null;
+    if (apiKey && !validKey(apiKey)) { res.status(400).json({ error: 'the API key must be a single token with no whitespace' }); return; }
+    if (apiKey && !router.vault.enabled) { res.status(503).json({ error: router.vault.disabledReason }); return; }
+    const keyOptional = b['keyOptional'] === true || preset?.keyOptional === true;
+    router.catalog.create({
+      slug,
+      label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : preset?.label ?? slug,
+      baseUrl,
+      keyOptional,
+      flavor: isFlavor(b['flavor']) ? b['flavor'] : preset?.flavor ?? 'generic',
+      concurrency: preset?.concurrency ?? null,
+    });
+    if (apiKey) router.saveKey(slug, apiKey);
+    // Test the connection and load the model list right away; the provider stays saved either way.
+    const refresh = apiKey || keyOptional ? await router.refreshModels(slug) : null;
+    res.status(201).json({ ok: true, id: slug, refresh });
+  });
+
+  app.patch('/api/providers/:id', (req, res) => {
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const baseUrl = b['baseUrl'] === undefined ? undefined : normalizeBaseUrl(b['baseUrl']);
+    if (baseUrl === null) { res.status(400).json({ error: 'invalid baseUrl' }); return; }
+    if (b['flavor'] !== undefined && !isFlavor(b['flavor'])) { res.status(400).json({ error: 'invalid flavor' }); return; }
+    const c = b['concurrency'];
+    if (c !== undefined && c !== null && !(typeof c === 'number' && Number.isInteger(c) && c >= 1 && c <= 32)) { res.status(400).json({ error: 'concurrency: integer 1–32, or null for the default' }); return; }
+    router.catalog.update(p.slug, {
+      label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : undefined,
+      baseUrl,
+      keyOptional: typeof b['keyOptional'] === 'boolean' ? b['keyOptional'] : undefined,
+      flavor: isFlavor(b['flavor']) ? b['flavor'] : undefined,
+      enabled: typeof b['enabled'] === 'boolean' ? b['enabled'] : undefined,
+      concurrency: c === undefined ? undefined : (c as number | null),
+    });
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/providers/:id', (req, res) => {
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    res.json({ ok: router.removeProvider(p.slug) });
   });
 
   app.put('/api/providers/:id/key', async (req, res) => {
-    const id = providerIdOr404(req.params.id, res);
-    if (!id) return;
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
     const key = req.body?.key;
-    if (typeof key !== 'string' || key.trim().length < 8 || key.length > 512 || /\s/.test(key.trim())) {
+    if (!validKey(key)) {
       res.status(400).json({ error: 'expected { key: string } — a single token with no whitespace' });
       return;
     }
@@ -1519,34 +1498,79 @@ ${formatHumanResponse(response)}`;
       res.status(503).json({ error: router.vault.disabledReason });
       return;
     }
-    router.saveKey(id, key.trim());
+    router.saveKey(p.slug, key.trim());
     // Verify right away so a typo is caught now, not on the next chat turn. The key stays saved either way —
     // a provider outage shouldn't make the user lose what they just typed.
-    const test = req.body?.verify === false ? null : await router.test(id);
+    const test = req.body?.verify === false ? null : await router.test(p.slug);
     res.json({ ok: true, verified: test ? test.ok : null, verifyError: test && !test.ok ? test.error : null });
   });
 
   app.delete('/api/providers/:id/key', (req, res) => {
-    const id = providerIdOr404(req.params.id, res);
-    if (!id) return;
-    res.json({ ok: router.removeKey(id) });
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    res.json({ ok: router.removeKey(p.slug) });
   });
 
   app.post('/api/providers/:id/test', async (req, res) => {
-    const id = providerIdOr404(req.params.id, res);
-    if (!id) return;
-    res.json(await router.test(id));
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    res.json(await router.test(p.slug));
+  });
+
+  app.post('/api/providers/:id/refresh-models', async (req, res) => {
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    res.json(await router.refreshModels(p.slug));
   });
 
   app.put('/api/providers/:id/limits', (req, res) => {
-    const id = providerIdOr404(req.params.id, res);
-    if (!id) return;
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
     const v = req.body?.warnUsdMonthly;
     if (v !== null && !(typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1_000_000)) {
       res.status(400).json({ error: 'expected { warnUsdMonthly: number > 0 | null }' });
       return;
     }
-    setProviderWarnLimit(db, id, v);
+    setProviderWarnLimit(db, p.slug, v);
+    res.json({ ok: true });
+  });
+
+  const stripPricing = <T extends { pricing: unknown }>({ pricing, ...rest }: T) => ({ ...rest, pricingKnown: pricing !== null });
+
+  /** Every model of one provider (also the switched-off ones) with their effective metadata — the Settings editor. */
+  app.get('/api/providers/:id/models', (req, res) => {
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    res.json({ models: router.providerModels(p.slug).map(stripPricing) });
+  });
+
+  /** Adds a model id by hand — for a provider without /models, or one that hides some. */
+  app.post('/api/providers/:id/models', (req, res) => {
+    const p = providerOr404(req.params.id, res);
+    if (!p) return;
+    const id = typeof req.body?.id === 'string' ? req.body.id.trim() : '';
+    if (!id || id.length > 200 || /\s/.test(id)) { res.status(400).json({ error: 'expected { id: string } — the model id as the provider knows it, no spaces' }); return; }
+    if (!router.catalog.addManual(p.slug, id, sanitizeFields(req.body))) { res.status(409).json({ error: 'this model is already in the list' }); return; }
+    res.status(201).json({ ok: true, id: `@${p.slug}/${id}` });
+  });
+
+  /** Pickers: enabled models of enabled providers (each flagged `available` when its provider has a key). Filter on `kind`. */
+  app.get('/api/models', (_req, res) => {
+    res.json({ models: router.models().map(stripPricing) });
+  });
+
+  /** Switch a model on/off or set its metadata; a field set to null goes back to what the provider reports. */
+  app.patch('/api/models', (req, res) => {
+    const { id, enabled, ...fields } = (req.body ?? {}) as Record<string, unknown>;
+    if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'expected { id, enabled?, label?, kind?, tags?, description?, supportsImages?, toolSchemaMode? }' }); return; }
+    const ok = router.catalog.updateModel(id, { enabled: typeof enabled === 'boolean' ? enabled : undefined, fields });
+    if (!ok) { res.status(404).json({ error: 'unknown model' }); return; }
+    res.json({ ok: true });
+  });
+
+  app.delete('/api/models', (req, res) => {
+    const id = typeof req.query['id'] === 'string' ? req.query['id'] : '';
+    if (!id || !router.catalog.removeModel(id)) { res.status(404).json({ error: 'unknown model' }); return; }
     res.json({ ok: true });
   });
 
@@ -1597,28 +1621,14 @@ ${formatHumanResponse(response)}`;
   app.post('/api/gazeta/daily-digest', async (_req, res) => {
     try {
       const id = await runDailyDigest(true);
-      if (!id) { res.status(409).json({ error: 'Nothing to summarize, or no usable free-tier model (Settings → Models → Tiers).' }); return; }
+      if (!id) { res.status(409).json({ error: 'Nothing to summarize, or no usable helper model (Settings → Models → Model slots).' }); return; }
       res.json({ ok: true, id });
     } catch (err) { res.status(502).json({ error: router.redact((err as Error).message) }); }
   });
   const digestInterval = setInterval(() => { runDailyDigest().catch(e => console.error('[digest]', (e as Error).message)); }, 60 * 60 * 1000);
   digestInterval.unref();
 
-  const batchInterval = setInterval(() => {
-    const runningConvIds = [...turnStates.entries()]
-      .filter(([, s]) => s.status === 'running')
-      .map(([id]) => id);
-    // Skip conversations with running turns to avoid concurrent history mutation
-    for (const convId of runningConvIds) {
-      resolvePendingBatches(convId).catch(err => {
-        console.error('[batch] background check failed:', (err as Error).message);
-      });
-    }
-  }, BATCH_CHECK_INTERVAL_MS);
-  batchInterval.unref();
-
   function stop(): void {
-    clearInterval(batchInterval);
     clearInterval(digestInterval);
     offPush();
     clearInterval(keepaliveInterval);

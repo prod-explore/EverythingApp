@@ -4,6 +4,7 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type Anthropic from '@anthropic-ai/sdk';
 import { buildApp } from '../server.js';
+import { ProviderRouter } from '../providers/router.js';
 import { openDb, runMigrations, listGazetaItems, getMessages } from '../db.js';
 
 /**
@@ -60,7 +61,10 @@ describe('request_human_input as an in-loop virtual tool', () => {
     };
     const db = openDb(':memory:');
     runMigrations(db);
-    const built = await buildApp({ db, connections: [], anthropic: client as any, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false } });
+    const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.addManual('t', 'm', { tags: ['reasoning'] });
+    const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] } });
     const server = built.app.listen(0);
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;
@@ -111,7 +115,10 @@ describe('Gazeta as one inbox (N6)', () => {
     };
     const db = openDb(':memory:');
     runMigrations(db);
-    const built = await buildApp({ db, connections: [], anthropic: client as any, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false } });
+    const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.addManual('t', 'm', { tags: ['reasoning'] });
+    const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] } });
     const server = built.app.listen(0);
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;
@@ -157,7 +164,7 @@ describe('Gazeta as one inbox (N6)', () => {
       const worker = JSON.stringify(p.system).includes('worker agent');
       if (worker) return msg([{ type: 'text', text: 'worker report', citations: null }], 'end_turn');
       const last = JSON.stringify(p.messages.at(-1));
-      if (!last.includes('tool_result')) return msg([{ type: 'tool_use', id: 's1', name: 'spawn_agent', input: { goal: 'research', model: 'claude-sonnet-5', label: 'r' } }], 'tool_use');
+      if (!last.includes('tool_result')) return msg([{ type: 'tool_use', id: 's1', name: 'spawn_agent', input: { goal: 'research', model: '@t/m', label: 'r' } }], 'tool_use');
       const spawned = /Spawned (\w+)/.exec(last);
       if (spawned) return msg([{ type: 'tool_use', id: 'w1', name: 'wait_agents', input: { run_ids: [spawned[1]] } }], 'tool_use');
       return msg([{ type: 'text', text: 'final', citations: null }], 'end_turn');

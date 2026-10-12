@@ -1,7 +1,6 @@
 import type {
   ApprovalGrantRow,
   ApprovalScope,
-  BatchJob,
   ConnectorInfo,
   Conversation,
   ConversationSummary,
@@ -9,6 +8,9 @@ import type {
   GazetaItem,
   GazetaQuery,
   OutgoingAttachment,
+  CatalogModelRow,
+  CompatFlavor,
+  ModelKind,
   ModelOption,
   PendingApproval,
   ProjectListItem,
@@ -16,6 +18,8 @@ import type {
   ProviderId,
   ProvidersResponse,
   RawMessage,
+  SlotKey,
+  SlotsResponse,
   RunRow,
   Skill,
   TurnState,
@@ -129,16 +133,14 @@ export function clearMessages(conversationId: string): Promise<{ ok: true }> {
   return request(`/api/conversations/${conversationId}/messages`, { method: 'DELETE' });
 }
 
-/** batch=true submits via the Batches API instead of running live — see implementation_plan.md §2.2. Attachments are images only in Phase 1 and are ignored in batch mode by the server. */
 export function sendMessage(
   conversationId: string,
   content: string,
-  batch?: boolean,
   attachments?: OutgoingAttachment[],
-): Promise<{ ok: true; turnId?: number; batchId?: string }> {
+): Promise<{ ok: true; turnId?: number }> {
   return request(`/api/conversations/${conversationId}/message`, {
     method: 'POST',
-    body: JSON.stringify({ content, batch, attachments }),
+    body: JSON.stringify({ content, attachments }),
   });
 }
 
@@ -298,16 +300,6 @@ export function artifactFileUrl(id: string): string {
   return `/api/artifacts/${id}/file`;
 }
 
-// ─── Batch jobs ───────────────────────────────────────────────────────────
-
-export function listBatchJobs(): Promise<{ jobs: BatchJob[] }> {
-  return request('/api/batches');
-}
-
-export function listConversationBatchJobs(conversationId: string): Promise<{ jobs: BatchJob[] }> {
-  return request(`/api/conversations/${conversationId}/batches`);
-}
-
 // ─── Usage ────────────────────────────────────────────────────────────────
 
 export function getUsage(): Promise<{ summary: string }> {
@@ -326,8 +318,38 @@ export function getProviders(): Promise<ProvidersResponse> {
   return request('/api/providers');
 }
 
+/** Enabled models of enabled providers; pickers filter on `kind`. */
 export function getModels(): Promise<{ models: ModelOption[] }> {
   return request('/api/models');
+}
+
+export interface NewProvider {
+  /** A preset pre-fills slug, label, base URL and dialect. */
+  preset?: string;
+  slug?: string;
+  label?: string;
+  baseUrl?: string;
+  flavor?: CompatFlavor;
+  apiKey?: string;
+  keyOptional?: boolean;
+}
+
+export type RefreshResult = { ok: true; count: number; added: number; removed: number } | { ok: false; error: string };
+
+/** The one way to add any provider — MindGate, Gemini, OpenRouter or a LAN server. Tests the connection and loads its models. */
+export function addProvider(p: NewProvider): Promise<{ ok: true; id: string; refresh: RefreshResult | null }> {
+  return request('/api/providers', { method: 'POST', body: JSON.stringify(p) });
+}
+
+export function updateProvider(
+  id: ProviderId,
+  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null }>,
+): Promise<{ ok: true }> {
+  return request(`/api/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+export function removeProvider(id: ProviderId): Promise<{ ok: boolean }> {
+  return request(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 /** Keys are write-only: the server never sends one back. */
@@ -335,19 +357,60 @@ export function saveProviderKey(
   id: ProviderId,
   key: string,
 ): Promise<{ ok: true; verified: boolean | null; verifyError: string | null }> {
-  return request(`/api/providers/${id}/key`, { method: 'PUT', body: JSON.stringify({ key }) });
+  return request(`/api/providers/${encodeURIComponent(id)}/key`, { method: 'PUT', body: JSON.stringify({ key }) });
 }
 
 export function deleteProviderKey(id: ProviderId): Promise<{ ok: boolean }> {
-  return request(`/api/providers/${id}/key`, { method: 'DELETE' });
+  return request(`/api/providers/${encodeURIComponent(id)}/key`, { method: 'DELETE' });
 }
 
-export function testProviderKey(id: ProviderId): Promise<{ ok: boolean; error?: string }> {
-  return request(`/api/providers/${id}/test`, { method: 'POST' });
+export function testProvider(id: ProviderId): Promise<{ ok: boolean; error?: string }> {
+  return request(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
+}
+
+/** `GET {base}/models` → catalog. User edits and hand-added models survive. */
+export function refreshProviderModels(id: ProviderId): Promise<RefreshResult> {
+  return request(`/api/providers/${encodeURIComponent(id)}/refresh-models`, { method: 'POST' });
 }
 
 export function setProviderLimit(id: ProviderId, warnUsdMonthly: number | null): Promise<{ ok: true }> {
-  return request(`/api/providers/${id}/limits`, { method: 'PUT', body: JSON.stringify({ warnUsdMonthly }) });
+  return request(`/api/providers/${encodeURIComponent(id)}/limits`, { method: 'PUT', body: JSON.stringify({ warnUsdMonthly }) });
+}
+
+export function listProviderModels(id: ProviderId): Promise<{ models: CatalogModelRow[] }> {
+  return request(`/api/providers/${encodeURIComponent(id)}/models`);
+}
+
+export type ModelPatch = Partial<{
+  enabled: boolean;
+  label: string | null;
+  kind: ModelKind | null;
+  tags: string[] | null;
+  description: string | null;
+  supportsImages: boolean | null;
+}>;
+
+/** A field set to null goes back to what the provider reports. */
+export function patchModel(id: string, patch: ModelPatch): Promise<{ ok: true }> {
+  return request('/api/models', { method: 'PATCH', body: JSON.stringify({ id, ...patch }) });
+}
+
+export function addProviderModel(provider: ProviderId, id: string, fields: { kind?: ModelKind; tags?: string[] } = {}): Promise<{ ok: true; id: string }> {
+  return request(`/api/providers/${encodeURIComponent(provider)}/models`, { method: 'POST', body: JSON.stringify({ id, ...fields }) });
+}
+
+export function removeModel(id: string): Promise<{ ok: true }> {
+  return request(`/api/models?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+// ─── Model slots ──────────────────────────────────────────────────────────
+
+export function getSlots(): Promise<SlotsResponse> {
+  return request('/api/slots');
+}
+
+export function setSlots(patch: Partial<Record<SlotKey, string>> & { allowPaidAgents?: boolean }): Promise<SlotsResponse> {
+  return request('/api/slots', { method: 'PUT', body: JSON.stringify(patch) });
 }
 
 // ─── N1: Projects ─────────────────────────────────────────────────────────────

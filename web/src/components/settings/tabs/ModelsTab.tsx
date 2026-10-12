@@ -1,29 +1,16 @@
 import { useSettings } from '../../../hooks/useSettings';
 import { useModels } from '../../../hooks/useModels';
-import { ModelOptions } from '../../shared/ModelOptions';
 import { ProvidersSection } from './ProvidersSection';
-import { CustomProvidersSection } from './CustomSections';
+import { ModelSlots } from './ModelSlots';
 
 export function ModelsTab() {
   const { settings, set } = useSettings();
-  const { models, refresh: refreshModels } = useModels();
+  const { refresh: refreshModels } = useModels();
 
   return (
     <div className="space-y-6">
       <ProvidersSection onChanged={refreshModels} />
-      <CustomProvidersSection onChanged={refreshModels} />
-
-      <div>
-        <label htmlFor="default-model" className="mb-2 block text-xs font-medium text-fg-secondary">Default model</label>
-        <select
-          id="default-model"
-          value={settings['default_model'] ?? 'claude-sonnet-5'}
-          onChange={e => set('default_model', e.target.value)}
-          className="w-full rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none"
-        >
-          <ModelOptions models={models} current={settings['default_model']} />
-        </select>
-      </div>
+      <ModelSlots onChanged={refreshModels} />
 
       <div>
         <label className="mb-2 block text-xs font-medium text-fg-secondary">Global system prompt</label>

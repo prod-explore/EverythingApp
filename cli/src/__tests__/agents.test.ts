@@ -7,12 +7,12 @@ import { ToolRegistry } from '../tool-registry.js';
 import { WebApprovalGate } from '../web-approval.js';
 import { SSEManager } from '../sse.js';
 import { openDb, runMigrations, createConversation, getMessages } from '../db.js';
-import { DEFAULT_TIER_MODELS } from '../tiers.js';
+import { setSlots, setAllowPaidAgents } from '../slots.js';
 import {
   createRun, getRun, listRuns, treeUsage, interruptOrphanedRuns, postRunMessage, drainRunMessages, addRunUsage, setRunStatus,
 } from '../runs.js';
 import type { McpConnectionLike } from '../mcp-client.js';
-import type { ProviderRouter } from '../providers/router.js';
+import { ProviderRouter } from '../providers/router.js';
 
 const usage = { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
 const message = (content: unknown[], stop: string) =>
@@ -57,7 +57,12 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
       },
     },
   };
-  const router = { clientFor: () => ({ provider: 'anthropic', info: {}, client }), redact: (m: string) => m } as unknown as ProviderRouter;
+  // A real router serving every model from the scripted client; the catalog holds one free and one paid model.
+  const router = new ProviderRouter({ db, env: {}, llmOverride: client as never });
+  router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+  router.catalog.addManual('t', 'free-1', { tags: ['free'] });
+  router.catalog.addManual('t', 'free-2', { tags: ['free', 'coder'] });
+  router.catalog.addManual('t', 'strong', { tags: ['reasoning'] });
   const gate = new WebApprovalGate(db);
   const agents = new AgentManager({
     db, router, registry, approval: gate, sse: new SSEManager(),
@@ -67,7 +72,7 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
   const root = createRun(db, { conversationId: conv, model: 'm', goal: 'orchestrate', label: 'assistant' });
   const controller = new AbortController();
   agents.registerRoot(root.id, controller);
-  return { db, conv, agents, root, controller, requests, executed, gate, maxActive: () => maxActive };
+  return { db, conv, agents, root, controller, requests, executed, gate, router, maxActive: () => maxActive };
 }
 
 const isWorker = (p: Anthropic.MessageCreateParamsNonStreaming) => JSON.stringify(p.system).includes('worker agent');
@@ -207,7 +212,7 @@ describe('AgentManager', () => {
     });
     const tools = new Map(t.agents.agentTools(t.root.id, t.controller.signal).map(v => [v.definition.name, v]));
     const ctx = { toolUseId: 'x' };
-    const spawned = await tools.get('spawn_agent')!.handler({ goal: 'g', model: 'm', label: 'w' }, ctx);
+    const spawned = await tools.get('spawn_agent')!.handler({ goal: 'g', model: '@t/free-1', label: 'w' }, ctx);
     const runId = /Spawned (\w+)/.exec(spawned.text)![1]!;
     assert.match((await tools.get('send_message')!.handler({ to: runId, body: 'use v2' }, ctx)).text, /Delivered/);
     assert.match((await tools.get('list_agents')!.handler({}, ctx)).text, /1 agent/);
@@ -256,7 +261,7 @@ describe('resuming finished agents', () => {
     assert.ok('error' in t.agents.resume(t.root.id, 'x'));
     const tools = new Map(t.agents.agentTools(t.root.id, t.controller.signal).map(v => [v.definition.name, v]));
     const ctx = { toolUseId: 'x' };
-    const spawned = await tools.get('spawn_agent')!.handler({ goal: 'g', model: 'm', label: 'w' }, ctx);
+    const spawned = await tools.get('spawn_agent')!.handler({ goal: 'g', model: '@t/free-1', label: 'w' }, ctx);
     const runId = /Spawned (\w+)/.exec(spawned.text)![1]!;
     await t.agents.wait([runId], 'all');
     const sent = await tools.get('send_message')!.handler({ to: runId, body: 'one more thing' }, ctx);
@@ -267,41 +272,72 @@ describe('resuming finished agents', () => {
   });
 });
 
-describe('spawn_agent tiers', () => {
+describe('spawn_agent model choice and the cost guard', () => {
   const ctx = { toolUseId: 'x' };
+  const FREE = '@t/free-1';
+  const STRONG = '@t/strong';
   const spawnTool = (t: Awaited<ReturnType<typeof setup>>, rootId: string) =>
     new Map(t.agents.agentTools(rootId, t.controller.signal).map(v => [v.definition.name, v])).get('spawn_agent')!;
+  const rootOn = (t: Awaited<ReturnType<typeof setup>>, model: string) => {
+    const r = createRun(t.db, { conversationId: t.conv, model, goal: 'o', label: 'assistant' });
+    t.agents.registerRoot(r.id, new AbortController());
+    return r.id;
+  };
+  const modelOf = (t: Awaited<ReturnType<typeof setup>>, text: string) => getRun(t.db, /Spawned (\w+)/.exec(text)![1]!)!.model;
 
-  it('does not advertise a raw model id; tier defaults to the free tier', async () => {
+  it('offers model and tag (no tier) and defaults to the first free model when no slot is set', async () => {
     const t = await setup(() => message([text('done')], 'end_turn'));
     const tool = spawnTool(t, t.root.id);
     const props = (tool.definition.input_schema as { properties: Record<string, unknown> }).properties;
-    assert.ok('tier' in props && !('model' in props));
+    assert.ok('model' in props && 'tag' in props && !('tier' in props));
     const r = await tool.handler({ goal: 'g' }, ctx);
-    assert.equal(r.isError, undefined);
-    const runId = /Spawned (\w+)/.exec(r.text)![1]!;
-    assert.equal(getRun(t.db, runId)!.model, DEFAULT_TIER_MODELS.free);
+    assert.equal(r.isError, undefined, r.text);
+    assert.equal(modelOf(t, r.text), FREE);
   });
 
-  it('a free-tier agent cannot start a worker in a higher tier', async () => {
+  it('the subagent slot beats the automatic choice; a tag picks the first usable model with it', async () => {
     const t = await setup(() => message([text('done')], 'end_turn'));
-    const freeRoot = createRun(t.db, { conversationId: t.conv, model: DEFAULT_TIER_MODELS.free, goal: 'o', label: 'assistant' });
-    t.agents.registerRoot(freeRoot.id, new AbortController());
-    const r = await spawnTool(t, freeRoot.id).handler({ goal: 'g', tier: 'strong' }, ctx);
+    const tool = spawnTool(t, t.root.id);
+    setSlots(t.db, { subagent: '@t/free-2' });
+    assert.equal(modelOf(t, (await tool.handler({ goal: 'g' }, ctx)).text), '@t/free-2');
+    assert.equal(modelOf(t, (await tool.handler({ goal: 'g', tag: 'coder' }, ctx)).text), '@t/free-2');
+    const none = await tool.handler({ goal: 'g', tag: 'nonexistent' }, ctx);
+    assert.equal(none.isError, true);
+    assert.match(none.text, /tagged "nonexistent"/);
+  });
+
+  it('with no agents slot and no free model, a worker inherits the parent model', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    t.router.catalog.updateModel('@t/free-1', { fields: { tags: [] } });
+    t.router.catalog.updateModel('@t/free-2', { fields: { tags: [] } });
+    const r = await spawnTool(t, rootOn(t, STRONG)).handler({ goal: 'g' }, ctx);
+    assert.equal(r.isError, undefined, r.text);
+    assert.equal(modelOf(t, r.text), STRONG);
+  });
+
+  it('rejects an unknown model id', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    const r = await spawnTool(t, t.root.id).handler({ goal: 'g', model: 'gpt-nope' }, ctx);
     assert.equal(r.isError, true);
-    assert.match(r.text, /above your own tier/);
+    assert.match(r.text, /unknown model/);
   });
 
-  it('a strong-tier agent may delegate downwards, and an unknown tier is rejected', async () => {
+  it('a chat on a free model cannot start a paid worker until paid agents are allowed', async () => {
     const t = await setup(() => message([text('done')], 'end_turn'));
-    const strongRoot = createRun(t.db, { conversationId: t.conv, model: DEFAULT_TIER_MODELS.strong, goal: 'o', label: 'assistant' });
-    t.agents.registerRoot(strongRoot.id, new AbortController());
-    const tool = spawnTool(t, strongRoot.id);
-    const cheap = await tool.handler({ goal: 'g', tier: 'cheap' }, ctx);
-    assert.equal(cheap.isError, undefined);
-    assert.equal(getRun(t.db, /Spawned (\w+)/.exec(cheap.text)![1]!)!.model, DEFAULT_TIER_MODELS.cheap);
-    const bad = await tool.handler({ goal: 'g', tier: 'platinum' }, ctx);
-    assert.equal(bad.isError, true);
-    assert.match(bad.text, /unknown tier/);
+    const tool = spawnTool(t, rootOn(t, FREE));
+    const blocked = await tool.handler({ goal: 'g', model: STRONG }, ctx);
+    assert.equal(blocked.isError, true);
+    assert.match(blocked.text, /not a free model/);
+    setAllowPaidAgents(t.db, true);
+    const ok = await tool.handler({ goal: 'g', model: STRONG }, ctx);
+    assert.equal(ok.isError, undefined, ok.text);
+    assert.equal(modelOf(t, ok.text), STRONG);
+  });
+
+  it('a chat on a paid model may delegate to paid and free workers alike', async () => {
+    const t = await setup(() => message([text('done')], 'end_turn'));
+    const tool = spawnTool(t, rootOn(t, STRONG));
+    assert.equal((await tool.handler({ goal: 'g', model: STRONG }, ctx)).isError, undefined);
+    assert.equal((await tool.handler({ goal: 'g', model: FREE }, ctx)).isError, undefined);
   });
 });

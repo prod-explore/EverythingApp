@@ -1,6 +1,6 @@
 # 0005 — Batch API for tool-using workers via a batched client
 
-**Status:** accepted
+**Status:** superseded by [0008](0008-unified-provider-catalog.md)
 
 **Context.** The Batch API is 50 % cheaper but asynchronous, so it fit only text-only turns. Agent loops need *submit → tool call → execute → submit*.
 

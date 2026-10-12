@@ -26,7 +26,7 @@ describe('deleting messages, conversations and projects', () => {
   before(async () => {
     db = openDb(':memory:'); runMigrations(db);
     const router = new ProviderRouter({ db, env: {} as NodeJS.ProcessEnv, fetchImpl: (async () => new Response('{}')) as typeof fetch });
-    built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false } });
+    built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: 'claude-sonnet-5', autoApproveTools: [] } });
     server = built.app.listen(0); port = (server.address() as AddressInfo).port;
   });
   after(() => { built.stop(); server.close(); db.close(); });

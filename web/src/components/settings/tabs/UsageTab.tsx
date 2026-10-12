@@ -139,7 +139,7 @@ export function UsageTab() {
           <Table title="By model" rows={report.byModel.map(m => ({ key: m.provider + m.model, label: modelLabel(m.model), t: m }))} />
           <Table
             title="By conversation"
-            rows={report.byConversation.map(c => ({ key: c.conversationId ?? 'none', label: c.title ?? (c.conversationId ? '(deleted conversation)' : '(batch / no conversation)'), t: c }))}
+            rows={report.byConversation.map(c => ({ key: c.conversationId ?? 'none', label: c.title ?? (c.conversationId ? '(deleted conversation)' : '(no conversation)'), t: c }))}
           />
         </>
       )}

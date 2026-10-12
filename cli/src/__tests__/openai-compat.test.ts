@@ -5,6 +5,9 @@ import { runTurn } from '../anthropic-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { McpConnectionLike } from '../mcp-client.js';
 import { getModelInfo } from '../providers/registry.js';
+import { seedBuiltinCatalog } from './catalog-fixture.js';
+
+seedBuiltinCatalog();
 import {
   OpenAiCompatClient,
   ProviderHttpError,

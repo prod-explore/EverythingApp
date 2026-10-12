@@ -119,9 +119,9 @@ async function setUp(anthropic: ReturnType<typeof fixedReplyClient>) {
   const built: BuiltApp = await buildApp({
     db,
     connections: [],
-    anthropic,
+    llm: anthropic,
     authToken: AUTH_TOKEN,
-    config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false },
+    config: { model: 'claude-sonnet-5', autoApproveTools: [] },
   });
   const server = built.app.listen(0);
   await new Promise<void>(resolve => server.once('listening', () => resolve()));

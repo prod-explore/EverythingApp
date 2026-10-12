@@ -1,11 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk';
 import type Database from 'better-sqlite3';
-import type { AnthropicBatchLike } from '../batch.js';
 import type { LlmClient } from '../anthropic-loop.js';
 import { getToolCallMeta, setToolCallMeta } from '../db.js';
+import { ModelCatalog, type CatalogModel, type DiscoveryResult } from './catalog.js';
 import { KeyVault } from './key-vault.js';
-import { OpenAiCompatClient, ProviderHttpError, type CompatFlavor, type RetryInfo } from './openai-compat.js';
-import { PROVIDERS, PROVIDER_IDS, getCustomProvider, getModelInfo, isCustomProviderId, isKnownModelId, listCatalog, parseCustomModelId, type ModelInfo, type ProviderId } from './registry.js';
+import { OpenAiCompatClient, type RetryInfo } from './openai-compat.js';
+import { PROVIDER_PRESETS, findPreset, getModelInfo, normalizeModelId, parseModelId, type ModelInfo, type ProviderId, type ProviderRecord } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
   constructor(
@@ -18,17 +17,22 @@ export class ProviderNotConfiguredError extends Error {
 }
 
 export class UnknownModelError extends Error {
-  constructor(readonly modelId: string) {
-    super(`Unknown model "${modelId}" — pick one from the model list.`);
+  constructor(readonly modelId: string, detail?: string) {
+    super(detail ?? `Unknown model "${modelId}" — pick one from the model list.`);
     this.name = 'UnknownModelError';
   }
 }
 
-export type KeySource = 'vault' | 'env' | null;
+export type KeySource = 'vault' | null;
 
 export interface ProviderStatus {
   id: ProviderId;
   label: string;
+  baseUrl: string;
+  flavor: ProviderRecord['flavor'];
+  enabled: boolean;
+  keyOptional: boolean;
+  concurrency: number | null;
   configured: boolean;
   source: KeySource;
   /** Last four characters of the stored key — enough to tell keys apart, useless to an attacker. */
@@ -36,6 +40,8 @@ export interface ProviderStatus {
   /** A key is stored but can't be decrypted with the current KEY_VAULT_SECRET. */
   needsReentry: boolean;
   keyHint: string;
+  modelCount: number;
+  enabledModelCount: number;
 }
 
 export interface ResolvedModel {
@@ -44,13 +50,15 @@ export interface ResolvedModel {
   client: LlmClient;
 }
 
+export type PickerModel = ModelInfo & { available: boolean; providerLabel: string; pricingKnown: boolean };
+
 export interface RouterOptions {
   db: Database.Database;
   vault?: KeyVault;
   env?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
-  /** Tests: use this instead of constructing an Anthropic SDK client. Also treated as "configured". */
-  anthropicOverride?: LlmClient & AnthropicBatchLike;
+  /** Tests: serve every model from this client instead of building HTTP clients. Also treated as "configured". */
+  llmOverride?: LlmClient;
   /** Fired before each wait while a provider is busy (429/5xx) — wire it to the log / UI. */
   onProviderRetry?: (info: RetryInfo) => void;
 }
@@ -65,16 +73,16 @@ function geminiRetryBudgetMs(env: NodeJS.ProcessEnv): number | undefined {
 /**
  * Single answer to "which client talks to model X, and does it have a key?".
  *
- * Keys are resolved at call time (vault first, then — Anthropic only — the
- * legacy env var), so saving or deleting a key in Settings takes effect on the
- * very next turn with no restart. Decrypted keys are cached in memory only
- * until that provider's key changes.
+ * Every provider is the same thing — a base URL, a key and a dialect — so there is one code path for MindGate,
+ * Gemini, OpenRouter and a LAN server alike. Keys are resolved at call time, so saving or deleting a key in
+ * Settings takes effect on the very next turn with no restart. Decrypted keys are cached in memory only until
+ * that provider's key changes.
  */
 export class ProviderRouter {
   readonly vault: KeyVault;
+  readonly catalog: ModelCatalog;
   private readonly env: NodeJS.ProcessEnv;
-  private readonly keyCache = new Map<ProviderId, string>();
-  private anthropicClient: { key: string; client: Anthropic } | null = null;
+  private readonly keyCache = new Map<string, string>();
 
   /** Settable after construction (the app shell only exists once the router does). */
   onProviderRetry?: (info: RetryInfo) => void;
@@ -83,61 +91,72 @@ export class ProviderRouter {
     this.onProviderRetry = opts.onProviderRetry;
     this.env = opts.env ?? process.env;
     this.vault = opts.vault ?? new KeyVault(opts.db, this.env['KEY_VAULT_SECRET'] ?? '');
+    this.catalog = new ModelCatalog(opts.db, this.env);
   }
 
   // ── keys ──────────────────────────────────────────────────────────────────
 
-  private resolveKey(provider: ProviderId): { key: string; source: Exclude<KeySource, null> } | null {
-    const cached = this.keyCache.get(provider);
-    if (cached) return { key: cached, source: 'vault' };
-
-    const fromVault = this.vault.read(provider);
+  private resolveKey(provider: ProviderRecord): string | null {
+    const cached = this.keyCache.get(provider.keyRef);
+    if (cached) return cached;
+    const fromVault = this.vault.read(provider.keyRef);
     if (fromVault.status === 'ok') {
-      this.keyCache.set(provider, fromVault.key);
-      return { key: fromVault.key, source: 'vault' };
+      this.keyCache.set(provider.keyRef, fromVault.key);
+      return fromVault.key;
     }
-    if (isCustomProviderId(provider)) {
-      // Keyless local servers (LM Studio, vLLM on the LAN) are allowed when the provider says so.
-      return getCustomProvider(provider.slice(7))?.keyOptional ? { key: '', source: 'vault' } : null;
-    }
-    const envName = PROVIDERS[provider].envKeyFallback;
-    const envKey = envName ? this.env[envName] : undefined;
-    if (envKey) return { key: envKey, source: 'env' };
-    return null;
+    // Keyless local servers (LM Studio, vLLM on the LAN) are allowed when the provider says so.
+    return provider.keyOptional ? '' : null;
   }
 
-  /** Drops cached keys (e.g. after a custom provider is removed). */
-  forgetKey(provider: ProviderId): void {
-    this.keyCache.delete(provider);
-  }
-
-  saveKey(provider: ProviderId, apiKey: string): { last4: string } {
-    const result = this.vault.set(provider, apiKey);
-    this.keyCache.delete(provider);
-    if (provider === 'anthropic') this.anthropicClient = null;
+  saveKey(slug: ProviderId, apiKey: string): { last4: string } {
+    const p = this.requireProvider(slug);
+    const result = this.vault.set(p.keyRef, apiKey);
+    this.keyCache.delete(p.keyRef);
     return result;
   }
 
-  removeKey(provider: ProviderId): boolean {
-    const removed = this.vault.delete(provider);
-    this.keyCache.delete(provider);
-    if (provider === 'anthropic') this.anthropicClient = null;
+  removeKey(slug: ProviderId): boolean {
+    const p = this.requireProvider(slug);
+    const removed = this.vault.delete(p.keyRef);
+    this.keyCache.delete(p.keyRef);
     return removed;
   }
 
+  private requireProvider(slug: ProviderId): ProviderRecord {
+    const p = this.catalog.get(slug);
+    if (!p) throw new ProviderNotConfiguredError(slug, `Unknown provider "${slug}".`);
+    return p;
+  }
+
+  /** Removes a provider with its models and its stored key. */
+  removeProvider(slug: ProviderId): boolean {
+    const removed = this.catalog.remove(slug);
+    if (!removed) return false;
+    this.vault.delete(removed.keyRef);
+    this.keyCache.delete(removed.keyRef);
+    return true;
+  }
+
   status(): ProviderStatus[] {
-    return PROVIDER_IDS.map(id => {
-      const def = PROVIDERS[id];
-      const stored = this.vault.hasKey(id);
-      const resolved = this.resolveKey(id);
+    return this.catalog.list().map(p => {
+      const stored = this.vault.hasKey(p.keyRef);
+      const key = this.resolveKey(p);
+      const models = this.catalog.providerModels(p.slug);
       return {
-        id,
-        label: def.label,
-        configured: this.opts.anthropicOverride && id === 'anthropic' ? true : resolved !== null,
-        source: resolved?.source ?? null,
-        last4: resolved?.source === 'vault' ? stored.last4 : null,
-        needsReentry: stored.present && resolved?.source !== 'vault',
-        keyHint: def.keyHint,
+        id: p.slug,
+        label: p.label,
+        baseUrl: p.baseUrl,
+        flavor: p.flavor,
+        enabled: p.enabled,
+        keyOptional: p.keyOptional,
+        concurrency: p.concurrency,
+        configured: key !== null,
+        source: stored.present && key ? 'vault' : null,
+        last4: stored.present && key ? stored.last4 : null,
+        needsReentry: stored.present && key === null,
+        keyHint: findPreset(p.slug)?.keyHint ?? '',
+        modelCount: models.length,
+        enabledModelCount: models.filter(m => m.enabled).length,
       };
     });
   }
@@ -147,123 +166,115 @@ export class ProviderRouter {
   /** Removes the key (and anything that looks like it) from an error message before it can reach a log or the UI. */
   redact(message: string): string {
     let out = message;
-    const keys = new Set<string>([...this.keyCache.values()]);
-    if (this.env['ANTHROPIC_API_KEY']) keys.add(this.env['ANTHROPIC_API_KEY']);
-    for (const key of keys) if (key) out = out.split(key).join('[redacted]');
+    for (const key of this.keyCache.values()) if (key) out = out.split(key).join('[redacted]');
     return out;
   }
 
-  private notConfigured(provider: ProviderId): ProviderNotConfiguredError {
-    const stored = this.vault.hasKey(provider);
-    const label = isCustomProviderId(provider) ? (getCustomProvider(provider.slice(7))?.label ?? provider) : PROVIDERS[provider].label;
-    if (stored.present) {
+  private notConfigured(provider: ProviderRecord): ProviderNotConfiguredError {
+    if (this.vault.hasKey(provider.keyRef).present) {
       return new ProviderNotConfiguredError(
-        provider,
-        `The stored ${label} key can't be decrypted with the current KEY_VAULT_SECRET — re-enter it in Settings → Models.`,
+        provider.slug,
+        `The stored ${provider.label} key can't be decrypted with the current KEY_VAULT_SECRET — re-enter it in Settings → Models.`,
       );
     }
-    return new ProviderNotConfiguredError(provider, `No ${label} API key configured — add one in Settings → Models.`);
+    return new ProviderNotConfiguredError(provider.slug, `No ${provider.label} API key configured — add one in Settings → Models.`);
   }
 
-  /** Raw Anthropic client (chat + Batch API). Used by batch mode, which is Anthropic-only. */
-  anthropic(): (LlmClient & AnthropicBatchLike) | null {
-    if (this.opts.anthropicOverride) return this.opts.anthropicOverride;
-    const resolved = this.resolveKey('anthropic');
-    if (!resolved) return null;
-    if (this.anthropicClient?.key !== resolved.key) {
-      this.anthropicClient = { key: resolved.key, client: new Anthropic({ apiKey: resolved.key }) };
-    }
-    return this.anthropicClient.client as unknown as LlmClient & AnthropicBatchLike;
+  private makeClient(provider: ProviderRecord, apiKey: string, withMeta = true): OpenAiCompatClient {
+    return new OpenAiCompatClient({
+      flavor: provider.flavor,
+      baseUrl: provider.baseUrl.replace(/\/+$/, ''),
+      apiKey,
+      fetchImpl: this.opts.fetchImpl,
+      ...(provider.flavor === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
+      onRetry: info => this.onProviderRetry?.(info),
+      modelInfo: id => getModelInfo(id, this.env),
+      upstreamModel: id => parseModelId(normalizeModelId(id))?.upstream ?? id,
+      meta: withMeta
+        ? { get: id => getToolCallMeta(this.opts.db, id, provider.keyRef), set: (id, meta) => setToolCallMeta(this.opts.db, id, provider.keyRef, meta) }
+        : { get: () => null, set: () => {} },
+    });
   }
 
   clientFor(modelId: string): ResolvedModel {
-    if (!isKnownModelId(modelId, this.env)) throw new UnknownModelError(modelId);
-    const info = getModelInfo(modelId, this.env);
-
-    if (info.provider === 'anthropic') {
-      const client = this.anthropic();
-      if (!client) throw this.notConfigured('anthropic');
-      return { provider: 'anthropic', info, client };
+    if (this.opts.llmOverride) {
+      const info = getModelInfo(modelId, this.env);
+      return { provider: info.provider, info, client: this.opts.llmOverride };
     }
-
-    const resolved = this.resolveKey(info.provider);
-    if (!resolved) throw this.notConfigured(info.provider);
-    if (isCustomProviderId(info.provider)) {
-      const custom = getCustomProvider(info.provider.slice(7));
-      if (!custom) throw new ProviderNotConfiguredError(info.provider, `Custom provider "${info.provider.slice(7)}" no longer exists — pick another model.`);
-      const provider = info.provider;
-      const client = new OpenAiCompatClient({
-        flavor: 'generic',
-        baseUrl: custom.baseUrl.replace(/\/+$/, ''),
-        apiKey: resolved.key,
-        fetchImpl: this.opts.fetchImpl,
-        onRetry: info => this.onProviderRetry?.(info),
-        modelInfo: id => getModelInfo(id, this.env),
-        upstreamModel: id => parseCustomModelId(id)?.upstream ?? id,
-        meta: {
-          get: id => getToolCallMeta(this.opts.db, id, provider),
-          set: (id, meta) => setToolCallMeta(this.opts.db, id, provider, meta),
-        },
-      });
-      return { provider, info, client };
+    const id = normalizeModelId(modelId);
+    const parsed = parseModelId(id);
+    if (!parsed) throw new UnknownModelError(modelId);
+    const provider = this.catalog.get(parsed.slug);
+    if (!provider) {
+      throw new ProviderNotConfiguredError(parsed.slug, `Provider "${parsed.slug}" is not set up — add it in Settings → Models, or pick another model.`);
     }
-    const def = PROVIDERS[info.provider];
-    const client = new OpenAiCompatClient({
-      flavor: info.provider as CompatFlavor,
-      baseUrl: (def.baseUrlEnv ? this.env[def.baseUrlEnv] : undefined) ?? def.baseUrl!,
-      apiKey: resolved.key,
-      fetchImpl: this.opts.fetchImpl,
-      ...(info.provider === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
-      onRetry: info => this.onProviderRetry?.(info),
-      modelInfo: id => getModelInfo(id, this.env),
-      meta: {
-        get: id => getToolCallMeta(this.opts.db, id, info.provider),
-        set: (id, meta) => setToolCallMeta(this.opts.db, id, info.provider, meta),
-      },
+    const known = this.catalog.providerModels(provider.slug).find(m => m.id === id);
+    if (!known) throw new UnknownModelError(modelId);
+    if (!provider.enabled) throw new ProviderNotConfiguredError(provider.slug, `Provider "${provider.label}" is switched off in Settings → Models.`);
+    if (!known.enabled) throw new UnknownModelError(modelId, `Model "${known.label}" is switched off in Settings → Models.`);
+    const key = this.resolveKey(provider);
+    if (key === null) throw this.notConfigured(provider);
+    return { provider: provider.slug, info: getModelInfo(id, this.env), client: this.makeClient(provider, key) };
+  }
+
+  /** True when a turn on `modelId` could start right now (model known and enabled, provider has its key). */
+  isAvailable(modelId: string): boolean {
+    try { this.clientFor(modelId); return true; } catch { return false; }
+  }
+
+  /** Enabled models of enabled providers, annotated with whether their provider currently has a key. Pickers filter by `kind`. */
+  models(): PickerModel[] {
+    const providers = new Map(this.catalog.list().map(p => [p.slug, p] as const));
+    return this.catalog.enabledModels().map(m => {
+      const info = getModelInfo(m.id, this.env);
+      const p = providers.get(info.provider)!;
+      return { ...info, providerLabel: p.label, available: this.opts.llmOverride ? true : this.resolveKey(p) !== null, pricingKnown: info.pricing !== null };
     });
-    return { provider: info.provider, info, client };
   }
 
-  /** Model catalog annotated with whether the model's provider currently has a key. */
-  models(): Array<ModelInfo & { available: boolean }> {
-    const configured = new Map<string, boolean>(this.status().map(s => [s.id, s.configured]));
-    return listCatalog(this.env).map(m => ({
-      ...m,
-      available: isCustomProviderId(m.provider) ? this.resolveKey(m.provider) !== null : (configured.get(m.provider) ?? false),
-    }));
+  /** Chat-capable models you could pick for a conversation or an agent right now. */
+  chatCandidates(): PickerModel[] {
+    return this.models().filter(m => m.kind === 'chat');
   }
 
-  // ── key testing ───────────────────────────────────────────────────────────
+  providerModels(slug: ProviderId): CatalogModel[] {
+    return this.catalog.providerModels(slug);
+  }
 
-  async test(provider: ProviderId): Promise<{ ok: true } | { ok: false; error: string }> {
-    const resolved = this.resolveKey(provider);
-    if (!resolved && !(provider === 'anthropic' && this.opts.anthropicOverride)) {
-      return { ok: false, error: this.notConfigured(provider).message };
-    }
+  // ── connection testing / discovery ────────────────────────────────────────
+
+  /** Cheap authenticated call used by "Test" in Settings. */
+  async test(slug: ProviderId): Promise<{ ok: true } | { ok: false; error: string }> {
+    const provider = this.catalog.get(slug);
+    if (!provider) return { ok: false, error: `unknown provider '${slug}'` };
+    const key = this.resolveKey(provider);
+    if (key === null) return { ok: false, error: this.notConfigured(provider).message };
     try {
-      const f = this.opts.fetchImpl ?? fetch;
-      if (provider === 'anthropic') {
-        if (!resolved) return { ok: true }; // test double
-        const res = await f('https://api.anthropic.com/v1/models?limit=1', {
-          headers: { 'x-api-key': resolved.key, 'anthropic-version': '2023-06-01' },
-        });
-        if (!res.ok) throw new ProviderHttpError('anthropic', res.status, (await res.text()).slice(0, 300));
-      } else {
-        const custom = isCustomProviderId(provider) ? getCustomProvider(provider.slice(7)) : undefined;
-        const def = isCustomProviderId(provider) ? undefined : PROVIDERS[provider];
-        const client = new OpenAiCompatClient({
-          flavor: custom ? 'generic' : (provider as CompatFlavor),
-          baseUrl: custom ? custom.baseUrl.replace(/\/+$/, '') : ((def!.baseUrlEnv ? this.env[def!.baseUrlEnv] : undefined) ?? def!.baseUrl!),
-          apiKey: resolved!.key,
-          fetchImpl: this.opts.fetchImpl,
-          modelInfo: id => getModelInfo(id, this.env),
-          meta: { get: () => null, set: () => {} },
-        });
-        await client.ping();
-      }
+      await this.makeClient(provider, key, false).ping();
       return { ok: true };
     } catch (err) {
       return { ok: false, error: this.redact((err as Error).message) };
     }
+  }
+
+  /** `GET {base}/models` → catalog. Safe to call repeatedly; user overrides and hand-added models survive. */
+  async refreshModels(slug: ProviderId): Promise<({ ok: true } & DiscoveryResult) | { ok: false; error: string }> {
+    const provider = this.catalog.get(slug);
+    if (!provider) return { ok: false, error: `unknown provider '${slug}'` };
+    const key = this.resolveKey(provider);
+    if (key === null) return { ok: false, error: this.notConfigured(provider).message };
+    try {
+      const raw = await this.makeClient(provider, key, false).listModels();
+      if (raw.length === 0) return { ok: false, error: 'The provider returned an empty model list — nothing was changed. Add model ids by hand if it has no /models endpoint.' };
+      return { ok: true, ...this.catalog.applyDiscovered(slug, raw) };
+    } catch (err) {
+      return { ok: false, error: this.redact((err as Error).message) };
+    }
+  }
+
+  /** Presets the "Add provider" form offers, minus the ones already added. */
+  availablePresets() {
+    const have = new Set(this.catalog.list().map(p => p.slug));
+    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, keyHint: p.keyHint }));
   }
 }

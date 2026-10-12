@@ -5,7 +5,7 @@
 ![node](https://img.shields.io/badge/node-22-339933)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
-A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandboxed code agent that can browse the web and work with Git, multi-agent delegation with cost tiers, and a human-in-the-loop inbox — designed so that the *model is never trusted*, only the action layer is.
+A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandboxed code agent that can browse the web and work with Git, multi-agent delegation with a free-model cost guard, and a human-in-the-loop inbox — designed so that the *model is never trusted*, only the action layer is.
 
 ![Chat](docs/img/chat.png)
 
@@ -26,10 +26,9 @@ A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandb
 
 | Area | What it does |
 |---|---|
-| **Providers** | Anthropic, Gemini, DeepSeek, MindGate (local) and any OpenAI-compatible endpoint. One canonical Anthropic-shaped message format; an adapter translates the rest. Keys are AES-256-GCM encrypted at rest. |
-| **Cost tiers** | `free → cheap → standard → strong`. Chats default to the free tier, workers cannot out-rank their parent, background chores (titles, daily digest) never leave `free`. |
+| **Providers** | One OpenAI-compatible format for everything: a provider is just *base URL + key + dialect* — MindGate (the hub), Gemini, DeepSeek, OpenRouter, a LAN server all go through the same “Add provider” form. Models are discovered from `GET {base}/models` (with `kind` and free-form `tags`: `free`, `coder`, `reasoning`…) and can be edited per model. Internally one Anthropic-shaped message format; the adapter translates. Keys are AES-256-GCM encrypted at rest. |
+| **Model slots & cost guard** | Pick a chat default, a helper (titles, digest), an agent model and an escalation model. A chat on a `free` model can only start `free` workers unless “Allow agents to use paid models” is on. The orchestrator gets a generated list of the installed models and their tags to choose from. |
 | **Agents** | `spawn_agent` / `wait_agents` / `send_message`. Per-tree budgets, depth and spawn limits, kill switch. Finished workers can be resumed with a follow-up. |
-| **Batch** | Plain chat turns can be queued via the Batch API; **tool-using workers** run as a chain of one-request batches (every step −50 %, tools execute locally behind the approval gate). |
 | **Sandbox** | Per-project Docker container, no secrets, no `docker.sock`. Files explorer + editor with a checkpoint before every edit, rollback, Source Control, GitHub. |
 | **Browser** | Playwright agent with domain/JS policy, SSRF guard and a quarantined extraction model; live view in the UI. |
 | **Human in the loop** | Approval gate (inline cards), Gazeta inbox (blocking and async questions, reports, urgent → Web Push), `policy.json` for always-allow / always-block. |
@@ -46,8 +45,8 @@ flowchart LR
     API[REST + SSE]
     LOOP[Agent loop<br/>tool registry · virtual tools]
     GATE[Approval gate<br/>+ policy.json]
-    ROUTER[Provider router<br/>tiers · key vault · retry]
-    AGENTS[AgentManager<br/>runs · budgets · batch]
+    ROUTER[Provider router<br/>model catalog · key vault · retry]
+    AGENTS[AgentManager<br/>runs · budgets · cost guard]
     DB[(SQLite<br/>FTS5)]
   end
   subgraph Isolated["Isolated networks"]
@@ -56,7 +55,7 @@ flowchart LR
     GP[git-proxy<br/>scoped tokens]
   end
   UI <--> API
-  API --> LOOP --> ROUTER --> LLM{{Anthropic · Gemini · DeepSeek · local}}
+  API --> LOOP --> ROUTER --> LLM{{OpenAI-compatible providers<br/>MindGate · Gemini · DeepSeek · OpenRouter · local}}
   LOOP --> GATE --> MCP[MCP: sandbox · browser · GitHub · custom]
   LOOP --> AGENTS --> LOOP
   API --- DB
@@ -95,7 +94,7 @@ KEY_VAULT_SECRET=$(openssl rand -hex 32) \
 MINDGATE_BASE_URL=http://127.0.0.1:4010/v1 PORT=3000 node dist/server.js
 ```
 
-Open <http://localhost:3000>, log in with `dev`, then **Settings → Models → MindGate**: save any key and pick the `flash` model. Try `ask: which database?`, `report`, `spawn`, `long`.
+Open <http://localhost:3000>, log in with `dev`, then **Settings → Models → + MindGate** (the base URL is pre-filled from `MINDGATE_BASE_URL`): paste any key; the `flash` model appears after the model list loads. Try `ask: which database?`, `report`, `spawn`, `long`.
 
 ### Full stack (sandbox, browser, git)
 
@@ -110,7 +109,7 @@ Deployment notes for a Raspberry Pi (egress guard, Nginx + HTTPS) are in [`deplo
 ## Development
 
 ```bash
-cd cli && npm test            # 307 tests (node:test, in-memory SQLite, fake providers)
+cd cli && npm test            # 326 tests (node:test, in-memory SQLite, fake providers)
 cd git-proxy && npm test      #  40
 cd sandbox-mcp && npm test    #  18
 cd sandbox-supervisor && npm test  # 78
@@ -122,7 +121,7 @@ CI runs all of the above on every push. The browser E2E (Playwright against the 
 
 ## Design decisions
 
-Short ADRs in [`docs/adr`](docs/adr): canonical message format, policy file, sandbox/Git credentials, cost tiers, batch for tool workers, session cookies, lazy FTS5 index.
+Short ADRs in [`docs/adr`](docs/adr): canonical message format, policy file, sandbox/Git credentials, cost tiers and batch for tool workers (both superseded by the provider catalog), session cookies, lazy FTS5 index.
 
 ## License
 

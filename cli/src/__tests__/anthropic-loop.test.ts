@@ -123,30 +123,6 @@ describe('runTurn', () => {
     assert.equal(toolDefs[0]?.cache_control, undefined);
   });
 
-  it('merges serverTools (e.g. web_search) alongside MCP tools, with the cache breakpoint on whichever is last', async () => {
-    const calls: string[] = [];
-    const tools = await registryWithSandbox(calls, ['read_log']);
-    const anthropic = scriptedAnthropic([fakeMessage([textBlock('cześć')], 'end_turn')]);
-
-    await runTurn(
-      {
-        anthropic,
-        model: 'claude-sonnet-5',
-        tools,
-        systemPrompt: 'sys',
-        serverTools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 5 }],
-        confirm: async () => true,
-      },
-      [],
-      'hej',
-    );
-
-    const [request] = anthropic.calls;
-    const toolNames = (request.tools ?? []).map((t: any) => t.name);
-    assert.deepEqual(toolNames.sort(), ['sandbox__read_log', 'sandbox__run_bash', 'web_search']);
-    assert.equal((request.tools ?? []).at(-1)?.cache_control?.type, 'ephemeral');
-  });
-
   it('executes an approved tool call and feeds the result back for a second turn', async () => {
     const calls: string[] = [];
     const tools = await registryWithSandbox(calls);

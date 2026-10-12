@@ -92,7 +92,7 @@ export function useEverythingAppRuntime(conversationId: string | null) {
       setPersisted(prev => [...prev, { id: `opt-${Date.now()}`, role: 'user', content: optimisticContent }]);
 
       try {
-        await sendMessage(conversationId, text, false, attachments.length > 0 ? attachments : undefined);
+        await sendMessage(conversationId, text, attachments.length > 0 ? attachments : undefined);
       } catch {
         // Roll back the optimistic message — a failed send with no reply
         // and no way to retry from where it left off is worse than just

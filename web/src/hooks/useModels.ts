@@ -21,20 +21,10 @@ export function useModels() {
   return { models, loaded, refresh };
 }
 
-export const PROVIDER_LABELS: Record<string, string> = {
-  anthropic: 'Anthropic',
-  gemini: 'Google Gemini',
-  deepseek: 'DeepSeek',
-  mindgate: 'MindGate',
-};
-
-/** Group label for a provider id; custom providers (`custom:slug`) take the label shown in their model names. */
-export function providerLabel(provider: string, models: Array<{ provider: string; label: string }> = []): string {
-  if (PROVIDER_LABELS[provider]) return PROVIDER_LABELS[provider];
-  if (provider.startsWith('custom:')) {
-    const m = models.find(x => x.provider === provider);
-    const fromLabel = m ? /\(([^)]+)\)\s*$/.exec(m.label)?.[1] : undefined;
-    return fromLabel ?? provider.slice(7);
-  }
-  return provider;
+/** Group label for a provider slug, taken from the catalog; falls back to the slug (e.g. a provider removed since). */
+export function providerLabel(provider: string, models: Array<{ provider: string; providerLabel: string }> = []): string {
+  return models.find(m => m.provider === provider)?.providerLabel ?? provider;
 }
+
+/** Chat-capable models only — what a conversation or an agent can run on. Voice/image models have their own pickers later. */
+export const chatModels = (models: ModelOption[]): ModelOption[] => models.filter(m => m.kind === 'chat');

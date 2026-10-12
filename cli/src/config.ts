@@ -9,13 +9,10 @@ export interface McpServerConfig {
 }
 
 export interface Config {
-  /** Optional since Phase 3: keys normally live in the encrypted vault (Settings → Models). This env var is only a fallback. */
-  anthropicApiKey?: string;
+  /** Last-resort model id (`@provider/model`) for chats that have none and when no usable free model exists. Usually empty: providers and slots are configured in Settings → Models. */
   model: string;
   /** Tool names that never require interactive approval — everything else does. Default-deny by design (see README). */
   autoApproveTools: string[];
-  /** If true, the Anthropic-hosted web_search tool is added alongside whatever MCP connectors are configured. */
-  webSearchEnabled: boolean;
   mcpServers: McpServerConfig[];
 }
 
@@ -79,10 +76,8 @@ export function loadConfig(): Config {
   }
 
   return {
-    anthropicApiKey: process.env['ANTHROPIC_API_KEY'] || undefined,
-    model: process.env['ANTHROPIC_MODEL'] ?? 'claude-sonnet-5',
+    model: process.env['DEFAULT_MODEL'] ?? '',
     autoApproveTools: loadAutoApproveTools(),
-    webSearchEnabled: process.env['WEB_SEARCH_ENABLED'] !== 'false',
     mcpServers,
   };
 }

@@ -14,7 +14,7 @@ export function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
   const { models, loaded } = useModels();
   const aui = useAui();
   if (!loaded) return null;
-  const hasModel = models.some(m => m.available);
+  const hasModel = models.some(m => m.kind === 'chat' && m.available);
 
   if (!hasModel) {
     return (
@@ -22,7 +22,7 @@ export function Onboarding({ onOpenSettings }: { onOpenSettings: () => void }) {
         <Sparkles size={30} strokeWidth={1.5} className="text-fg-tertiary" />
         <h2 className="text-lg font-semibold text-fg">Welcome to EverythingApp</h2>
         <p className="max-w-sm text-sm text-fg-tertiary">
-          To get started, add a model provider — an API key (Anthropic, Gemini, DeepSeek…) or your own OpenAI-compatible server, local ones included.
+          To get started, add a model provider — your MindGate hub, an API key (Gemini, DeepSeek, OpenRouter…) or any OpenAI-compatible server, local ones included.
         </p>
         <button
           onClick={onOpenSettings}

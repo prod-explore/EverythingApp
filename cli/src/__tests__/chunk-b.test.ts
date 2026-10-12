@@ -100,9 +100,9 @@ before(async () => {
   const built = await buildApp({
     db,
     connections: [],
-    anthropic: fakeAnthropicClient,
+    llm: fakeAnthropicClient,
     authToken: AUTH,
-    config: { model: 'claude-test', autoApproveTools: [], webSearchEnabled: false },
+    config: { model: 'claude-test', autoApproveTools: [] },
   });
   stopApp = built.stop;
   server = await listen(built.app);

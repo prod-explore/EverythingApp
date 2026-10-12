@@ -59,8 +59,6 @@ export interface ConversationDeps {
   maxTokens?: number;
   tools: ToolRegistry;
   systemPrompt: string;
-  /** Anthropic-hosted tools (e.g. web_search) — executed server-side, never routed through ToolRegistry or the approval gate. */
-  serverTools?: Anthropic.ToolUnion[];
   /** Orchestrator-executed tools, run inside the loop (see VirtualTool). */
   virtualTools?: VirtualTool[];
   /** Ask a human yes/no before a side-effecting tool call runs. */
@@ -260,7 +258,6 @@ export async function runTurn(
   const toolDefs: Anthropic.ToolUnion[] = [
     ...(deps.tools.toAnthropicTools() as Anthropic.Tool[]),
     ...(deps.virtualTools ?? []).map(v => v.definition),
-    ...(deps.serverTools ?? []),
   ];
 
   let steps = 0;

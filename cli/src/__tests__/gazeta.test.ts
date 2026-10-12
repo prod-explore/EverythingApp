@@ -4,12 +4,12 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type Database from 'better-sqlite3';
-import { openDb, runMigrations, createConversation, listGazetaItems, type BatchJob } from '../db.js';
-import { handleRequestHumanInput, createBatchResultItem, awaitHumanInput, resolveHumanInput } from '../gazeta.js';
+import { openDb, runMigrations, createConversation, listGazetaItems } from '../db.js';
+import { handleRequestHumanInput, awaitHumanInput, resolveHumanInput } from '../gazeta.js';
 
 /**
  * Covers handleRequestHumanInput's three input-schema shapes (text, choice,
- * fields) and createBatchResultItem — the pieces Phase 5 touches. Full
+ * fields) — the pieces Phase 5 touches. Full
  * round-trip through respondToGazetaItem/dismissGazetaItem is already
  * covered by db.test.ts; this file is about gazeta.ts's own schema-shaping
  * logic, not the storage layer underneath it.
@@ -78,42 +78,6 @@ describe('gazeta', () => {
     });
     const item = listGazetaItems(db, 'pending').find(i => i.title === 'T6')!;
     assert.deepEqual(item.inputSchema, { type: 'fields', fields });
-  });
-
-  it('createBatchResultItem creates a batch_result item titled from the job preview', () => {
-    const job: BatchJob = {
-      id: 'job-1',
-      conversationId,
-      customId: 'custom-1',
-      userText: 'user text',
-      preview: 'summarize this doc',
-      status: 'resolved',
-      resultText: 'Here is the summary.',
-      submittedAt: new Date().toISOString(),
-      resolvedAt: new Date().toISOString(),
-    };
-    createBatchResultItem(db, job);
-    const item = listGazetaItems(db, 'pending').find(i => i.type === 'batch_result')!;
-    assert.equal(item.title, 'Batch result: summarize this doc');
-    assert.equal(item.description, 'Here is the summary.');
-    assert.equal(item.conversationId, conversationId);
-  });
-
-  it('createBatchResultItem falls back to a placeholder when resultText is null', () => {
-    const job: BatchJob = {
-      id: 'job-2',
-      conversationId,
-      customId: 'custom-2',
-      userText: 'user text',
-      preview: 'no result yet',
-      status: 'resolved',
-      resultText: null,
-      submittedAt: new Date().toISOString(),
-      resolvedAt: null,
-    };
-    createBatchResultItem(db, job);
-    const item = listGazetaItems(db, 'pending').find(i => i.title === 'Batch result: no result yet')!;
-    assert.equal(item.description, '*(no response text)*');
   });
 });
 

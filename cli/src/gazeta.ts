@@ -1,6 +1,6 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type Database from 'better-sqlite3';
-import { createGazetaItem, type BatchJob, type GazetaItem } from './db.js';
+import { createGazetaItem, type GazetaItem } from './db.js';
 import type { AnthropicLike } from './anthropic-loop.js';
 import { cacheableSystem } from './anthropic-loop.js';
 
@@ -124,21 +124,8 @@ export function handleRequestHumanInput(
 }
 
 /**
- * Called when a batch job resolves — creates a gazeta item so the user
- * can review the result and optionally continue the conversation.
- */
-export function createBatchResultItem(db: Database.Database, job: BatchJob): string {
-  return createGazetaItem(db, {
-    type: 'batch_result',
-    conversationId: job.conversationId,
-    title: `Batch result: ${job.preview}`,
-    description: job.resultText ?? '*(no response text)*',
-  });
-}
-
-/**
  * Generates a daily digest of all pending gazeta items and new conversation
- * activity, submitted as a batch job for cost efficiency.
+ * activity, written by the helper model.
  * Returns the gazeta item ID for the summary.
  */
 export async function generateDailySummary(

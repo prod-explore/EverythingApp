@@ -138,9 +138,9 @@ describe('integration: end-to-end turn over HTTP', () => {
     built = await buildApp({
       db,
       connections: [],
-      anthropic: fakeAnthropicClient(FAKE_REPLY_TEXT),
+      llm: fakeAnthropicClient(FAKE_REPLY_TEXT),
       authToken: AUTH_TOKEN,
-      config: { model: 'claude-sonnet-5', autoApproveTools: [], webSearchEnabled: false },
+      config: { model: 'claude-sonnet-5', autoApproveTools: [] },
     });
     server = built.app.listen(0);
     await new Promise<void>(resolve => server.once('listening', () => resolve()));

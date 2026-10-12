@@ -2,8 +2,9 @@
 /**
  * Scriptable OpenAI-compatible mock LLM for local E2E tests and CI (no API keys, deterministic).
  *
- * Add it in EverythingApp as a custom provider (Settings → Models → Custom providers):
- *   slug "mock", base URL http://127.0.0.1:4010/v1, "No key needed", model "mock-1".
+ * Add it in EverythingApp like any provider (Settings → Models → + Other, or the MindGate preset with
+ * MINDGATE_BASE_URL=http://127.0.0.1:4010/v1): base URL http://127.0.0.1:4010/v1, "No key needed";
+ *   its model list (GET /models) offers "mock-1" and "mock-fast".
  *
  * Behaviour is driven by the latest user message (case-insensitive):
  *   "ask: <q>"          → request_human_input (blocking form with fields)
@@ -11,7 +12,7 @@
  *   "report"            → post_report (urgent)
  *   "bash: <cmd>"       → the first tool whose name ends with run_bash
  *   "browse: <url>"     → browse_url / browser_open
- *   "spawn"             → spawn_agent (worker on flash) then wait_agents
+ *   "spawn"             → spawn_agent (worker on the default agent model) then wait_agents
  *   "tool: <name> <json>" → call any tool by (suffix) name with JSON args
  *   "long"              → long markdown answer (streamed slowly)
  *   "error"             → HTTP 500
@@ -98,7 +99,7 @@ function decide(body) {
   }
   if (lower.startsWith('spawn')) {
     const t = findTool(tools, 'spawn_agent');
-    if (t) return { text: 'Delegating to a worker.', toolCalls: [call(t, { goal: 'Count the open TODOs in the project and report them.', model: 'flash', label: 'counter' })] };
+    if (t) return { text: 'Delegating to a worker.', toolCalls: [call(t, { goal: 'Count the open TODOs in the project and report them.', label: 'counter' })] };
   }
   if (lower.startsWith('tool:')) {
     const m = /^tool:\s*(\S+)\s*(\{[\s\S]*\})?$/i.exec(user);

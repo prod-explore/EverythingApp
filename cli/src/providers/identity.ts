@@ -1,10 +1,4 @@
-import { getCustomProvider, getModelInfo, isCustomProviderId, PROVIDERS } from './registry.js';
-
-/** Human-readable provider name for a model id ("Google Gemini", "Anthropic", a custom provider's label). */
-function providerLabel(provider: string): string {
-  if (isCustomProviderId(provider)) return getCustomProvider(provider.slice(7))?.label ?? provider;
-  return (PROVIDERS as Record<string, { label: string }>)[provider]?.label ?? provider;
-}
+import { getModelInfo, providerLabel } from './registry.js';
 
 /**
  * Appends the identity of the model that is actually answering. Without it a local model happily

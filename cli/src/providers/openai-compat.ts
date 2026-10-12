@@ -596,6 +596,22 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
 const RETRYABLE = new Set([408, 429, 500, 502, 503, 504]);
 
 /**
+ * Error codes a gateway (MindGate) puts in `{ error: { code } }` for failures that waiting cannot fix: the budget is
+ * spent until its reset. A plain 429 (`rate_limited`) is still retried; this one must fail fast with its message.
+ */
+const NO_RETRY_CODES = new Set(['budget_exhausted']);
+
+function errorCode(body: string): string | undefined {
+  try {
+    const j = JSON.parse(body) as { error?: { code?: unknown }; code?: unknown };
+    const c = j?.error?.code ?? j?.code;
+    return typeof c === 'string' ? c : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * MindGate is a gateway in front of Ollama and wraps upstream errors in its own 5xx. A deterministic
  * upstream 4xx (e.g. Ollama failing to parse a generated tool call) must NOT be retried as if it were
  * a transient outage, and must read as what it is. Returns the status to treat the response as.
@@ -839,6 +855,17 @@ export class OpenAiCompatClient implements LlmClient {
     if (!res.ok) throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 300)));
   }
 
+  /** `GET {base}/models` — the raw entries of the provider's model list (OpenAI shape: `{ data: [...] }`). */
+  async listModels(): Promise<unknown[]> {
+    const res = await this.fetchImpl(`${this.opts.baseUrl}/models`, {
+      headers: this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {},
+    });
+    if (!res.ok) throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 300)));
+    const json = (await res.json()) as { data?: unknown; models?: unknown };
+    const list = Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : [];
+    return list.slice(0, 1000);
+  }
+
   private redact(text: string): string {
     return this.opts.apiKey ? text.split(this.opts.apiKey).join('[redacted]') : text;
   }
@@ -887,7 +914,8 @@ export class OpenAiCompatClient implements LlmClient {
 
         const errBody = await res.text();
         const status = effectiveStatus(this.opts.flavor, res.status, errBody);
-        if (RETRYABLE.has(status)) {
+        const retryable = RETRYABLE.has(status) && !NO_RETRY_CODES.has(errorCode(errBody) ?? '');
+        if (retryable) {
           const retryAfter = Number(res.headers.get('retry-after'));
           const pause = nextPause(attempt, status, Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
           if (pause !== null) {
@@ -896,7 +924,7 @@ export class OpenAiCompatClient implements LlmClient {
             continue;
           }
         }
-        const gaveUp = budget !== undefined && RETRYABLE.has(status) ? ` (retried for ${Math.round((Date.now() - startedAt) / 60_000)} min, then gave up)` : '';
+        const gaveUp = budget !== undefined && retryable ? ` (retried for ${Math.round((Date.now() - startedAt) / 60_000)} min, then gave up)` : '';
         throw new ProviderHttpError(this.opts.flavor, status, this.redact(errBody.slice(0, 500)) + gaveUp);
       } finally {
         cleanup();

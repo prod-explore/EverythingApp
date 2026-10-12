@@ -96,7 +96,6 @@ const SIDE_EVENTS = [
   'gazeta:new',
   'gazeta:responded',
   'gazeta:dismissed',
-  'batch:resolved',
   'conversation:titled',
   'approval:resolved',
   'usage:warning',
@@ -118,7 +117,7 @@ export type SideEvent = (typeof SIDE_EVENTS)[number];
  * disconnected; this hook only carries the LIVE view of a turn in progress.
  *
  * `onSideEvent` covers events that aren't part of the turn itself:
- * server.ts's SSEManager.emitAll() broadcasts `gazeta:new`/`batch:resolved`
+ * server.ts's SSEManager.emitAll() broadcasts `gazeta:new`
  * to every currently-open conversation stream (not just the one that
  * triggered them), so whichever conversation happens to be open right now
  * still hears about it — that's what lets useGazeta react immediately

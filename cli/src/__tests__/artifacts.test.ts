@@ -70,7 +70,7 @@ describe('artifact endpoints', () => {
     process.env['ARTIFACT_QUOTA_BYTES'] = '1500';
     const db = openDb(':memory:');
     runMigrations(db);
-    const built = await buildApp({ db, connections: [], anthropic: {} as any, authToken: TOKEN, config: { model: 'm', autoApproveTools: [], webSearchEnabled: false } });
+    const built = await buildApp({ db, connections: [], llm: {} as any, authToken: TOKEN, config: { model: 'm', autoApproveTools: [] } });
     const server = built.app.listen(0);
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;

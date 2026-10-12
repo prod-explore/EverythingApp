@@ -6,6 +6,7 @@ import { truncateToolOutput } from '../output-truncator.js';
 import { openDb, runMigrations } from '../db.js';
 import { generateDailySummary } from '../gazeta.js';
 import { createGazetaItem } from '../db.js';
+import { setSlots } from '../slots.js';
 import type { ProviderRouter } from '../providers/router.js';
 
 const usage = { input_tokens: 3, output_tokens: 2, cache_creation_input_tokens: null, cache_read_input_tokens: null, server_tool_use: null, service_tier: null, cache_creation: null };
@@ -19,12 +20,18 @@ describe('background (free tier) calls', () => {
     assert.equal(used, 1);
   });
 
-  it('only uses the free tier — never falls back to cheap', () => {
+  it('picks the helper slot, else the first usable free model — never a paid one', () => {
     const db = openDb(':memory:'); runMigrations(db);
-    const only = (ok: (id: string) => boolean) => ({ clientFor: (id: string) => { if (!ok(id)) throw new Error('no key'); return { provider: 'x', client: {} }; } }) as unknown as ProviderRouter;
-    assert.equal(backgroundModel(db, only(() => false)), null);
-    assert.equal(backgroundModel(db, only(id => id.includes('haiku'))), null, 'cheap tier must not be used for housekeeping');
-    assert.ok(backgroundModel(db, only(() => true)));
+    const model = (id: string, tags: string[]) => ({ id, tags, kind: 'chat' });
+    const router = (models: Array<{ id: string; tags: string[]; kind: string }>, ok: (id: string) => boolean) =>
+      ({ chatCandidates: () => models, isAvailable: ok, clientFor: (id: string) => ({ provider: 'x', info: {}, client: {}, id }) }) as unknown as ProviderRouter;
+    const paid = model('@p/paid', ['reasoning']);
+    const free = model('@p/free', ['free']);
+    assert.equal(backgroundModel(db, router([paid], () => true)), null, 'a paid model must not be used for housekeeping');
+    assert.equal(backgroundModel(db, router([free], () => false)), null, 'no usable model → null');
+    assert.equal(backgroundModel(db, router([paid, free], () => true))?.model, '@p/free');
+    setSlots(db, { helper: '@p/paid' });
+    assert.equal(backgroundModel(db, router([paid, free], () => true))?.model, '@p/paid', 'an explicit helper slot wins');
   });
 
   it('digest reports usage and stores the summary', async () => {

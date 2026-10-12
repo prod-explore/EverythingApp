@@ -33,15 +33,15 @@ describe('GET /api/conversations/:id — effectiveModel (UI model picker must ne
   it('reports the conversation model, else the default_model setting', async () => {
     const db = openDb(':memory:');
     runMigrations(db);
-    const built = await buildApp({ db, connections: [], anthropic: {} as any, authToken: TOKEN, config: { model: 'config-model', autoApproveTools: [], webSearchEnabled: false } });
+    const built = await buildApp({ db, connections: [], llm: {} as any, authToken: TOKEN, config: { model: 'config-model', autoApproveTools: [] } });
     const server = built.app.listen(0);
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;
     try {
       const plain = (await post(port, '/api/conversations', {})).id as string;
-      // default_model is seeded by the migrations, so an unset conversation inherits that.
-      assert.equal((await get(port, `/api/conversations/${plain}`)).effectiveModel, getSetting(db, 'default_model'));
-      assert.ok((await get(port, `/api/conversations/${plain}`)).effectiveModel, 'must never be empty');
+      // No default_model chosen yet and no model in the catalog: the configured fallback (DEFAULT_MODEL) is shown.
+      assert.equal(getSetting(db, 'default_model'), '');
+      assert.equal((await get(port, `/api/conversations/${plain}`)).effectiveModel, 'config-model');
 
       setSetting(db, 'default_model', 'settings-model');
       assert.equal((await get(port, `/api/conversations/${plain}`)).effectiveModel, 'settings-model');

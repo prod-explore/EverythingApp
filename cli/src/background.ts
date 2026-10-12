@@ -1,13 +1,14 @@
 import type Anthropic from '@anthropic-ai/sdk';
 import type Database from 'better-sqlite3';
 import type { LlmClient } from './anthropic-loop.js';
-import { resolveTier, tierModels } from './tiers.js';
+import { resolveSlot } from './slots.js';
 import type { ProviderRouter } from './providers/router.js';
 import type { ProviderId } from './providers/registry.js';
 
 /**
- * Housekeeping LLM calls (chat titles, the daily digest) never touch the paid chat model: they run on the
- * `free` tier and, if that has no usable model, quietly don't run — callers keep their plain fallback.
+ * Housekeeping LLM calls (chat titles, the daily digest) never touch the chat model: they run on the `helper` slot
+ * (automatically a `free`-tagged model unless the user picked one) and, if there is no usable model, quietly don't
+ * run — callers keep their plain fallback.
  */
 export interface BackgroundModel {
   model: string;
@@ -16,13 +17,10 @@ export interface BackgroundModel {
 }
 
 export function backgroundModel(db: Database.Database, router: ProviderRouter): BackgroundModel | null {
-  const map = tierModels(db);
-  const usable = (id: string) => { try { router.clientFor(id); return true; } catch { return false; } };
-  // Strictly `free`: housekeeping must not silently spend on the cheap tier either.
-  const r = resolveTier('free', map, usable);
-  if (!r || r.fellBackFrom) return null;
-  const { provider, client } = router.clientFor(r.model);
-  return { model: r.model, provider, client: client as LlmClient };
+  const model = resolveSlot(db, 'helper', router.chatCandidates(), id => router.isAvailable(id));
+  if (!model) return null;
+  const { provider, client } = router.clientFor(model);
+  return { model, provider, client: client as LlmClient };
 }
 
 const textOf = (m: Anthropic.Message): string =>

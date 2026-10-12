@@ -1,6 +1,6 @@
 import { withModelIdentity } from './providers/identity.js';
 import type Database from 'better-sqlite3';
-import { TIERS, isTier, resolveTier, tierModels, tierOfModel, tierRank, type Tier } from './tiers.js';
+import { allowPaidAgents, isFreeModel, resolveSlot } from './slots.js';
 import type Anthropic from '@anthropic-ai/sdk';
 import { runTurn, StepLimitError, type LlmClient, type VirtualTool, type ConversationDeps } from './anthropic-loop.js';
 
@@ -9,7 +9,7 @@ import type { ToolRegistry } from './tool-registry.js';
 import type { WebApprovalGate } from './web-approval.js';
 import type { SSEManager, SSEEventName } from './sse.js';
 import type { ProviderRouter } from './providers/router.js';
-import type { ProviderId } from './providers/registry.js';
+import { getModelInfo, normalizeModelId, type ProviderId } from './providers/registry.js';
 import { appendMessage, createConversation, getMessages } from './db.js';
 import {
   ACTIVE_STATUSES,
@@ -25,7 +25,6 @@ import {
   treeUsage,
   type RunRow,
 } from './runs.js';
-import { createBatchedClient } from './batch.js';
 
 /**
  * Agents-lite (Plan v3 §7c / N7): multi-agent without a framework. Generic async tools on the
@@ -101,13 +100,11 @@ export interface AgentManagerDeps {
   sse: SSEManager;
   limits?: AgentLimits;
   /** Usage of every worker API call → the usage ledger; returns its cost. */
-  recordUsage: (u: { conversationId: string | null; provider: ProviderId; model: string; usage: Anthropic.Usage; batch?: boolean }) => number;
+  recordUsage: (u: { conversationId: string | null; provider: ProviderId; model: string; usage: Anthropic.Usage }) => number;
   /** The project's browser policy for worker browser calls. */
   browserPolicyOf?: (projectId: string | null) => ConversationBrowserPolicy | undefined;
   /** Extra virtual tools every worker gets (e.g. request_human_input wired to Gazeta with the run's label). */
   workerExtraTools?: (run: RunRow, signal: AbortSignal) => VirtualTool[];
-  /** Poll interval for batched workers (tests shorten it). */
-  batchPollMs?: number;
 }
 
 interface LiveRun {
@@ -130,7 +127,9 @@ export class AgentManager {
   private semaphore(provider: string): Semaphore {
     let s = this.semaphores.get(provider);
     if (!s) {
-      s = new Semaphore(this.limits.providerConcurrency[provider] ?? this.limits.defaultConcurrency);
+      // The provider's own setting wins (local inference: 1), then the env defaults, then the cloud default.
+      const own = this.deps.router.catalog.get(provider)?.concurrency;
+      s = new Semaphore(own ?? this.limits.providerConcurrency[provider] ?? this.limits.defaultConcurrency);
       this.semaphores.set(provider, s);
     }
     return s;
@@ -148,22 +147,37 @@ export class AgentManager {
   }
 
   /**
-   * Worker model by TIER (cost policy lives in tiers.ts / the `tier_models` setting). A worker may never sit in
-   * a higher tier than the agent that spawns it, so a free-tier chat cannot quietly start paid workers.
+   * Picks a worker's model: an explicit `model` id from the catalog, else the first usable model carrying `tag`,
+   * else the `subagent` slot. Cost guard: a parent running on a `free` model cannot start workers on non-free
+   * models unless the user turned on "Allow agents to use paid models" — so a free chat never quietly spends.
    */
-  private resolveWorkerModel(parent: RunRow, tier: Tier): { model: string; note?: string } | { error: string } {
-    const map = tierModels(this.deps.db);
-    const parentTier = tierOfModel(parent.model, map);
-    if (parentTier && tierRank(tier) > tierRank(parentTier)) {
-      return { error: `tier "${tier}" is above your own tier ("${parentTier}") — use "${parentTier}" or lower, or ask the user to switch the chat model.` };
+  private resolveWorkerModel(parent: RunRow, pick: { model?: string; tag?: string }): { model: string; note?: string } | { error: string } {
+    const { router, db } = this.deps;
+    const candidates = router.chatCandidates();
+    const available = (id: string) => router.isAvailable(id);
+    let model: string | null = null;
+    if (pick.model) {
+      const id = normalizeModelId(pick.model);
+      const hit = candidates.find(c => c.id === id);
+      if (!hit) return { error: `unknown model "${pick.model}" — use an exact id from the model list in your instructions, or pick by "tag".` };
+      if (!hit.available) return { error: `model "${id}" has no API key configured — pick another or ask the user to add the key in Settings.` };
+      model = id;
+    } else if (pick.tag) {
+      const tag = pick.tag.toLowerCase();
+      model = candidates.find(c => c.tags.includes(tag) && available(c.id))?.id ?? null;
+      if (!model) return { error: `no usable model is tagged "${tag}" — pick another tag or an exact model id.` };
+    } else {
+      // The agents slot, else a free model — and when the catalog has neither, the parent's own model (never costlier than what the user picked).
+      model = resolveSlot(db, 'subagent', candidates, available) ?? (available(parent.model) ? normalizeModelId(parent.model) : null);
+      if (!model) return { error: 'no usable model for agents — the user has to add a provider or set the "agents" model in Settings → Models.' };
     }
-    const usable = (id: string) => { try { this.deps.router.clientFor(id); return true; } catch { return false; } };
-    const r = resolveTier(tier, map, usable);
-    if (!r) return { error: `no usable model for tier "${tier}" (${map[tier]}) — add its API key in Settings or remap the tier.` };
-    return { model: r.model, note: r.fellBackFrom ? `tier "${r.fellBackFrom}" had no usable model, using "${r.tier}" (${r.model})` : undefined };
+    if (isFreeModel(getModelInfo(parent.model)) && !isFreeModel(getModelInfo(model)) && !allowPaidAgents(db)) {
+      return { error: `"${model}" is not a free model, but you are running on a free one — use a model tagged "free", or ask the user to switch this chat to a stronger model or to allow paid agents in Settings.` };
+    }
+    return { model };
   }
 
-  spawn(parentRunId: string, input: { goal: string; model: string; tools?: string[]; label?: string; batch?: boolean }): { runId: string } | { error: string } {
+  spawn(parentRunId: string, input: { goal: string; model: string; tools?: string[]; label?: string }): { runId: string } | { error: string } {
     const { db } = this.deps;
     const parent = getRun(db, parentRunId);
     if (!parent) return { error: `unknown parent run ${parentRunId}` };
@@ -177,11 +191,7 @@ export class AgentManager {
       return { error: 'budget for this task is exhausted — no more agents can be started' };
     }
     try {
-      const { info } = this.deps.router.clientFor(input.model);
-      if (input.batch) {
-        if (!info.supportsBatch) return { error: `batch mode needs an Anthropic model; "${input.model}" does not support it — drop batch or pick another tier.` };
-        if (!this.deps.router.anthropic()) return { error: 'batch mode needs an Anthropic API key (Settings → Models).' };
-      }
+      this.deps.router.clientFor(input.model);
     } catch (err) { return { error: `model unavailable: ${(err as Error).message}` }; }
 
     // Narrowing only: a worker can never get a tool its parent doesn't have (Plan v3 §7c).
@@ -203,7 +213,6 @@ export class AgentManager {
       goal: input.goal,
       tools: requested,
       depth: parent.depth + 1,
-      batch: Boolean(input.batch),
     });
 
     const controller = new AbortController();
@@ -261,12 +270,8 @@ export class AgentManager {
     heartbeat.unref?.();
     let prevId: number | null = resume?.lastMessageId ?? null;
     try {
-      const { provider, info, client: liveClient } = router.clientFor(run.model);
+      const { provider, info, client } = router.clientFor(run.model);
       const sem = this.semaphore(provider);
-      // Batched workers never occupy a provider slot while a batch is cooking (it can take an hour).
-      const batches = run.batch ? router.anthropic() : null;
-      if (run.batch && !batches) throw new Error('batch mode needs an Anthropic API key');
-      const client = batches ? createBatchedClient(batches, { pollMs: this.deps.batchPollMs }) : liveClient;
       const tools = registry.restrictTo(run.tools);
       const systemPrompt = withModelIdentity(
         `You are "${run.label}", a worker agent in a team. Your goal:\n\n${run.goal}\n\n` +
@@ -278,7 +283,7 @@ export class AgentManager {
       const history = await runTurn(
         {
           // Queue every model call through the provider's semaphore.
-          anthropic: batches ? (client as LlmClient) : queuedClient(client as LlmClient, sem, signal),
+          anthropic: queuedClient(client as LlmClient, sem, signal),
           model: run.model,
           maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
           tools,
@@ -305,7 +310,7 @@ export class AgentManager {
             }
           },
           onUsage: usage => {
-            const costUsd = this.deps.recordUsage({ conversationId: run.conversationId, provider, model: run.model, usage, batch: run.batch });
+            const costUsd = this.deps.recordUsage({ conversationId: run.conversationId, provider, model: run.model, usage });
             addRunUsage(db, run.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens, costUsd });
             this.enforceBudget(run);
           },
@@ -406,10 +411,10 @@ export class AgentManager {
             type: 'object',
             properties: {
               goal: { type: 'string', description: 'Precise, self-contained goal and expected report format.' },
-              tier: { type: 'string', enum: [...TIERS], description: 'Cost tier of the worker. Default "free" — keep it there unless the task truly needs a stronger model; you cannot pick a tier above your own.' },
+              model: { type: 'string', description: 'Exact model id from the model list in your instructions. Omit to use the default for agents.' },
+              tag: { type: 'string', description: 'Pick the first usable model carrying this tag (e.g. "free", "coder", "reasoning") instead of naming one. Ignored when "model" is given.' },
               tools: { type: 'array', items: { type: 'string' }, description: 'Tool names the worker may use (subset of yours). Empty = none.' },
               label: { type: 'string', description: 'Short role name, e.g. "researcher", "tests".' },
-              batch: { type: 'boolean', description: 'Run every model step through the Batch API: 50% cheaper but each step takes minutes (up to hours). For non-urgent background work on Anthropic models only; tool approvals still wait for the user between steps.' },
             },
             required: ['goal'],
           },
@@ -418,20 +423,12 @@ export class AgentManager {
           const goal = str(input['goal']);
           if (!goal) return { text: 'spawn_agent needs a "goal".', isError: true };
           const parent = getRun(db, selfRunId);
-          const tierArg = input['tier'] === undefined || input['tier'] === '' ? 'free' : input['tier'];
-          if (!isTier(tierArg)) return { text: `unknown tier "${String(tierArg)}" — use one of: ${TIERS.join(', ')}.`, isError: true };
-          // `model` is not advertised any more; an explicit id is still honoured for internal callers and old tests.
-          const explicit = str(input['model']);
-          let model = explicit; let tierNote: string | undefined;
-          if (!explicit) {
-            if (!parent) return { text: 'unknown parent run', isError: true };
-            const r = this.resolveWorkerModel(parent, tierArg);
-            if ('error' in r) return { text: `Could not spawn: ${r.error}`, isError: true };
-            model = r.model; tierNote = r.note;
-          }
+          if (!parent) return { text: 'unknown parent run', isError: true };
+          const picked = this.resolveWorkerModel(parent, { model: str(input['model']) || undefined, tag: str(input['tag']) || undefined });
+          if ('error' in picked) return { text: `Could not spawn: ${picked.error}`, isError: true };
           const tools = Array.isArray(input['tools']) ? (input['tools'] as unknown[]).filter((t): t is string => typeof t === 'string') : [];
-          const r = this.spawn(selfRunId, { goal, model, tools, label: str(input['label']) || undefined, batch: input['batch'] === true });
-          return 'error' in r ? { text: `Could not spawn: ${r.error}`, isError: true } : { text: `Spawned ${r.runId}${tierNote ? ` (${tierNote})` : ''}. Call wait_agents to collect its report.` };
+          const r = this.spawn(selfRunId, { goal, model: picked.model, tools, label: str(input['label']) || undefined });
+          return 'error' in r ? { text: `Could not spawn: ${r.error}`, isError: true } : { text: `Spawned ${r.runId} on ${picked.model}. Call wait_agents to collect its report.` };
         },
       },
       {

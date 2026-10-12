@@ -1,6 +1,6 @@
 # 0004 — Cost tiers instead of model names
 
-**Status:** accepted
+**Status:** superseded by [0008](0008-unified-provider-catalog.md)
 
 **Context.** The app is meant to be mostly free to run. Letting agents choose model ids invited hallucinated ids and silent spend.
 
