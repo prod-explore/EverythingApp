@@ -557,6 +557,7 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
     content,
     stop_reason,
     stop_sequence: null,
+    ...(toolUse && finish === 'length' ? { cut_off: true } : {}),
     usage: {
       input_tokens: Math.max(prompt - cached, 0),
       output_tokens: u.completion_tokens ?? 0,
@@ -601,6 +602,11 @@ export function effectiveStatus(flavor: CompatFlavor, status: number, body: stri
 /** Ollama / llama.cpp messages for a generated tool call that is not valid JSON. */
 const TOOL_PARSE_ERROR = /looks like object|can'?t find closing|error parsing tool call|invalid tool call|failed to parse.*tool/i;
 
+/** `reasoning_effort` goes out only to models that are known to accept it (an unknown parameter makes strict servers answer 400). */
+function effortField(params: Llm.MessageCreateParamsNonStreaming, info: ModelInfo, flavor: CompatFlavor): { reasoning_effort?: string } {
+  return params.reasoning_effort && info.supportsEffort && flavor !== 'deepseek' ? { reasoning_effort: params.reasoning_effort } : {};
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60_000;
 
 function linkSignals(external: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
@@ -643,6 +649,7 @@ export class OpenAiCompatClient implements LlmClient {
         messages: toChatMessages(params, ctx),
         max_tokens: Math.max(params.max_tokens, info.minOutputTokens ?? 0),
         stream: false,
+        ...effortField(params, info, this.opts.flavor),
         ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
       };
 
@@ -718,6 +725,7 @@ export class OpenAiCompatClient implements LlmClient {
       messages: toChatMessages(params, ctx),
       max_tokens: Math.max(params.max_tokens, info.minOutputTokens ?? 0),
       stream: true,
+      ...effortField(params, info, this.opts.flavor),
       stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
     };

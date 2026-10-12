@@ -52,6 +52,8 @@ export interface Message {
   content: ContentBlock[];
   stop_reason: StopReason | null;
   stop_sequence?: string | null;
+  /** The reply hit the output limit while it was still writing tool calls — their arguments are probably incomplete. */
+  cut_off?: boolean;
   usage: Usage;
 }
 
@@ -69,6 +71,8 @@ export interface MessageCreateParamsNonStreaming {
   system?: string | TextBlockParam[];
   tools?: Tool[];
   messages: MessageParam[];
+  /** How hard a reasoning model should think. Sent only to models that support it (ModelInfo.supportsEffort). */
+  reasoning_effort?: 'low' | 'medium' | 'high';
 }
 export type MessageCreateParams = MessageCreateParamsNonStreaming;
 

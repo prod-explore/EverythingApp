@@ -284,6 +284,7 @@ export class AgentManager {
           llm: queuedClient(client as LlmClient, sem, signal),
           model: run.model,
           maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
+          contextWindow: info.contextLength,
           tools,
           systemPrompt,
           virtualTools: [...this.agentTools(run.id, signal), ...(this.deps.workerExtraTools?.(run, signal) ?? [])],

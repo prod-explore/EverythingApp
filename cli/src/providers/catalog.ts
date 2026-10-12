@@ -40,6 +40,7 @@ export interface ModelFields {
   toolSchemaMode?: ToolSchemaMode;
   contextLength?: number;
   minOutputTokens?: number;
+  supportsEffort?: boolean;
 }
 
 export type ModelSource = 'discovered' | 'manual' | 'seed';
@@ -92,6 +93,7 @@ export function sanitizeFields(raw: unknown): ModelFields {
   if (tags) f.tags = tags;
   if (typeof o['description'] === 'string') f.description = o['description'].trim().slice(0, 300);
   if (typeof o['supportsImages'] === 'boolean') f.supportsImages = o['supportsImages'];
+  if (typeof o['supportsEffort'] === 'boolean') f.supportsEffort = o['supportsEffort'];
   if (o['toolSchemaMode'] === 'full' || o['toolSchemaMode'] === 'flat' || o['toolSchemaMode'] === 'none') f.toolSchemaMode = o['toolSchemaMode'];
   const ctx = finiteNum(o['contextLength']);
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
@@ -134,12 +136,16 @@ export function parseDiscoveredModel(raw: unknown): { id: string; reported: Mode
   if (Array.isArray(o['supports'])) {
     const supports = o['supports'].filter((s): s is string => typeof s === 'string');
     if (supports.includes('vision')) f.supportsImages = true;
+    if (supports.includes('reasoning_effort')) f.supportsEffort = true;
     if (!supports.includes('tools')) f.toolSchemaMode = 'none';
   }
   if (o['tool_schema'] === 'full' || o['tool_schema'] === 'flat' || o['tool_schema'] === 'none') f.toolSchemaMode = o['tool_schema'];
   const arch = o['architecture'] as { input_modalities?: unknown } | undefined;
   if (arch && Array.isArray(arch.input_modalities) && arch.input_modalities.includes('image')) f.supportsImages = true;
-  if (Array.isArray(o['supported_parameters']) && !o['supported_parameters'].includes('tools')) f.toolSchemaMode = 'none';
+  if (Array.isArray(o['supported_parameters'])) {
+    if (!o['supported_parameters'].includes('tools')) f.toolSchemaMode = 'none';
+    if (o['supported_parameters'].includes('reasoning_effort')) f.supportsEffort = true;
+  }
 
   // The app keeps no prices (that is the gateway's job). The one thing taken from a reported price is "costs
   // nothing" — OpenRouter lists `:free` models that way — because the `free` tag drives the cost guard.
@@ -394,6 +400,7 @@ export class ModelCatalog {
         minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (provider.flavor === 'gemini' || tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
         toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode,
         contextLength: ov.contextLength ?? rep.contextLength,
+        supportsEffort: ov.supportsEffort ?? rep.supportsEffort ?? false,
         enabled: r.enabled === 1,
         source: (r.source === 'manual' || r.source === 'seed' ? r.source : 'discovered') as ModelSource,
         overridden: Object.keys(ov),

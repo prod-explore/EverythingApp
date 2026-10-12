@@ -10,7 +10,7 @@ import { loadConfig, type Config } from './config.js';
 import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
-import { runTurn, type LlmClient, type VirtualTool } from './llm-loop.js';
+import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
 import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
@@ -22,6 +22,10 @@ import { ProviderRouter } from './providers/router.js';
 import { SLUG_RE, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
 import { findPreset, getModelInfo, isCatalogModel, presetBaseUrl, supportsTools } from './providers/registry.js';
 import { SSEManager } from './sse.js';
+import { classifyError } from './providers/errors.js';
+import { compactConversation, llmHistory } from './compaction.js';
+import { COMPACT_AT, estimateTokens } from './context.js';
+import { AGENTS_FILE, PLAN_MODE_PROMPT, WORKING_STYLE_PROMPT, projectInstructionsPrompt, proposePlanTool, todoTool } from './chat-tools.js';
 import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
 import { parseCommandPolicy } from './command-policy.js';
 import { PolicyStore, policyFilePath } from './policy-file.js';
@@ -47,6 +51,10 @@ import {
   updateConversation,
   deleteConversation,
   getMessages,
+  getConversationState,
+  setConversationState,
+  REASONING_EFFORTS,
+  type ConversationState,
   getAllMessagesFull,
   appendMessage,
   clearMessages,
@@ -418,19 +426,36 @@ ${formatHumanResponse(response)}` };
     };
   }
 
+  /** What the UI shows about a conversation beyond its messages. */
+  function publicState(convId: string, st: ConversationState = getConversationState(db, convId)) {
+    const conv = getConversation(db, convId);
+    const modelId = conv?.model || defaultModelId();
+    const info = modelId ? getModelInfo(modelId) : undefined;
+    return {
+      mode: st.mode,
+      effort: st.effort,
+      effortSupported: info?.supportsEffort === true,
+      todos: st.todos,
+      context: { used: st.lastInputTokens, limit: info?.contextLength ?? null },
+    };
+  }
+
   function buildVirtualTools(convId: string, rootRunId: string, signal: AbortSignal): VirtualTool[] {
     const conv = getConversation(db, convId);
     const origin: Origin = { convId, projectId: conv?.projectId ?? null, runId: rootRunId, agent: 'assistant' };
+    const announce = (st: ConversationState) => sse.emit(convId, 'conversation:state', publicState(convId, st));
     return [
       humanInputTool(origin, signal),
       reportTool(origin),
+      todoTool(db, convId, announce),
+      ...(getConversationState(db, convId).mode === 'plan' ? [proposePlanTool(db, convId, announce)] : []),
       ...agents.agentTools(rootRunId, signal),
     ];
   }
 
   // ─── Per-conversation turn state ──────────────────────────────────────────
   type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';
-  interface TurnState { id: number; status: TurnStatus; error?: string }
+  interface TurnState { id: number; status: TurnStatus; error?: string; kind?: string }
   const turnCounters = new Map<string, number>();
   const turnStates = new Map<string, TurnState>();
   const abortControllers = new Map<string, AbortController>();
@@ -804,6 +829,51 @@ ${formatHumanResponse(response)}` };
     res.json({ ok: true });
   });
 
+  // ─── Conversation state: plan mode, reasoning effort, todo list, context size ─────────────────────────
+  app.get('/api/conversations/:id/state', (req, res) => {
+    if (!getConversation(db, req.params.id)) { res.status(404).json({ error: 'conversation not found' }); return; }
+    res.json(publicState(req.params.id));
+  });
+
+  app.patch('/api/conversations/:id/state', (req, res) => {
+    if (!getConversation(db, req.params.id)) { res.status(404).json({ error: 'conversation not found' }); return; }
+    const { mode, effort, clearTodos } = (req.body ?? {}) as Record<string, unknown>;
+    if (mode !== undefined && mode !== 'normal' && mode !== 'plan') { res.status(400).json({ error: "mode: 'normal' or 'plan'" }); return; }
+    if (effort !== undefined && effort !== null && !(REASONING_EFFORTS as readonly unknown[]).includes(effort)) { res.status(400).json({ error: 'effort: low, medium, high or null' }); return; }
+    const next = setConversationState(db, req.params.id, {
+      ...(mode !== undefined ? { mode } : {}),
+      ...(effort !== undefined ? { effort: effort as ConversationState['effort'] } : {}),
+      ...(clearTodos === true ? { todos: [] } : {}),
+    });
+    const body = publicState(req.params.id, next);
+    sse.emit(req.params.id, 'conversation:state', body);
+    res.json(body);
+  });
+
+  /** Summarise the older part of the conversation now (the same thing that happens automatically when the window fills up). */
+  app.post('/api/conversations/:id/compact', async (req, res) => {
+    const convId = req.params.id;
+    const conv = getConversation(db, convId);
+    if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
+    if (getTurnState(convId).status === 'running') { res.status(409).json({ error: 'a turn is running in this conversation' }); return; }
+    const modelId = conv.model || defaultModelId();
+    if (!modelId) { res.status(400).json({ error: 'No model is set up yet — add a provider in Settings → Models.' }); return; }
+    try {
+      const bg = backgroundModel(db, router);
+      const chat = bg ? null : router.clientFor(modelId);
+      const via = bg ?? { model: modelId, provider: chat!.provider, client: chat!.client as LlmClient };
+      const r = await compactConversation(db, convId, {
+        llm: via.client,
+        model: via.model,
+        onUsage: usage => ledger.record({ conversationId: convId, provider: via.provider, model: via.model, usage }),
+      });
+      if (r.compacted) sse.emit(convId, 'conversation:compacted', { replaced: r.replaced });
+      res.json({ ok: true, ...r, state: publicState(convId) });
+    } catch (err) {
+      res.status(502).json({ error: classifyError(err, s => router.redact(s)).message });
+    }
+  });
+
   // ─── Turn execution (shared by /message, /edit, /regenerate, /retry) ──────
   /**
    * Runs one live turn to completion and persists everything it produces,
@@ -852,6 +922,21 @@ ${formatHumanResponse(response)}` };
       // too — `??` only catches null/undefined.
       let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
+      // Settings → "custom instructions" (how the user wants answers), the working-style note, plan mode, and the
+      // project's own instruction file.
+      const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
+      if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
+      effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
+      if (getConversationState(db, convId).mode === 'plan') effectiveSystem += '\n\n' + PLAN_MODE_PROMPT;
+      if (conv.sandboxEnabled) {
+        // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
+        const agentsFile = await Promise.race([
+          supervisor.readFile(conv.projectId ?? convId, `/workspace/${AGENTS_FILE}`).then(b => b.toString('utf8')).catch(() => ''),
+          new Promise<string>(r => setTimeout(() => r(''), 4_000)),
+        ]);
+        if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
+      }
+
       // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
       const agentModels = router.chatCandidates().filter(m => m.available);
       if (agentModels.length > 0) {
@@ -883,14 +968,54 @@ ${formatHumanResponse(response)}` };
         // ordinary turn:error the UI already knows how to show, not a crash.
         if (!effectiveModel) throw new Error('No model is set up yet — add a provider in Settings → Models.');
         const { provider, info, client } = router.clientFor(effectiveModel);
+        const state = getConversationState(db, convId);
+        const toolDefs = registry.toLlmTools() as Llm.Tool[];
 
-        const updatedHistory = await runTurn(
-          {
+        // Summarise the older part of the conversation with the helper model (or the chat model itself).
+        const compactNow = async (tight: boolean): Promise<boolean> => {
+          const bg = backgroundModel(db, router);
+          const via = bg ?? { model: effectiveModel, provider, client: client as LlmClient };
+          try {
+            const r = await compactConversation(db, convId, {
+              llm: via.client,
+              model: via.model,
+              beforeId: userMessageId,
+              keepTurns: tight ? 2 : 3,
+              maxTailTokens: info.contextLength ? Math.floor(info.contextLength * (tight ? 0.25 : 0.35)) : undefined,
+              signal: controller.signal,
+              onUsage: usage => ledger.record({ conversationId: convId, provider: via.provider, model: via.model, usage }),
+            });
+            if (r.compacted) sse.emit(convId, 'conversation:compacted', { replaced: r.replaced });
+            return r.compacted;
+          } catch (err) {
+            if (controller.signal.aborted) throw err;
+            console.warn(`[context] compaction failed: ${router.redact((err as Error).message)}`);
+            return false;
+          }
+        };
+
+        let history = historyBeforeTurn;
+        if (info.contextLength) {
+          const sized = state.lastInputTokens !== null
+            ? state.lastInputTokens + estimateTokens([{ role: 'user', content }])
+            : estimateTokens([...history, { role: 'user', content }], effectiveSystem, toolDefs);
+          if (sized > info.contextLength * COMPACT_AT && (await compactNow(false))) history = llmHistory(db, convId, userMessageId);
+        }
+
+        let toolRan = false;
+        const runDeps: ConversationDeps = {
             llm: client,
             model: effectiveModel,
             maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
             tools: registry,
             systemPrompt: effectiveSystem,
+            contextWindow: info.contextLength,
+            reasoningEffort: state.effort ?? undefined,
+            planMode: () => getConversationState(db, convId).mode === 'plan',
+            onContext: (c: { used: number; limit?: number }) => {
+              setConversationState(db, convId, { lastInputTokens: c.used });
+              sse.emit(convId, 'turn:context', { used: c.used, limit: c.limit ?? null });
+            },
             virtualTools: buildVirtualTools(convId, rootRun.id, controller.signal),
             drainInbox: () => drainRunMessages(db, rootRun.id).map(m => `[message from ${m.fromLabel}]
 ${m.body}`),
@@ -911,7 +1036,7 @@ ${m.body}`),
             onAssistantText: text => sse.emit(convId, 'turn:text', { text }),
             onTextDelta: delta => sse.emit(convId, 'turn:text_delta', delta),
             onThinkingDelta: delta => sse.emit(convId, 'turn:thinking_delta', delta),
-            onToolStart: label => sse.emit(convId, 'turn:tool_use', { label }),
+            onToolStart: (label: string) => { toolRan = true; sse.emit(convId, 'turn:tool_use', { label }); },
             onToolResult: (toolName, fullOutput, truncatedOutput, isError) => {
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });
             },
@@ -919,16 +1044,26 @@ ${m.body}`),
               ledger.record({ conversationId: convId, provider, model: effectiveModel, usage });
               addRunUsage(db, rootRun.id, { inputTokens: usage.input_tokens, outputTokens: usage.output_tokens });
             },
-          },
-          historyBeforeTurn,
-          content,
-        );
+        };
+        let updatedHistory: Llm.MessageParam[];
+        try {
+          updatedHistory = await runTurn(runDeps, history, content);
+        } catch (err) {
+          // "Context too long" on a request that ran no tool yet is safe to repeat once on a compacted history;
+          // after tools ran, repeating could redo their effects, so that case is reported instead.
+          if (classifyError(err).kind === 'context_too_long' && !toolRan && !controller.signal.aborted && (await compactNow(true))) {
+            history = llmHistory(db, convId, userMessageId);
+            updatedHistory = await runTurn(runDeps, history, content);
+          } else {
+            throw err;
+          }
+        }
 
         // Persist everything the turn produced AFTER the user message the
         // caller already stored, chaining each new row's parent_id off the
         // previous one so the whole turn (including tool-loop plumbing)
         // hangs off userMessageId as one branch.
-        const newMessages = updatedHistory.slice(historyBeforeTurn.length + 1);
+        const newMessages = updatedHistory.slice(history.length + 1);
         let previousId = userMessageId;
         for (const msg of newMessages) {
           previousId = appendMessage(db, convId, msg.role, msg.content, previousId);
@@ -940,7 +1075,7 @@ ${m.body}`),
           const titleSource = typeof content === 'string' ? content : '(attachment)';
           updateConversation(db, convId, { title: titleSource.slice(0, 60) });
           // Upgrade the plain slice to a proper title with a free-tier model; best-effort, never blocks the turn.
-          const assistantText = textOfHistory(updatedHistory.slice(historyBeforeTurn.length + 1));
+          const assistantText = textOfHistory(updatedHistory.slice(history.length + 1));
           const bg = backgroundModel(db, router);
           if (bg && typeof content === 'string' && assistantText) {
             void generateTitle(bg, content, assistantText, usage => ledger.record({ conversationId: convId, provider: bg.provider, model: bg.model, usage }))
@@ -960,8 +1095,11 @@ ${m.body}`),
         turnStates.set(convId, { id: turnId, status: 'done' });
         sse.emit(convId, 'turn:done', { turnId, usage: ledger.headline() });
       } catch (err) {
-        const error = router.redact((err as Error).message);
-        const aborted = error.includes('kill switch');
+        const incident = classifyError(err, s => router.redact(s));
+        const aborted = incident.kind === 'aborted';
+        // The person reads the plain sentence; the provider's own words stay available as `detail`.
+        const error = aborted ? router.redact((err as Error).message) : incident.message;
+        const detail = aborted || incident.message === router.redact((err as Error).message) ? undefined : router.redact((err as Error).message).slice(0, 600);
         // Deliberately NOT rolling back the user's message here (it was
         // already persisted before this async block even started) —
         // whatever failed, the user did type it, and silently discarding
@@ -970,9 +1108,9 @@ ${m.body}`),
         // assistant reply. The turn:error/aborted event below is what
         // tells the UI this turn didn't complete. (See retry, below, for
         // how this state gets resolved.)
-        setRunStatus(db, rootRun.id, aborted ? 'aborted' : 'error', { error });
-        turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error });
-        sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error });
+        setRunStatus(db, rootRun.id, aborted ? 'aborted' : 'error', { error: detail ?? error });
+        turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error, kind: incident.kind });
+        sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error, kind: incident.kind, transient: incident.transient, ...(detail ? { detail } : {}) });
       } finally {
         abortControllers.delete(convId);
         // Workers belong to the turn that started them: when it ends, whatever is still running stops.
@@ -999,7 +1137,7 @@ ${m.body}`),
     if (!anchor) return { ok: false, status: 404, error: 'no prior user message found to regenerate from' };
 
     deactivateMessagesFrom(db, convId, anchor.id);
-    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
+    const historyBeforeTurn = llmHistory(db, convId);
     const resendContent = anchor.content as Llm.MessageParam['content'];
     const userMessageId = appendMessage(db, convId, 'user', resendContent, anchor.parentId);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, resendContent, userMessageId);
@@ -1026,7 +1164,7 @@ ${m.body}`),
     // Live turn — runs detached from the HTTP request. historyBeforeTurn is
     // read BEFORE the optimistic append below, so it never includes the
     // message we're about to store.
-    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
+    const historyBeforeTurn = llmHistory(db, convId);
     const userMessageId = appendMessage(db, convId, 'user', content);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
     res.json({ ok: true, turnId });
@@ -1063,7 +1201,7 @@ ${m.body}`),
     }
 
     deactivateMessagesFrom(db, convId, afterId !== null ? afterId + 1 : 0);
-    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
+    const historyBeforeTurn = llmHistory(db, convId);
     const userMessageId = appendMessage(db, convId, 'user', content, afterId);
     const turnId = kickoffLiveTurn(convId, conv, historyBeforeTurn, content, userMessageId);
     res.json({ ok: true, turnId });
@@ -1243,7 +1381,7 @@ ${formatHumanResponse(response)}`;
     // Idle chat: append as a user message and start a turn so the agent continues.
     const conv = getConversation(db, convId);
     if (!conv) return;
-    const historyBeforeTurn = getMessages(db, convId) as Llm.MessageParam[];
+    const historyBeforeTurn = llmHistory(db, convId);
     const userMessageId = appendMessage(db, convId, 'user', text);
     kickoffLiveTurn(convId, conv, historyBeforeTurn, text, userMessageId);
   }

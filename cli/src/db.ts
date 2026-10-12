@@ -252,6 +252,15 @@ export function runMigrations(db: Database.Database): void {
   for (const [col, def] of [['project_id', 'TEXT'], ['run_id', 'TEXT'], ['agent', 'TEXT'], ['urgent', 'INTEGER NOT NULL DEFAULT 0'], ['attachments', 'TEXT']] as const) {
     if (!columnExists(db, 'gazeta_items', col)) db.exec(`ALTER TABLE gazeta_items ADD COLUMN ${col} ${def}`);
   }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS conversation_state (
+      conversation_id   TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+      mode              TEXT NOT NULL DEFAULT 'normal',
+      effort            TEXT,
+      todos             TEXT NOT NULL DEFAULT '[]',
+      last_input_tokens INTEGER
+    );
+  `);
   migrateRuns(db);
   migrateSearch(db);
 
@@ -408,6 +417,83 @@ export function getAllMessagesFull(db: Database.Database, conversationId: string
     isActive: Boolean(r.isActive),
     createdAt: r.createdAt,
   }));
+}
+
+// ─── Compaction view ─────────────────────────────────────────────────────────
+// A compaction is a row with role 'summary' and content { text, upTo }: every message with id <= upTo is replaced,
+// for the model, by that text. The UI still lists the originals (getMessages returns them and the summary row).
+
+export interface SummaryContent { text: string; upTo: number; replaced: number }
+
+export interface LlmHistory {
+  /** The active summary's text, if the history was compacted. */
+  summary: string | null;
+  /** Messages the model sees verbatim (id included, summary rows excluded). */
+  rows: Array<{ id: number; role: 'user' | 'assistant'; content: unknown }>;
+}
+
+/**
+ * What a turn starts from: the latest summary plus every active message after the part it replaces.
+ * `beforeId` stops short of the user message that is about to be sent (it is added by the loop itself).
+ */
+export function loadLlmHistory(db: Database.Database, conversationId: string, beforeId?: number): LlmHistory {
+  const all = db
+    .prepare(`SELECT id, role, content FROM messages WHERE conversation_id = ? AND is_active = 1 ORDER BY id ASC`)
+    .all(conversationId) as Array<{ id: number; role: string; content: string }>;
+  let summary: SummaryContent | null = null;
+  for (const r of all) {
+    if (r.role !== 'summary') continue;
+    const c = JSON.parse(r.content) as SummaryContent;
+    if (beforeId === undefined || c.upTo < beforeId) summary = c;
+  }
+  const rows = all
+    .filter(r => r.role !== 'summary' && (!summary || r.id > summary.upTo) && (beforeId === undefined || r.id < beforeId))
+    .map(r => ({ id: r.id, role: r.role as 'user' | 'assistant', content: JSON.parse(r.content) as unknown }));
+  return { summary: summary?.text ?? null, rows };
+}
+
+export function appendSummary(db: Database.Database, conversationId: string, content: SummaryContent): number {
+  return appendMessage(db, conversationId, 'summary', content, null);
+}
+
+// ─── Conversation state (plan mode, reasoning effort, todo list, last measured context size) ──────
+
+export type ConversationMode = 'normal' | 'plan';
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+export const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+export interface TodoItem { content: string; status: TodoStatus }
+
+export interface ConversationState {
+  mode: ConversationMode;
+  effort: ReasoningEffort | null;
+  todos: TodoItem[];
+  lastInputTokens: number | null;
+}
+
+export function getConversationState(db: Database.Database, conversationId: string): ConversationState {
+  const r = db
+    .prepare(`SELECT mode, effort, todos, last_input_tokens as lastInputTokens FROM conversation_state WHERE conversation_id = ?`)
+    .get(conversationId) as { mode: string; effort: string | null; todos: string; lastInputTokens: number | null } | undefined;
+  if (!r) return { mode: 'normal', effort: null, todos: [], lastInputTokens: null };
+  let todos: TodoItem[] = [];
+  try { todos = JSON.parse(r.todos) as TodoItem[]; } catch { /* keep empty */ }
+  return {
+    mode: r.mode === 'plan' ? 'plan' : 'normal',
+    effort: (REASONING_EFFORTS as readonly string[]).includes(r.effort ?? '') ? (r.effort as ReasoningEffort) : null,
+    todos,
+    lastInputTokens: r.lastInputTokens,
+  };
+}
+
+export function setConversationState(db: Database.Database, conversationId: string, patch: Partial<ConversationState>): ConversationState {
+  const cur = getConversationState(db, conversationId);
+  const next: ConversationState = { ...cur, ...patch };
+  db.prepare(
+    `INSERT INTO conversation_state (conversation_id, mode, effort, todos, last_input_tokens) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET mode = excluded.mode, effort = excluded.effort, todos = excluded.todos, last_input_tokens = excluded.last_input_tokens`,
+  ).run(conversationId, next.mode, next.effort, JSON.stringify(next.todos), next.lastInputTokens);
+  return next;
 }
 
 export function appendMessage(

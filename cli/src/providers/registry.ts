@@ -47,6 +47,8 @@ export interface ModelInfo {
    */
   toolSchemaMode?: ToolSchemaMode;
   contextLength?: number;
+  /** Accepts `reasoning_effort` (low | medium | high). Sent only when the provider reports it or the user switched it on. */
+  supportsEffort?: boolean;
   /** false = switched off in Settings; kept in the catalog so it can be re-enabled. Default true. */
   enabled?: boolean;
 }
@@ -63,7 +65,6 @@ export interface ProviderRecord {
   enabled: boolean;
   /** Concurrent model calls for agent workers; null = default (3). Local inference: 1. */
   concurrency: number | null;
-  /** How long to wait for one answer, seconds; null = default (180). A gateway that may wake a sleeping node needs more. */
   /** Keep retrying busy/overloaded errors (429/5xx/network) for this many minutes; null = the classic two retries. For peak hours. */
   retryMin: number | null;
 }

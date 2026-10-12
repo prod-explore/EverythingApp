@@ -1,6 +1,7 @@
 import type * as Llm from './llm-types.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { truncateToolOutput } from './output-truncator.js';
+import { estimateTokens, trimForContext, TRIM_AT } from './context.js';
 
 /**
  * The one method the tool loop needs from any provider. The OpenAI-compatible adapter
@@ -44,6 +45,10 @@ export interface VirtualTool {
   definition: Llm.Tool;
   /** Route through the approval gate before running. Default: false. */
   requiresApproval?: boolean;
+  /** Still allowed while plan mode is on, although it asks for approval (the plan proposal itself). */
+  planSafe?: boolean;
+  /** Always ask a human, never covered by a grant; the text is shown with the request. */
+  alwaysAsk?: string;
   handler(input: Record<string, unknown>, ctx: VirtualToolContext): Promise<{ text: string; isError?: boolean }>;
 }
 
@@ -105,6 +110,14 @@ export interface ConversationDeps {
   browserPolicy?: { domainAllow?: string[]; domainDeny?: string[]; js?: 'disabled' | 'review' | 'allowed' };
   /** Called at the start of every step (model round-trip) — run heartbeat. */
   onStep?: (step: number) => void;
+  /** The model's context window in tokens, when known: old tool outputs are dropped from the request as it fills up. */
+  contextWindow?: number;
+  /** Called with the provider-measured prompt size after every response. */
+  onContext?: (info: { used: number; limit?: number }) => void;
+  /** Evaluated per tool call. While true, only read-only tools (and the plan proposal) run; everything else is refused with an explanation. */
+  planMode?: () => boolean;
+  /** Passed to the model on every request; the adapter drops it for models that do not support it. */
+  reasoningEffort?: 'low' | 'medium' | 'high';
 }
 
 export class StepLimitError extends Error {
@@ -242,12 +255,17 @@ export async function runTurn(
       messages[messages.length - 1] = { role: 'user', content: blocks };
     }
 
+    // What is sent may be a trimmed copy; `messages` itself (and so what gets stored) always keeps the full outputs.
+    const view = deps.contextWindow
+      ? trimForContext(messages, Math.floor(deps.contextWindow * TRIM_AT), estimateTokens([], deps.systemPrompt, toolDefs)).messages
+      : messages;
     const params: Llm.MessageCreateParamsNonStreaming = {
       model: deps.model,
       max_tokens: deps.maxTokens ?? 4096,
       system: deps.systemPrompt,
       tools: toolDefs.length > 0 ? toolDefs : undefined,
-      messages,
+      messages: view,
+      ...(deps.reasoningEffort ? { reasoning_effort: deps.reasoningEffort } : {}),
     };
     // Lets the kill switch cancel a request that's already in flight, not just the next one.
     const options = { signal: deps.signal };
@@ -267,6 +285,8 @@ export async function runTurn(
 
     messages.push({ role: 'assistant', content: response.content });
     deps.onUsage?.(response.usage);
+    const promptTokens = response.usage.input_tokens + (response.usage.cache_read_input_tokens ?? 0) + (response.usage.cache_creation_input_tokens ?? 0);
+    if (promptTokens > 0) deps.onContext?.({ used: promptTokens, limit: deps.contextWindow });
 
     for (const block of response.content) {
       if (block.type === 'text' && block.text) {
@@ -301,8 +321,27 @@ export async function runTurn(
         continue;
       }
 
+      // The adapter could not parse the arguments (typically a reply cut off by the output limit). Running the tool with
+      // garbage would at best fail inside the server; tell the model what happened instead.
+      const rawArgs = (args as { __invalid_arguments?: unknown }).__invalid_arguments;
+      if (typeof rawArgs === 'string') {
+        const cut = response.cut_off === true ? ' Your reply hit the output limit while writing the call — send less in one call (split the content).' : '';
+        const result = { text: `The arguments of ${use.name} were not valid JSON, so nothing was executed.${cut} Call it again with a valid JSON object. Received: ${rawArgs.slice(0, 200)}${rawArgs.length > 200 ? '…' : ''}`, isError: true };
+        deps.onToolResult?.(use.name, result.text, result.text, true);
+        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
+        continue;
+      }
+
+      // Plan mode: look, think, propose — nothing with an effect until the user approved a plan.
+      if (deps.planMode?.() && !(virtual ? virtual.planSafe === true || virtual.requiresApproval !== true : !deps.tools.requiresApproval(use.name))) {
+        const result = { text: `Plan mode is on, so ${use.name} was not run. Research with read-only tools, then call propose_plan with the plan; changes are only allowed after the user approves it.`, isError: true };
+        deps.onToolResult?.(use.name, result.text, result.text, true);
+        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
+        continue;
+      }
+
       const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
-      const forcePrompt = injectionWarning && !READ_ONLY_AFTER_INJECTION.has(realToolName(use.name)) ? injectionWarning : undefined;
+      const forcePrompt = virtual?.alwaysAsk ?? (injectionWarning && !READ_ONLY_AFTER_INJECTION.has(realToolName(use.name)) ? injectionWarning : undefined);
       const decision = needsApproval || forcePrompt ? await deps.confirm(label, args, forcePrompt ? { forcePrompt } : undefined) : true;
       const approved = typeof decision === 'boolean' ? decision : decision.approved;
       const denyReason = typeof decision === 'boolean' ? undefined : decision.reason;
