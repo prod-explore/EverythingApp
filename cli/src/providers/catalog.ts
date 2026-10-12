@@ -168,6 +168,8 @@ export function migrateCatalogSchema(db: Database.Database): void {
       flavor       TEXT NOT NULL DEFAULT 'generic',
       enabled      INTEGER NOT NULL DEFAULT 1,
       concurrency  INTEGER,
+      timeout_sec  INTEGER,
+      retry_min    INTEGER,
       position     INTEGER NOT NULL DEFAULT 0,
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -185,7 +187,7 @@ export function migrateCatalogSchema(db: Database.Database): void {
   `);
 }
 
-interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null }
+interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null; timeout_sec: number | null; retry_min: number | null }
 interface ModelRow { provider: string; model_id: string; enabled: number; source: string; reported: string; overrides: string }
 
 const toRecord = (r: ProviderRow): ProviderRecord => ({
@@ -196,6 +198,8 @@ const toRecord = (r: ProviderRow): ProviderRecord => ({
   flavor: isFlavor(r.flavor) ? r.flavor : 'generic',
   enabled: r.enabled === 1,
   concurrency: r.concurrency,
+  timeoutSec: r.timeout_sec,
+  retryMin: r.retry_min,
 });
 
 export interface DiscoveryResult {
@@ -225,16 +229,16 @@ export class ModelCatalog {
     return r ? toRecord(r) : undefined;
   }
 
-  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; keyRef?: string }): ProviderRecord {
+  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; timeoutSec?: number | null; retryMin?: number | null }): ProviderRecord {
     const pos = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM providers`).get() as { p: number }).p;
     this.db
-      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, position) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, pos);
+      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, timeout_sec, retry_min, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, input.timeoutSec ?? null, input.retryMin ?? null, pos);
     this.sync();
     return this.get(input.slug)!;
   }
 
-  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; enabled: boolean; concurrency: number | null }>): boolean {
+  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; enabled: boolean; concurrency: number | null; timeoutSec: number | null; retryMin: number | null }>): boolean {
     const r = this.db
       .prepare(`
         UPDATE providers SET
@@ -251,6 +255,8 @@ export class ModelCatalog {
       );
     if (!r.changes) return false;
     if (patch.concurrency !== undefined) this.db.prepare(`UPDATE providers SET concurrency = ? WHERE slug = ?`).run(patch.concurrency, slug);
+    if (patch.timeoutSec !== undefined) this.db.prepare(`UPDATE providers SET timeout_sec = ? WHERE slug = ?`).run(patch.timeoutSec, slug);
+    if (patch.retryMin !== undefined) this.db.prepare(`UPDATE providers SET retry_min = ? WHERE slug = ?`).run(patch.retryMin, slug);
     this.sync();
     return true;
   }

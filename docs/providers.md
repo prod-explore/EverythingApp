@@ -39,10 +39,15 @@ A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the
 
 **Cost guard:** a chat running on a `free` model can only start `free` workers, unless *Allow agents to use paid models* is on. `spawn_agent` takes `model` (an exact id) or `tag` (first usable model with it). The orchestrator's system prompt contains a generated list of the installed models with their tags and the slot assignments, so it always matches what is actually set up.
 
-## Waiting and retries
+## Patience (per provider)
 
-The app does not track whether a model is “up”. Ordinary APIs are always online; MindGate may have to wake a sleeping node first (Wake-on-LAN is MindGate's job), so a MindGate request is simply allowed to take long — 15 minutes by default, `MINDGATE_TIMEOUT_MS` to change — and the chat waits for the answer.
+The app does not track whether a model is “up” and MindGate is not special: it is just another provider. Two plain settings on each provider card cover the cases where an answer takes long:
 
-Transient failures (HTTP 408/429/5xx, network errors) are retried with backoff and shown as a banner; Gemini additionally has a long retry budget (`GEMINI_RETRY_BUDGET_HOURS`, 12 h). `budget_exhausted` from a gateway is never retried.
+| Setting | Default | Use |
+|---|---|---|
+| *Wait up to … s* | 180 | How long one answer may take. A gateway that may have to wake a sleeping node first (MindGate — Wake-on-LAN is its job) needs more |
+| *Retry busy errors for … min* | off (two quick retries) | Keep retrying 429/5xx/network errors with backoff for this long — for peak hours (Gemini flash-lite) |
+
+Presets only pre-fill them: MindGate waits 15 min, Gemini retries for 12 h. The stop button interrupts any wait. `budget_exhausted` from a gateway is never retried.
 
 Design rationale: [ADR 0008](adr/0008-unified-provider-catalog.md).

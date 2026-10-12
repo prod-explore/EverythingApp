@@ -63,6 +63,10 @@ export interface ProviderRecord {
   enabled: boolean;
   /** Concurrent model calls for agent workers; null = default (3). Local inference: 1. */
   concurrency: number | null;
+  /** How long to wait for one answer, seconds; null = default (180). A gateway that may wake a sleeping node needs more. */
+  timeoutSec: number | null;
+  /** Keep retrying busy/overloaded errors (429/5xx/network) for this many minutes; null = the classic two retries. For peak hours. */
+  retryMin: number | null;
 }
 
 // ─── Model ids ───────────────────────────────────────────────────────────────
@@ -144,6 +148,9 @@ export interface ProviderPreset {
   flavor: CompatFlavor;
   keyOptional: boolean;
   concurrency: number | null;
+  /** Suggested patience (see ProviderRecord) — a preset only pre-fills these like every other field. */
+  timeoutSec: number | null;
+  retryMin: number | null;
   /** Rough shape of a valid key, used only to catch obvious paste mistakes in the UI — never for security. */
   keyHint: string;
 }
@@ -153,10 +160,10 @@ export interface ProviderPreset {
  * it is meant to be the hub, but nothing downstream treats it differently from any other entry.
  */
 export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
-  { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://mindgate.futumore.pl/v1', baseUrlEnv: 'MINDGATE_BASE_URL', flavor: 'mindgate', keyOptional: false, concurrency: 1, keyHint: 'mg-…' },
-  { slug: 'gemini', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', baseUrlEnv: 'GEMINI_BASE_URL', flavor: 'gemini', keyOptional: false, concurrency: null, keyHint: 'AIza…' },
-  { slug: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', baseUrlEnv: 'DEEPSEEK_BASE_URL', flavor: 'deepseek', keyOptional: false, concurrency: null, keyHint: 'sk-…' },
-  { slug: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', flavor: 'generic', keyOptional: false, concurrency: null, keyHint: 'sk-or-…' },
+  { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://mindgate.futumore.pl/v1', baseUrlEnv: 'MINDGATE_BASE_URL', flavor: 'mindgate', keyOptional: false, concurrency: 1, timeoutSec: 900, retryMin: null, keyHint: 'mg-…' },
+  { slug: 'gemini', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', baseUrlEnv: 'GEMINI_BASE_URL', flavor: 'gemini', keyOptional: false, concurrency: null, timeoutSec: null, retryMin: 720, keyHint: 'AIza…' },
+  { slug: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', baseUrlEnv: 'DEEPSEEK_BASE_URL', flavor: 'deepseek', keyOptional: false, concurrency: null, timeoutSec: null, retryMin: null, keyHint: 'sk-…' },
+  { slug: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', flavor: 'generic', keyOptional: false, concurrency: null, timeoutSec: null, retryMin: null, keyHint: 'sk-or-…' },
 ];
 
 export function findPreset(slug: string): ProviderPreset | undefined {

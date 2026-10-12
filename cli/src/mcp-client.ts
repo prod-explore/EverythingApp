@@ -25,7 +25,7 @@ export interface McpConnectionLike {
 }
 
 /**
- * One connection to one MCP server (sandbox-mcp, obsidian-livesync-mcp, ...).
+ * One connection to one MCP server (sandbox, GitHub, a notes server, ...).
  * Thin wrapper — the SDK's Client already does the protocol work, this just
  * gives us a stable interface the rest of the CLI can depend on, and a place
  * to inject a fake in tests instead of hitting a real server.
@@ -41,8 +41,8 @@ export class McpConnection {
 
   /**
    * MCP servers speak one of two HTTP flavours: Streamable HTTP (current) or the older HTTP+SSE transport
-   * (`GET /sse` + `POST /messages` — e.g. obsidian-livesync-mcp at `/mcp/sse`). The path says nothing reliable
-   * (the Streamable servers here are mounted under `/mcp/sse` too), so Streamable HTTP is always tried first —
+   * (`GET /sse` + `POST /messages`). The path says nothing reliable
+   * (some Streamable servers are mounted under `/mcp/sse` too), so Streamable HTTP is always tried first —
    * a legacy server rejects its POST outright — and the SSE transport is the fallback.
    */
   async connect(): Promise<void> {

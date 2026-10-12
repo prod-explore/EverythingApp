@@ -33,6 +33,8 @@ export interface ProviderStatus {
   enabled: boolean;
   keyOptional: boolean;
   concurrency: number | null;
+  timeoutSec: number | null;
+  retryMin: number | null;
   configured: boolean;
   source: KeySource;
   /** Last four characters of the stored key — enough to tell keys apart, useless to an attacker. */
@@ -61,22 +63,6 @@ export interface RouterOptions {
   llmOverride?: LlmClient;
   /** Fired before each wait while a provider is busy (429/5xx) — wire it to the log / UI. */
   onProviderRetry?: (info: RetryInfo) => void;
-}
-
-/** Gemini's free tier rate-limits hard at peak hours: keep retrying for this long (GEMINI_RETRY_BUDGET_HOURS, 0 = classic 2 retries). */
-/**
- * MindGate may have to wake a sleeping node (Wake-on-LAN) before it can answer; the gateway owns that, the app just
- * waits. A MindGate request is therefore allowed far longer than the 3 minutes other providers get.
- */
-export function mindgateTimeoutMs(env: NodeJS.ProcessEnv): number {
-  const n = Number(env['MINDGATE_TIMEOUT_MS']);
-  return Number.isFinite(n) && n > 0 ? n : 15 * 60_000;
-}
-
-function geminiRetryBudgetMs(env: NodeJS.ProcessEnv): number | undefined {
-  const raw = env['GEMINI_RETRY_BUDGET_HOURS'];
-  const hours = raw === undefined || raw === '' ? 12 : Number(raw);
-  return Number.isFinite(hours) && hours > 0 ? hours * 3_600_000 : undefined;
 }
 
 /**
@@ -158,6 +144,8 @@ export class ProviderRouter {
         enabled: p.enabled,
         keyOptional: p.keyOptional,
         concurrency: p.concurrency,
+        timeoutSec: p.timeoutSec,
+        retryMin: p.retryMin,
         configured: key !== null,
         source: stored.present && key ? 'vault' : null,
         last4: stored.present && key ? stored.last4 : null,
@@ -194,8 +182,8 @@ export class ProviderRouter {
       baseUrl: provider.baseUrl.replace(/\/+$/, ''),
       apiKey,
       fetchImpl: this.opts.fetchImpl,
-      ...(provider.flavor === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
-      ...(provider.flavor === 'mindgate' ? { timeoutMs: mindgateTimeoutMs(this.env) } : {}),
+      ...(provider.timeoutSec ? { timeoutMs: provider.timeoutSec * 1000 } : {}),
+      ...(provider.retryMin ? { retryBudgetMs: provider.retryMin * 60_000 } : {}),
       onRetry: info => this.onProviderRetry?.(info),
       modelInfo: id => getModelInfo(id),
       upstreamModel: id => parseModelId(id)?.upstream ?? id,
@@ -284,6 +272,6 @@ export class ProviderRouter {
   /** Presets the "Add provider" form offers, minus the ones already added. */
   availablePresets() {
     const have = new Set(this.catalog.list().map(p => p.slug));
-    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, keyHint: p.keyHint }));
+    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, timeoutSec: p.timeoutSec, retryMin: p.retryMin, keyHint: p.keyHint }));
   }
 }

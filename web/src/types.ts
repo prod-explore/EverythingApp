@@ -204,6 +204,10 @@ export interface ProviderInfo {
   enabled: boolean;
   keyOptional: boolean;
   concurrency: number | null;
+  /** Seconds to wait for one answer; null = default (180). */
+  timeoutSec: number | null;
+  /** Minutes to keep retrying busy errors; null = the classic two retries. */
+  retryMin: number | null;
   configured: boolean;
   source: 'vault' | null;
   last4: string | null;

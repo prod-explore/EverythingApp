@@ -87,13 +87,3 @@ describe('model identity', () => {
     assert.match(out, /Google Gemini/);
   });
 });
-
-describe('MindGate waits for a sleeping node', () => {
-  it('allows 15 minutes per request by default, MINDGATE_TIMEOUT_MS overrides, junk is ignored', async () => {
-    const { mindgateTimeoutMs } = await import('../providers/router.js');
-    assert.equal(mindgateTimeoutMs({}), 15 * 60_000);
-    assert.equal(mindgateTimeoutMs({ MINDGATE_TIMEOUT_MS: '60000' }), 60_000);
-    assert.equal(mindgateTimeoutMs({ MINDGATE_TIMEOUT_MS: 'abc' }), 15 * 60_000);
-    assert.equal(mindgateTimeoutMs({ MINDGATE_TIMEOUT_MS: '-5' }), 15 * 60_000);
-  });
-});

@@ -33,7 +33,7 @@ describe('McpConnection transports', () => {
     srv = http.createServer(async (req, res) => {
       if (req.headers.authorization !== `Bearer ${KEY}`) { res.writeHead(401).end('unauthorized'); return; }
       const url = new URL(req.url ?? '/', 'http://x');
-      // Legacy HTTP+SSE server, mounted under /mcp/sse like obsidian-livesync-mcp.
+      // Legacy HTTP+SSE server, mounted under /mcp/sse.
       if (req.method === 'GET' && url.pathname === '/mcp/sse') {
         seen.push('sse');
         const transport = new SSEServerTransport('/mcp/messages', res);
@@ -66,8 +66,8 @@ describe('McpConnection transports', () => {
     await new Promise(r => srv.close(r));
   });
 
-  it('falls back to the legacy HTTP+SSE transport (the Obsidian connector), with the bearer key on the stream and the POSTs', async () => {
-    const conn = new McpConnection({ name: 'obsidian', url: `${base}/mcp/sse`, apiKey: KEY });
+  it('falls back to the legacy HTTP+SSE transport (any older MCP server), with the bearer key on the stream and the POSTs', async () => {
+    const conn = new McpConnection({ name: 'notes', url: `${base}/mcp/sse`, apiKey: KEY });
     await conn.connect();
     assert.deepEqual((await conn.listTools()).map(t => t.name), ['echo']);
     assert.deepEqual(await conn.callTool('echo', { text: 'hi' }), { text: 'echo:hi', isError: false });
