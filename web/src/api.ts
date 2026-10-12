@@ -388,6 +388,7 @@ export type ModelPatch = Partial<{
   tags: string[] | null;
   description: string | null;
   supportsImages: boolean | null;
+  pricing: { input: number; output: number } | null;
 }>;
 
 /** A field set to null goes back to what the provider reports. */

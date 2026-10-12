@@ -4,7 +4,7 @@ import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { ModelCatalog, type CatalogModel, type DiscoveryResult } from './catalog.js';
 import { KeyVault } from './key-vault.js';
 import { OpenAiCompatClient, type RetryInfo } from './openai-compat.js';
-import { PROVIDER_PRESETS, findPreset, getModelInfo, normalizeModelId, parseModelId, type ModelInfo, type ProviderId, type ProviderRecord } from './registry.js';
+import { PROVIDER_PRESETS, findPreset, getModelInfo, parseModelId, supportsTools, type ModelInfo, type ProviderId, type ProviderRecord } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
   constructor(
@@ -189,7 +189,7 @@ export class ProviderRouter {
       ...(provider.flavor === 'gemini' ? { retryBudgetMs: geminiRetryBudgetMs(this.env) } : {}),
       onRetry: info => this.onProviderRetry?.(info),
       modelInfo: id => getModelInfo(id, this.env),
-      upstreamModel: id => parseModelId(normalizeModelId(id))?.upstream ?? id,
+      upstreamModel: id => parseModelId(id)?.upstream ?? id,
       meta: withMeta
         ? { get: id => getToolCallMeta(this.opts.db, id, provider.keyRef), set: (id, meta) => setToolCallMeta(this.opts.db, id, provider.keyRef, meta) }
         : { get: () => null, set: () => {} },
@@ -201,7 +201,7 @@ export class ProviderRouter {
       const info = getModelInfo(modelId, this.env);
       return { provider: info.provider, info, client: this.opts.llmOverride };
     }
-    const id = normalizeModelId(modelId);
+    const id = modelId;
     const parsed = parseModelId(id);
     if (!parsed) throw new UnknownModelError(modelId);
     const provider = this.catalog.get(parsed.slug);
@@ -232,9 +232,9 @@ export class ProviderRouter {
     });
   }
 
-  /** Chat-capable models you could pick for a conversation or an agent right now. */
+  /** Chat-capable models that can call tools — you could pick for a conversation or an agent right now. */
   chatCandidates(): PickerModel[] {
-    return this.models().filter(m => m.kind === 'chat');
+    return this.models().filter(m => m.kind === 'chat' && supportsTools(m));
   }
 
   providerModels(slug: ProviderId): CatalogModel[] {

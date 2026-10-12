@@ -40,7 +40,7 @@ export interface OpenAiCompatOptions {
   flavor: CompatFlavor;
   baseUrl: string;
   apiKey: string;
-  /** Maps our model id to the upstream one (custom providers: `@slug/x` → `x`). */
+  /** Maps our model id to the upstream one (`@slug/x` → `x`). */
   upstreamModel?: (modelId: string) => string;
   meta: MetaStore;
   modelInfo: (modelId: string) => ModelInfo;

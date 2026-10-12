@@ -36,6 +36,8 @@ type Note = { ok: boolean; text: string } | null;
 
 function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void }) {
   const [tags, setTags] = useState(m.tags.join(', '));
+  const [priceIn, setPriceIn] = useState(m.pricing?.input.toString() ?? '');
+  const [priceOut, setPriceOut] = useState(m.pricing?.output.toString() ?? '');
   const [error, setError] = useState<string | null>(null);
 
   async function patch(p: Parameters<typeof patchModel>[1]) {
@@ -45,6 +47,14 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
   const commitTags = () => {
     const next = tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
     if (next.join(',') !== m.tags.join(',')) void patch({ tags: next });
+  };
+
+  const commitPrice = () => {
+    const i = Number(priceIn);
+    const o = Number(priceOut);
+    if (priceIn.trim() === '' && priceOut.trim() === '') return;
+    if (priceIn.trim() === '' || priceOut.trim() === '' || !(i >= 0) || !(o >= 0)) { setError('Enter both prices as numbers ≥ 0 (USD per million tokens)'); return; }
+    if (i !== m.pricing?.input || o !== m.pricing?.output) void patch({ pricing: { input: i, output: o } });
   };
 
   return (
@@ -82,6 +92,15 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
           </button>
         )}
       </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-6 text-[11px] text-fg-tertiary">
+        <span>Price $/M tokens</span>
+        <input value={priceIn} onChange={e => setPriceIn(e.target.value)} onBlur={commitPrice} inputMode="decimal" placeholder="in" className={`${smallInput} w-16`} aria-label={`Input price of ${m.id}`} />
+        <input value={priceOut} onChange={e => setPriceOut(e.target.value)} onBlur={commitPrice} inputMode="decimal" placeholder="out" className={`${smallInput} w-16`} aria-label={`Output price of ${m.id}`} />
+        {m.pricing === null && <span className="text-fg-secondary">unpriced — usage counts as $0</span>}
+        {m.overridden.includes('pricing') && (
+          <button onClick={() => { setPriceIn(''); setPriceOut(''); void patch({ pricing: null }); }} className="underline hover:text-fg">reset</button>
+        )}
+      </div>
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
     </li>
   );
@@ -115,7 +134,7 @@ function ModelsEditor({ p, onChanged }: { p: ProviderInfo; onChanged: () => void
       </div>
       {models.length === 0 && <p className="text-xs text-fg-tertiary">No models yet — use “Refresh models”, or add an id by hand below.</p>}
       <ul className="max-h-72 space-y-1 overflow-y-auto">
-        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}`} m={m} onChanged={changed} />)}
+        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}:${m.pricing?.input}:${m.pricing?.output}`} m={m} onChanged={changed} />)}
       </ul>
       {shown.length > 200 && <p className="text-xs text-fg-tertiary">Showing 200 of {shown.length} — narrow the filter.</p>}
       <div className="flex gap-2">

@@ -2,9 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { openDb, runMigrations, setSetting, getSetting, createConversation, getConversation } from '../db.js';
 import {
-  AUTO_ENABLE_LIMIT, ModelCatalog, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
+  AUTO_ENABLE_LIMIT, ModelCatalog, legacyModelId, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
 } from '../providers/catalog.js';
-import { getModelInfo, isCatalogModel, normalizeModelId, parseModelId } from '../providers/registry.js';
+import { getModelInfo, isCatalogModel, parseModelId, supportsTools } from '../providers/registry.js';
 
 const fresh = () => {
   const db = openDb(':memory:');
@@ -74,13 +74,18 @@ describe('sanitizers', () => {
 });
 
 describe('model ids', () => {
-  it('parse and normalize', () => {
+  it('parse canonical ids', () => {
     assert.deepEqual(parseModelId('@or/meta/llama'), { slug: 'or', upstream: 'meta/llama' });
     assert.equal(parseModelId('gpt-4o'), null);
-    assert.equal(normalizeModelId('coding-fast'), '@mindgate/coding-fast');
-    assert.equal(normalizeModelId('pipeline:daily'), '@mindgate/pipeline:daily');
-    assert.equal(normalizeModelId('@x/y'), '@x/y');
-    assert.equal(normalizeModelId(''), '');
+  });
+
+  it('legacyModelId rewrites bare pre-unification ids by rule (no list of names)', () => {
+    assert.equal(legacyModelId('gemini-x'), '@gemini/gemini-x');
+    assert.equal(legacyModelId('deepseek-y'), '@deepseek/deepseek-y');
+    assert.equal(legacyModelId('whatever-local'), '@mindgate/whatever-local', 'everything else was a MindGate model');
+    assert.equal(legacyModelId('claude-sonnet-5'), 'claude-sonnet-5', 'Anthropic is gone — left alone');
+    assert.equal(legacyModelId('@x/y'), '@x/y');
+    assert.equal(legacyModelId(''), '');
   });
 });
 

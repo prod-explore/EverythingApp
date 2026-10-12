@@ -137,6 +137,28 @@ describe('providers API', () => {
     await req(port, 'PATCH', '/api/models', { id, enabled: true });
   });
 
+  it('prices: the editor shows the effective price and a user override wins, null clears it', async () => {
+    const id = '@mindgate/whisper'; // no hint, no reported price
+    const get = async () => (await req(port, 'GET', '/api/providers/mindgate/models')).json.models.find((x: any) => x.id === id);
+    assert.equal((await get()).pricing, null);
+    await req(port, 'PATCH', '/api/models', { id, pricing: { input: 0.5, output: 1.5 } });
+    assert.deepEqual((await get()).pricing, { input: 0.5, output: 1.5 });
+    assert.equal((await get()).pricingKnown, true);
+    assert.ok((await get()).overridden.includes('pricing'));
+    await req(port, 'PATCH', '/api/models', { id, pricing: null });
+    assert.equal((await get()).pricing, null);
+  });
+
+  it('a conversation cannot be put on a known non-chat model; legacy ids are stored canonically', async () => {
+    const bad = await req(port, 'POST', '/api/conversations', { model: '@mindgate/whisper' });
+    assert.equal(bad.status, 400);
+    const conv = (await req(port, 'POST', '/api/conversations', {})).json.id;
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: '@mindgate/whisper' })).status, 400);
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: 'flash' })).status, 200);
+    assert.equal((await req(port, 'GET', `/api/conversations/${conv}`)).json.model, '@mindgate/flash');
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: 'some-unlisted-model' })).status, 200, 'unknown ids are tolerated; the turn reports them');
+  });
+
   it('slots: unset ones resolve automatically, explicit ones must be real chat models', async () => {
     const s = (await req(port, 'GET', '/api/slots')).json;
     assert.equal(s.slots.helper, '');

@@ -249,6 +249,8 @@ export interface ModelOption {
 export interface CatalogModelRow extends Omit<ModelOption, 'available' | 'providerLabel'> {
   /** The id as the provider itself names it. */
   upstream: string;
+  /** Effective price in USD per million tokens, null when nobody priced the model. */
+  pricing: { input: number; output: number } | null;
   enabled: boolean;
   source: 'discovered' | 'manual' | 'seed';
   overridden: string[];

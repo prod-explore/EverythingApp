@@ -34,7 +34,7 @@ function ctxFor(flavor: 'gemini' | 'deepseek' | 'mindgate', model: string, meta:
   const map = new Map<string, string>();
   return {
     flavor,
-    modelInfo: getModelInfo(model),
+    modelInfo: getModelInfo(`@${flavor}/${model}`),
     meta,
     names: {
       safe(original: string) {
@@ -306,7 +306,7 @@ function newClient(f: typeof fetch, extra: Partial<ConstructorParameters<typeof 
     baseUrl: 'https://api.example.test',
     apiKey: 'sk-live-SECRET-KEY',
     meta: memoryMeta(),
-    modelInfo: getModelInfo,
+    modelInfo: id => getModelInfo(id.startsWith('@') ? id : `@${extra.flavor ?? 'deepseek'}/${id}`),
     fetchImpl: f,
     sleep: async () => {},
     ...extra,
@@ -446,7 +446,7 @@ describe('toolSchemaMode', () => {
   it("'full' models are untouched and 'none' models get no tools at all", () => {
     const full = toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], ctxFor('deepseek', 'deepseek-chat'));
     assert.equal((full[0]!.function.parameters as { properties: Record<string, { type: string }> }).properties['fields']!.type, 'array');
-    const none = { ...ctxFor('mindgate', 'flash'), modelInfo: { ...getModelInfo('flash'), toolSchemaMode: 'none' as const } };
+    const none = { ...ctxFor('mindgate', 'flash'), modelInfo: { ...getModelInfo('@mindgate/flash'), toolSchemaMode: 'none' as const } };
     assert.deepEqual(toChatTools([nestedTool] as Anthropic.MessageCreateParams['tools'], none), []);
   });
 });
@@ -473,7 +473,7 @@ describe('OpenAiCompatClient — MindGate tool-call parse failures', () => {
       bodies.push(JSON.parse(String(init.body)));
       return bodies.length === 1 ? new Response(ollama500, { status: 500 }) : new Response(JSON.stringify(okBody), { status: 200 });
     }) as unknown as typeof fetch;
-    const client = newClient(f, { flavor: 'mindgate', modelInfo: m => ({ ...getModelInfo(m), toolSchemaMode: 'full' }) });
+    const client = newClient(f, { flavor: 'mindgate', modelInfo: m => ({ ...getModelInfo(`@mindgate/${m}`), toolSchemaMode: 'full' }) });
     const res = await client.messages.create({ model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [nestedTool] });
 
     assert.equal(bodies.length, 2, 'one failed attempt (no transient retries) + one tools-less retry');

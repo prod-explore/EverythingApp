@@ -9,7 +9,7 @@ import type { ToolRegistry } from './tool-registry.js';
 import type { WebApprovalGate } from './web-approval.js';
 import type { SSEManager, SSEEventName } from './sse.js';
 import type { ProviderRouter } from './providers/router.js';
-import { getModelInfo, normalizeModelId, type ProviderId } from './providers/registry.js';
+import { getModelInfo, type ProviderId } from './providers/registry.js';
 import { appendMessage, createConversation, getMessages } from './db.js';
 import {
   ACTIVE_STATUSES,
@@ -157,7 +157,7 @@ export class AgentManager {
     const available = (id: string) => router.isAvailable(id);
     let model: string | null = null;
     if (pick.model) {
-      const id = normalizeModelId(pick.model);
+      const id = pick.model;
       const hit = candidates.find(c => c.id === id);
       if (!hit) return { error: `unknown model "${pick.model}" — use an exact id from the model list in your instructions, or pick by "tag".` };
       if (!hit.available) return { error: `model "${id}" has no API key configured — pick another or ask the user to add the key in Settings.` };
@@ -168,7 +168,7 @@ export class AgentManager {
       if (!model) return { error: `no usable model is tagged "${tag}" — pick another tag or an exact model id.` };
     } else {
       // The agents slot, else a free model — and when the catalog has neither, the parent's own model (never costlier than what the user picked).
-      model = resolveSlot(db, 'subagent', candidates, available) ?? (available(parent.model) ? normalizeModelId(parent.model) : null);
+      model = resolveSlot(db, 'subagent', candidates, available) ?? (available(parent.model) ? parent.model : null);
       if (!model) return { error: 'no usable model for agents — the user has to add a provider or set the "agents" model in Settings → Models.' };
     }
     if (isFreeModel(getModelInfo(parent.model)) && !isFreeModel(getModelInfo(model)) && !allowPaidAgents(db)) {

@@ -20,7 +20,7 @@ import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { withModelIdentity } from './providers/identity.js';
 import { ProviderRouter } from './providers/router.js';
 import { SLUG_RE, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
-import { findPreset, getModelInfo, normalizeModelId, presetBaseUrl } from './providers/registry.js';
+import { findPreset, getModelInfo, isCatalogModel, presetBaseUrl, supportsTools } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
 import { parseCommandPolicy } from './command-policy.js';
@@ -600,7 +600,7 @@ ${formatHumanResponse(response)}` };
         continue;
       }
       if (!isSlotKey(slot) || typeof value !== 'string') { res.status(400).json({ error: `expected { ${SLOT_KEYS.join('?, ')}?: modelId | "" , allowPaidAgents?: boolean }` }); return; }
-      const id = value ? normalizeModelId(value) : '';
+      const id = value;
       if (id && !known.has(id)) { res.status(400).json({ error: `unknown or disabled chat model "${value}" for slot "${slot}"` }); return; }
       patch[slot] = id;
     }
@@ -694,8 +694,16 @@ ${formatHumanResponse(response)}` };
     res.json({ conversations: listConversations(db) });
   });
 
+  /** Voice/image/embedding models and models without tool calls can't run a conversation here. Unknown ids stay allowed (the turn reports them) — only a known unsuitable model is refused. */
+  const refusesAsChatModel = (model: unknown): boolean => {
+    if (typeof model !== 'string' || !isCatalogModel(model)) return false;
+    const info = getModelInfo(model);
+    return info.kind !== 'chat' || !supportsTools(info);
+  };
+
   app.post('/api/conversations', (req, res) => {
     const { title, projectId, systemPrompt, model, sandboxEnabled } = req.body ?? {};
+    if (refusesAsChatModel(model)) { res.status(400).json({ error: `"${model}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
     if (projectId !== undefined && projectId !== null) {
       if (typeof projectId !== 'string' || !getProject(db, projectId)) {
         res.status(400).json({ error: 'unknown projectId' });
@@ -715,7 +723,9 @@ ${formatHumanResponse(response)}` };
   });
 
   app.patch('/api/conversations/:id', (req, res) => {
-    const ok = updateConversation(db, req.params.id, req.body ?? {});
+    const patch = (req.body ?? {}) as Record<string, unknown>;
+    if (refusesAsChatModel(patch['model'])) { res.status(400).json({ error: `"${String(patch['model'])}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
+    const ok = updateConversation(db, req.params.id, patch);
     if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
     res.json({ ok: true });
   });
@@ -1541,7 +1551,8 @@ ${formatHumanResponse(response)}`;
   app.get('/api/providers/:id/models', (req, res) => {
     const p = providerOr404(req.params.id, res);
     if (!p) return;
-    res.json({ models: router.providerModels(p.slug).map(stripPricing) });
+    // The editor also gets the effective price (USD per million tokens) so it can be shown and overridden.
+    res.json({ models: router.providerModels(p.slug).map(({ pricing, ...rest }) => ({ ...rest, pricingKnown: pricing !== null, pricing: pricing ? { input: pricing.input, output: pricing.output } : null })) });
   });
 
   /** Adds a model id by hand — for a provider without /models, or one that hides some. */
@@ -1562,7 +1573,7 @@ ${formatHumanResponse(response)}`;
   /** Switch a model on/off or set its metadata; a field set to null goes back to what the provider reports. */
   app.patch('/api/models', (req, res) => {
     const { id, enabled, ...fields } = (req.body ?? {}) as Record<string, unknown>;
-    if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'expected { id, enabled?, label?, kind?, tags?, description?, supportsImages?, toolSchemaMode? }' }); return; }
+    if (typeof id !== 'string' || !id) { res.status(400).json({ error: 'expected { id, enabled?, label?, kind?, tags?, description?, supportsImages?, toolSchemaMode?, pricing? }' }); return; }
     const ok = router.catalog.updateModel(id, { enabled: typeof enabled === 'boolean' ? enabled : undefined, fields });
     if (!ok) { res.status(404).json({ error: 'unknown model' }); return; }
     res.json({ ok: true });

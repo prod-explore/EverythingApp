@@ -98,7 +98,7 @@ export function UsageTab() {
             </p>
             {report.totals.unpricedCalls > 0 && (
               <p className="mt-1 text-xs text-fg-tertiary">
-                {report.totals.unpricedCalls} call(s) used a model with no known price and are counted as $0 — set MODEL_PRICING_JSON on the server, or enter prices for a custom provider's models (Models tab).
+                {report.totals.unpricedCalls} call(s) used a model with no known price and are counted as $0 — enter a price for the model (Settings → Models → provider → model) or set MODEL_PRICING_JSON on the server.
               </p>
             )}
           </div>

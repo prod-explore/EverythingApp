@@ -1,12 +1,10 @@
 import type Database from 'better-sqlite3';
 import { getSetting, setSetting } from '../db.js';
 import type { CompatFlavor } from './openai-compat.js';
-import { hintsFor, findHint } from './model-hints.js';
 import {
   findPreset,
   formatModelId,
   isModelKind,
-  normalizeModelId,
   presetBaseUrl,
   setCatalogSnapshot,
   type ModelInfo,
@@ -32,6 +30,9 @@ export const isFlavor = (v: unknown): v is CompatFlavor => typeof v === 'string'
 
 /** A provider that lists more models than this gets them switched OFF on discovery (OpenRouter has hundreds); the user enables what they use. */
 export const AUTO_ENABLE_LIMIT = 40;
+
+/** Output-token floor for thinking models (the answer would otherwise be cut off by the reasoning). */
+const REASONING_OUTPUT_FLOOR = 16000;
 
 /** The editable / reportable part of a model. */
 export interface ModelFields {
@@ -146,6 +147,7 @@ export function parseDiscoveredModel(raw: unknown): { id: string; reported: Mode
     if (supports.includes('vision')) f.supportsImages = true;
     if (!supports.includes('tools')) f.toolSchemaMode = 'none';
   }
+  if (o['tool_schema'] === 'full' || o['tool_schema'] === 'flat' || o['tool_schema'] === 'none') f.toolSchemaMode = o['tool_schema'];
   const arch = o['architecture'] as { input_modalities?: unknown } | undefined;
   if (arch && Array.isArray(arch.input_modalities) && arch.input_modalities.includes('image')) f.supportsImages = true;
   if (Array.isArray(o['supported_parameters']) && !o['supported_parameters'].includes('tools')) f.toolSchemaMode = 'none';
@@ -234,6 +236,7 @@ export class ModelCatalog {
   ) {
     migrateCatalogSchema(db);
     this.importLegacy();
+    this.migrateStoredModelIds();
     this.sync();
   }
 
@@ -385,7 +388,7 @@ export class ModelCatalog {
   }
 
   private locate(modelId: string): { provider: string; upstream: string } | null {
-    const m = /^@([a-z0-9][a-z0-9-]{0,31})\/(.+)$/.exec(normalizeModelId(modelId));
+    const m = /^@([a-z0-9][a-z0-9-]{0,31})\/(.+)$/.exec(modelId);
     return m ? { provider: m[1]!, upstream: m[2]! } : null;
   }
 
@@ -399,22 +402,23 @@ export class ModelCatalog {
       .sort((a, b) => order.indexOf(a.provider) - order.indexOf(b.provider));
     return rows.map(r => {
       const provider = providers.get(r.provider)!;
-      const hint = findHint(provider.flavor, r.model_id);
       const rep = parseJson(r.reported);
       const ov = parseJson(r.overrides);
-      const pricing = ov.pricing ? toPricing(ov.pricing) : rep.pricing ? toPricing(rep.pricing) : hint?.pricing ?? null;
+      const pricing = ov.pricing ? toPricing(ov.pricing) : rep.pricing ? toPricing(rep.pricing) : null;
+      const tags = ov.tags ?? rep.tags ?? [];
       return {
         id: formatModelId(r.provider, r.model_id),
         provider: r.provider,
         upstream: r.model_id,
-        label: ov.label ?? rep.label ?? hint?.label ?? r.model_id,
-        kind: ov.kind ?? rep.kind ?? hint?.kind ?? 'chat',
-        tags: ov.tags ?? rep.tags ?? (hint?.tags ? [...hint.tags] : []),
-        description: ov.description ?? rep.description ?? hint?.description ?? '',
+        label: ov.label ?? rep.label ?? r.model_id,
+        kind: ov.kind ?? rep.kind ?? 'chat',
+        tags,
+        description: ov.description ?? rep.description ?? '',
         pricing,
-        supportsImages: ov.supportsImages ?? rep.supportsImages ?? hint?.supportsImages ?? false,
-        minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? hint?.minOutputTokens,
-        toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode ?? hint?.toolSchemaMode,
+        supportsImages: ov.supportsImages ?? rep.supportsImages ?? false,
+        // Thinking models spend output tokens on reasoning before the answer: Gemini always does, others say so with the tag.
+        minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (provider.flavor === 'gemini' || tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
+        toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode,
         contextLength: ov.contextLength ?? rep.contextLength,
         status: rep.status,
         enabled: r.enabled === 1,
@@ -440,8 +444,8 @@ export class ModelCatalog {
   /**
    * Before the unification the app had four hard-wired providers (anthropic, gemini, deepseek, mindgate) plus
    * "custom providers" from Settings. Providers that were actually in use are carried over — custom ones with
-   * their model lists, built-in ones when a key was stored for them (seeded with the models the old catalog had,
-   * so the picker isn't empty until the first refresh) — and stored model ids are rewritten to `@provider/model`.
+   * their model lists, built-in ones when a key was stored for them — and stored model ids are rewritten to
+   * `@provider/model`.
    * Anthropic is gone on purpose: a leftover Anthropic key stays in the vault, unused.
    */
   private importLegacy(): void {
@@ -465,42 +469,60 @@ export class ModelCatalog {
         }
       }
 
+      // Built-in providers that had a stored key come over as providers; their models appear with the first "Refresh models".
       for (const slug of ['mindgate', 'gemini', 'deepseek']) {
         const preset = findPreset(slug);
         if (!preset || !keyed.has(slug) || this.get(slug)) continue;
         this.create({ slug, label: preset.label, baseUrl: presetBaseUrl(preset, this.env), keyOptional: preset.keyOptional, flavor: preset.flavor, concurrency: preset.concurrency });
-        for (const h of hintsFor(preset.flavor)) {
-          this.db
-            .prepare(`INSERT OR IGNORE INTO provider_models (provider, model_id, enabled, source, reported, position) VALUES (?, ?, 1, 'seed', '{}', (SELECT COALESCE(MAX(position), 0) + 1 FROM provider_models WHERE provider = ?))`)
-            .run(slug, h.id, slug);
-        }
       }
 
-      this.migrateStoredModelIds();
       setSetting(this.db, 'catalog_v1', '1');
     })();
   }
 
+  /**
+   * Model ids stored before the provider unification were bare and the provider was implied by the name. One-time
+   * rewrite to `@provider/model` everywhere they are kept. The rule needs no list of model names: the old app had
+   * exactly four providers — `claude-*` (Anthropic, gone: left alone), `gemini*`, `deepseek*`, and everything else
+   * was a MindGate model.
+   */
   private migrateStoredModelIds(): void {
-    const remap = (table: string, column: string, where = '') => {
-      if (!tableExists(this.db, table)) return;
-      const rows = this.db.prepare(`SELECT DISTINCT ${column} AS v FROM ${table} WHERE ${column} IS NOT NULL ${where}`).all() as Array<{ v: string }>;
-      for (const { v } of rows) {
-        const next = normalizeModelId(v);
-        if (next !== v) this.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ? ${where}`).run(next, v);
-      }
-    };
-    remap('conversations', 'model');
-    remap('approval_grants', 'subject_id', `AND subject_type = 'model'`);
+    if (getSetting(this.db, 'catalog_v2')) return;
+    this.db.transaction(() => {
+      const remap = (table: string, column: string, where = '') => {
+        if (!tableExists(this.db, table)) return;
+        const rows = this.db.prepare(`SELECT DISTINCT ${column} AS v FROM ${table} WHERE ${column} IS NOT NULL ${where}`).all() as Array<{ v: string }>;
+        for (const { v } of rows) {
+          const next = legacyModelId(v);
+          if (next !== v) this.db.prepare(`UPDATE ${table} SET ${column} = ? WHERE ${column} = ? ${where}`).run(next, v);
+        }
+      };
+      remap('conversations', 'model');
+      remap('approval_grants', 'subject_id', `AND subject_type = 'model'`);
+      remap('usage_log', 'model');
+      remap('runs', 'model');
+      remap('subagent_runs', 'model');
 
-    // The pre-unification default ("claude-sonnet-5") points at a provider that no longer exists — clear it so
-    // new chats pick a free model instead of failing; keep it when it names a model that is in the catalog.
-    const current = getSetting(this.db, 'default_model');
-    if (current) {
-      const next = normalizeModelId(current);
-      const parsed = /^@([a-z0-9][a-z0-9-]{0,31})\/(.+)$/.exec(next);
-      const exists = parsed && this.db.prepare(`SELECT 1 FROM provider_models WHERE provider = ? AND model_id = ?`).get(parsed[1], parsed[2]);
-      setSetting(this.db, 'default_model', exists ? next : '');
-    }
+      // A default pointing at a model that no longer exists (e.g. the old "claude-sonnet-5") is cleared, so new
+      // chats pick a usable model instead of failing; one that is in the catalog is kept.
+      const current = getSetting(this.db, 'default_model');
+      if (current) {
+        const next = legacyModelId(current);
+        const parsed = /^@([a-z0-9][a-z0-9-]{0,31})\/(.+)$/.exec(next);
+        const exists = parsed && this.db.prepare(`SELECT 1 FROM provider_models WHERE provider = ? AND model_id = ?`).get(parsed[1], parsed[2]);
+        setSetting(this.db, 'default_model', exists ? next : '');
+      }
+      setSetting(this.db, 'catalog_v2', '1');
+    })();
   }
+}
+
+/** Bare pre-unification id → canonical id (see migrateStoredModelIds); canonical ids and `claude-*` pass through. */
+export function legacyModelId(raw: string): string {
+  if (!raw || /^@[a-z0-9][a-z0-9-]{0,31}\/.+$/.test(raw)) return raw;
+  const id = raw.toLowerCase();
+  if (id.startsWith('claude')) return raw;
+  if (id.startsWith('gemini')) return formatModelId('gemini', raw);
+  if (id.startsWith('deepseek')) return formatModelId('deepseek', raw);
+  return formatModelId('mindgate', raw);
 }

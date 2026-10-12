@@ -1,7 +1,7 @@
 # EverythingApp
 
 [![CI](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml/badge.svg)](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-693%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-711%20passing-brightgreen)
 ![node](https://img.shields.io/badge/node-22-339933)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
@@ -109,7 +109,7 @@ Deployment notes for a Raspberry Pi (egress guard, Nginx + HTTPS) are in [`deplo
 ## Development
 
 ```bash
-cd cli && npm test            # 326 tests (node:test, in-memory SQLite, fake providers)
+cd cli && npm test            # 325 tests (node:test, in-memory SQLite, fake providers)
 cd git-proxy && npm test      #  40
 cd sandbox-mcp && npm test    #  18
 cd sandbox-supervisor && npm test  # 78
@@ -121,7 +121,7 @@ CI runs all of the above on every push. The browser E2E (Playwright against the 
 
 ## Design decisions
 
-Short ADRs in [`docs/adr`](docs/adr): canonical message format, policy file, sandbox/Git credentials, cost tiers and batch for tool workers (both superseded by the provider catalog), session cookies, lazy FTS5 index.
+Providers, model discovery, slots and the cost guard are documented in [`docs/providers.md`](docs/providers.md). Short ADRs in [`docs/adr`](docs/adr): canonical message format, policy file, sandbox/Git credentials, session cookies, lazy FTS5 index, the unified provider catalog (which supersedes the earlier cost-tier and batch-worker decisions).
 
 ## License
 

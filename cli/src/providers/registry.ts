@@ -1,5 +1,4 @@
 import type { CompatFlavor } from './openai-compat.js';
-import { findHint } from './model-hints.js';
 
 /**
  * What the rest of the app knows about providers and models.
@@ -94,22 +93,6 @@ export function formatModelId(slug: string, upstream: string): string {
   return `@${slug}/${upstream}`;
 }
 
-const LEGACY_LOCAL_ALIASES = ['flash', 'chat', 'reasoning', 'coding-fast', 'coding-hard', 'extreme'];
-
-/**
- * Ids stored before the provider unification were bare ("gemini-3.5-flash-lite", "flash") and the provider was
- * guessed from the name. Old conversations, runs and settings still carry them, so every lookup passes through
- * here: a bare id maps to its historical provider's slug, anything else is returned unchanged.
- */
-export function normalizeModelId(raw: string): string {
-  if (!raw || MODEL_ID_RE.test(raw)) return raw;
-  const id = raw.toLowerCase();
-  if (id.startsWith('gemini')) return formatModelId('gemini', raw);
-  if (id.startsWith('deepseek')) return formatModelId('deepseek', raw);
-  if (LEGACY_LOCAL_ALIASES.includes(id) || id.startsWith('mindgate') || id.startsWith('pipeline:')) return formatModelId('mindgate', raw);
-  return raw;
-}
-
 // ─── Snapshot of the catalog (kept in sync by ModelCatalog) ──────────────────
 
 interface Snapshot {
@@ -172,31 +155,29 @@ function withPricingOverride(base: ModelInfo, env: NodeJS.ProcessEnv): ModelInfo
 function fallbackInfo(id: string): ModelInfo {
   const parsed = parseModelId(id);
   const upstream = parsed?.upstream ?? id;
-  const flavor = parsed ? snapshot.providers.get(parsed.slug)?.flavor : undefined;
-  const hint = flavor ? findHint(flavor, upstream) : undefined;
   return {
     id,
     provider: parsed?.slug ?? 'unknown',
     upstream,
-    label: hint?.label ?? upstream,
-    kind: hint?.kind ?? 'chat',
-    tags: hint?.tags ? [...hint.tags] : [],
-    description: hint?.description ?? '',
-    pricing: hint?.pricing ?? null,
-    supportsImages: hint?.supportsImages ?? false,
-    minOutputTokens: hint?.minOutputTokens,
-    toolSchemaMode: hint?.toolSchemaMode,
+    label: upstream,
+    kind: 'chat',
+    tags: [],
+    description: '',
+    pricing: null,
+    supportsImages: false,
   };
 }
 
 export function getModelInfo(modelId: string, env: NodeJS.ProcessEnv = process.env): ModelInfo {
-  const id = normalizeModelId(modelId);
-  return withPricingOverride(snapshot.models.get(id) ?? fallbackInfo(id), env);
+  return withPricingOverride(snapshot.models.get(modelId) ?? fallbackInfo(modelId), env);
 }
+
+/** False for a model that can't call tools — the app is an agent framework, so such a model is not offered anywhere. */
+export const supportsTools = (info: Pick<ModelInfo, 'toolSchemaMode'>): boolean => info.toolSchemaMode !== 'none';
 
 /** True when `modelId` is a model in the catalog (enabled or not). */
 export function isCatalogModel(modelId: string): boolean {
-  return snapshot.models.has(normalizeModelId(modelId));
+  return snapshot.models.has(modelId);
 }
 
 // ─── Provider presets (starting points for "Add provider") ───────────────────

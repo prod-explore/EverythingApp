@@ -4,7 +4,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { openDb, runMigrations } from '../db.js';
 import { seedBuiltinCatalog } from './catalog-fixture.js';
 import { OpenAiCompatClient, recoverJsonToolCalls } from '../providers/openai-compat.js';
-import { getModelInfo, normalizeModelId } from '../providers/registry.js';
+import { getModelInfo } from '../providers/registry.js';
 import { ProviderRouter, UnknownModelError } from '../providers/router.js';
 import { withModelIdentity } from '../providers/identity.js';
 
@@ -69,14 +69,6 @@ describe('MindGate text tool calls', () => {
 });
 
 describe('unknown model ids', () => {
-  it('normalizeModelId maps legacy ids onto the canonical form and leaves the rest alone', () => {
-    assert.equal(normalizeModelId('@mindgate/flash'), '@mindgate/flash');
-    assert.equal(normalizeModelId('gemini-3.5-flash-lite'), '@gemini/gemini-3.5-flash-lite');
-    assert.equal(normalizeModelId('deepseek-chat'), '@deepseek/deepseek-chat');
-    assert.equal(normalizeModelId('flash'), '@mindgate/flash');
-    assert.equal(normalizeModelId('gpt-4o'), 'gpt-4o');
-    assert.equal(normalizeModelId('claude-sonnet-4-5'), 'claude-sonnet-4-5');
-  });
   it('router.clientFor throws a readable error', () => {
     const db = openDb(':memory:');
     runMigrations(db);
@@ -88,7 +80,7 @@ describe('unknown model ids', () => {
 describe('model identity', () => {
   it('appends the real model label and provider', () => {
     seedBuiltinCatalog();
-    const out = withModelIdentity('Base prompt.', 'gemini-3.5-flash-lite', {});
+    const out = withModelIdentity('Base prompt.', '@gemini/gemini-3.5-flash-lite', {});
     assert.match(out, /^Base prompt\.\n\n/);
     assert.match(out, /Gemini/);
     assert.match(out, /gemini-3\.5-flash-lite/);
