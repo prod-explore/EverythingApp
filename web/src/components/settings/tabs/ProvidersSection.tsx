@@ -35,6 +35,7 @@ type Note = { ok: boolean; text: string } | null;
 
 function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void }) {
   const [tags, setTags] = useState(m.tags.join(', '));
+  const [ctx, setCtx] = useState(m.contextLength?.toString() ?? '');
   const [error, setError] = useState<string | null>(null);
 
   async function patch(p: Parameters<typeof patchModel>[1]) {
@@ -44,6 +45,12 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
   const commitTags = () => {
     const next = tags.split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
     if (next.join(',') !== m.tags.join(',')) void patch({ tags: next });
+  };
+
+  const commitCtx = () => {
+    const n = ctx.trim() === '' ? null : Number(ctx.replace(/[\s_,]/g, '').replace(/k$/i, '000'));
+    if (n !== null && !(Number.isInteger(n) && n >= 1000)) { setError('Context window: a whole number of tokens (e.g. 128000 or 128k), or empty'); return; }
+    if (n !== (m.contextLength ?? null)) void patch({ contextLength: n });
   };
 
   return (
@@ -74,6 +81,20 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
           className={`${smallInput} w-40`}
           aria-label={`Tags of ${m.id}`}
         />
+        <input
+          value={ctx}
+          onChange={e => setCtx(e.target.value)}
+          onBlur={commitCtx}
+          onKeyDown={e => e.key === 'Enter' && (e.currentTarget.blur())}
+          placeholder="ctx"
+          title="Context window in tokens (e.g. 128k). The app compacts long chats before they overflow; empty = unknown, it then reacts only when the provider refuses."
+          className={`${smallInput} w-16`}
+          aria-label={`Context window of ${m.id}`}
+        />
+        <label className="flex shrink-0 items-center gap-1 text-[11px] text-fg-tertiary" title="The model accepts a reasoning effort (low / medium / high). Shows an Effort control in chats that use it.">
+          <input type="checkbox" checked={m.supportsEffort === true} onChange={e => void patch({ supportsEffort: e.target.checked })} aria-label={`Reasoning effort for ${m.id}`} />
+          effort
+        </label>
         {m.source === 'manual' && (
           <button
             onClick={() => void removeModel(m.id).then(onChanged).catch(e => setError((e as Error).message))}

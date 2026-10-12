@@ -11,7 +11,7 @@ import { ProviderNotConfiguredError, ProviderRouter } from '../providers/router.
 import { classifyError, contextLimitFromMessage } from '../providers/errors.js';
 import { estimateTokens, planCompaction, renderTranscript, summarizeHistory, trimForContext, withSummary } from '../context.js';
 import { parseTodos, projectInstructionsPrompt } from '../chat-tools.js';
-import { appendMessage, appendSummary, createConversation, getConversationState, getMessages, loadLlmHistory, openDb, runMigrations, setConversationState } from '../db.js';
+import { appendMessage, appendSummary, createConversation, deactivateMessagesFrom, deleteMessagesFrom, getConversationState, getMessages, loadLlmHistory, openDb, runMigrations, setConversationState } from '../db.js';
 import { llmHistory } from '../compaction.js';
 import { buildApp } from '../server.js';
 import { getModelInfo } from '../providers/registry.js';
@@ -233,6 +233,23 @@ describe('compaction view in the database', () => {
     assert.equal(loadLlmHistory(db, id, c).summary, null, 'summary covers the very message being sent → not applicable');
     assert.equal(loadLlmHistory(db, id, c).rows.length, 2);
     assert.ok(a > 0);
+  });
+
+  it('retiring or deleting "from here" keeps a summary that only covers earlier messages, and drops one that covers the cut', () => {
+    for (const how of ['deactivate', 'delete'] as const) {
+      const db = openDb(':memory:');
+      runMigrations(db);
+      const { id } = createConversation(db, {});
+      const m = [0, 1, 2, 3, 4, 5].map(i => appendMessage(db, id, i % 2 ? 'assistant' : 'user', i % 2 ? [{ type: 'text', text: `a${i}` }] : `u${i}`));
+      const early = appendSummary(db, id, { text: 'covers 0-1', upTo: m[1]!, replaced: 2 }); // written after m[5], covers only m[0..1]
+      const late = appendSummary(db, id, { text: 'covers 0-3', upTo: m[3]!, replaced: 4 });
+      (how === 'deactivate' ? deactivateMessagesFrom : deleteMessagesFrom)(db, id, m[2]!);
+      const left = getMessages(db, id).map(r => r.id!);
+      assert.ok(left.includes(early), `${how}: summary below the cut survives`);
+      assert.equal(left.includes(late), false, `${how}: summary that includes the cut goes`);
+      assert.deepEqual(left.filter(x => m.includes(x)), [m[0], m[1]]);
+      assert.equal(loadLlmHistory(db, id).summary, 'covers 0-1');
+    }
   });
 
   it('conversation state round-trips, merges patches, and defaults sensibly', () => {
@@ -738,6 +755,27 @@ describe('server: AGENTS.md', () => {
       t.stop();
       supervisor.close();
       delete process.env['SUPERVISOR_URL'];
+    }
+  });
+});
+
+describe('model metadata for the context window and reasoning effort', () => {
+  it('reads them from /models (supports: reasoning_effort, OpenRouter supported_parameters) and from a user override', async () => {
+    const { parseDiscoveredModel } = await import('../providers/catalog.js');
+    assert.equal(parseDiscoveredModel({ id: 'a', supports: ['tools', 'reasoning_effort'], context_length: 65536 })!.reported.supportsEffort, true);
+    assert.equal(parseDiscoveredModel({ id: 'b', supported_parameters: ['tools', 'reasoning_effort'] })!.reported.supportsEffort, true);
+    assert.equal(parseDiscoveredModel({ id: 'c', supports: ['tools'] })!.reported.supportsEffort, undefined);
+    assert.equal(parseDiscoveredModel({ id: 'a', context_length: 65536 })!.reported.contextLength, 65536);
+
+    const t = await boot({ script: () => msg([text('x')], 'end_turn') });
+    try {
+      assert.equal(getModelInfo('@t/m').supportsEffort, false);
+      assert.equal((await req(t.port, 'PATCH', '/api/models', { id: '@t/m', supportsEffort: true, contextLength: 32000 })).status, 200);
+      assert.deepEqual([getModelInfo('@t/m').supportsEffort, getModelInfo('@t/m').contextLength], [true, 32000]);
+      assert.equal((await req(t.port, 'PATCH', '/api/models', { id: '@t/m', supportsEffort: null, contextLength: null })).status, 200);
+      assert.deepEqual([getModelInfo('@t/m').supportsEffort, getModelInfo('@t/m').contextLength], [false, undefined]);
+    } finally {
+      t.stop();
     }
   });
 });

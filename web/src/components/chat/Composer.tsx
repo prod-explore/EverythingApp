@@ -1,31 +1,51 @@
 import { AttachmentPrimitive, ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
-import { AlertTriangle, Paperclip, RotateCw, Send, X } from 'lucide-react';
+import { AlertTriangle, Minimize2, Paperclip, RotateCw, Send, X } from 'lucide-react';
+import type { TurnErrorKind } from '../../types';
 import { StopButton } from './StopButton';
 import { SlashMenu } from './SlashMenu';
 
 export function Composer({
   error,
+  errorKind,
+  errorDetail,
   onRetry,
+  onCompactAndRetry,
 }: {
   /** Set when the last turn ended in an error or was aborted — see lib/runtime.ts. */
   error?: string;
+  errorKind?: TurnErrorKind;
+  /** The provider's own words (shown on hover). */
+  errorDetail?: string;
   onRetry?: () => void;
+  /** Offered when the conversation no longer fits the model's window. */
+  onCompactAndRetry?: () => void;
 }) {
   return (
     <div className="border-t border-border bg-bg">
       {error && (
         <div className="flex items-center gap-2 border-b border-border bg-bg-secondary px-3 py-2 text-xs text-fg-secondary">
           <AlertTriangle size={13} className="shrink-0 text-fg-tertiary" />
-          <span className="flex-1 truncate" title={error}>
+          <span className="flex-1" title={errorDetail ?? error}>
             {error}
           </span>
-          <button
-            type="button"
-            onClick={onRetry}
-            className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-fg"
-          >
-            <RotateCw size={12} /> Retry
-          </button>
+          {errorKind === 'context_too_long' && onCompactAndRetry && (
+            <button
+              type="button"
+              onClick={onCompactAndRetry}
+              className="flex shrink-0 items-center gap-1 rounded border border-border px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-fg"
+            >
+              <Minimize2 size={12} /> Compact &amp; retry
+            </button>
+          )}
+          {errorKind !== 'auth' && errorKind !== 'not_configured' && errorKind !== 'budget_exhausted' && (
+            <button
+              type="button"
+              onClick={onRetry}
+              className="flex shrink-0 items-center gap-1 rounded px-1.5 py-0.5 hover:bg-bg-tertiary hover:text-fg"
+            >
+              <RotateCw size={12} /> Retry
+            </button>
+          )}
         </div>
       )}
 

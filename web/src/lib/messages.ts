@@ -15,8 +15,19 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
 
   for (let i = 0; i < raw.length; i++) {
     const msg = raw[i];
-    const blocks: ContentBlock[] = typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : msg.content;
 
+    // A compaction marker: the model now sees a summary instead of everything before this point. Shown as a notice,
+    // placed before the message that triggered it so the answer to that message stays directly under it.
+    if (msg.role === 'summary') {
+      const c = msg.content as { text?: string };
+      const notice: ThreadMessageLike = { id: String(msg.id), role: 'system', content: [{ type: 'text', text: typeof c?.text === 'string' ? c.text : '' }] };
+      const prev = result[result.length - 1];
+      if (prev && prev.role === 'user') result.splice(result.length - 1, 0, notice);
+      else result.push(notice);
+      continue;
+    }
+
+    const blocks: ContentBlock[] = typeof msg.content === 'string' ? [{ type: 'text', text: msg.content }] : (msg.content as ContentBlock[]);
     // A user message that is PURELY tool_result blocks isn't a real user
     // turn — it's plumbing already folded onto the preceding assistant
     // message's tool-call parts in the loop below. Skip it here.
@@ -47,7 +58,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
     const resultsByCallId = new Map<string, { content: string; isError: boolean }>();
     const next = raw[i + 1];
     if (next && next.role === 'user') {
-      const nextBlocks: ContentBlock[] = typeof next.content === 'string' ? [] : next.content;
+      const nextBlocks: ContentBlock[] = typeof next.content === 'string' || !Array.isArray(next.content) ? [] : next.content;
       for (const b of nextBlocks) {
         if (b.type === 'tool_result') {
           resultsByCallId.set(b.tool_use_id, { content: b.content, isError: Boolean(b.is_error) });

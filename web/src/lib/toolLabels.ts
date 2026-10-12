@@ -1,6 +1,6 @@
 import {
-  Bot, Camera, Clock, FilePen, FileText, Flag, Globe, GitBranch, HelpCircle, MessageSquare, MousePointerClick,
-  Search, Square, Terminal, Wrench, type LucideIcon,
+  Bot, Camera, ClipboardList, Clock, FilePen, FileText, Flag, Globe, GitBranch, HelpCircle, MessageSquare, MousePointerClick,
+  ListChecks, Search, Square, Terminal, Wrench, type LucideIcon,
 } from 'lucide-react';
 
 export type ToolLabel = { icon: LucideIcon; label: string; detail?: string };
@@ -46,6 +46,10 @@ export function toolLabel(toolName: string, args: Args, running: boolean): ToolL
   switch (name) {
     case 'request_human_input':
       return { icon: HelpCircle, label: r('Asked you', 'Asking you'), detail: clip(str(args, 'question', 'title', 'prompt')) };
+    case 'todo_write':
+      return { icon: ListChecks, label: r('Updated the task list', 'Updating the task list') };
+    case 'propose_plan':
+      return { icon: ClipboardList, label: r('Proposed a plan', 'Proposing a plan') };
     case 'post_report':
       return { icon: Flag, label: r('Posted a report', 'Posting a report'), detail: clip(str(args, 'title')) };
     case 'run_bash':

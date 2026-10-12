@@ -3,7 +3,9 @@ import type {
   ApprovalScope,
   ConnectorInfo,
   Conversation,
+  ConversationStateInfo,
   ConversationSummary,
+  ReasoningEffort,
   GazetaDelivery,
   GazetaItem,
   GazetaQuery,
@@ -182,6 +184,22 @@ export function retryLastMessage(conversationId: string): Promise<{ ok: true; tu
 /** Hard delete of one message and everything after it — distinct from clearMessages() above. */
 export function deleteMessageFrom(conversationId: string, messageId: number): Promise<{ ok: true }> {
   return request(`/api/conversations/${conversationId}/messages/${messageId}`, { method: 'DELETE' });
+}
+
+export function getConversationState(conversationId: string): Promise<ConversationStateInfo> {
+  return request(`/api/conversations/${conversationId}/state`);
+}
+
+export function patchConversationState(
+  conversationId: string,
+  patch: Partial<{ mode: 'normal' | 'plan'; effort: ReasoningEffort | null; clearTodos: boolean }>,
+): Promise<ConversationStateInfo> {
+  return request(`/api/conversations/${conversationId}/state`, { method: 'PATCH', body: JSON.stringify(patch) });
+}
+
+/** Summarise the older part of the chat now. `compacted: false` = nothing worth cutting yet. */
+export function compactConversation(conversationId: string): Promise<{ ok: true; compacted: boolean; replaced: number; state: ConversationStateInfo }> {
+  return request(`/api/conversations/${conversationId}/compact`, { method: 'POST' });
 }
 
 export function getTurnStatus(conversationId: string): Promise<TurnState & { usage: string }> {
@@ -384,6 +402,8 @@ export type ModelPatch = Partial<{
   tags: string[] | null;
   description: string | null;
   supportsImages: boolean | null;
+  contextLength: number | null;
+  supportsEffort: boolean | null;
 }>;
 
 /** A field set to null goes back to what the provider reports. */

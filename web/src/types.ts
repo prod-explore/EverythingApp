@@ -31,9 +31,29 @@ export type ContentBlock =
 
 export interface RawMessage {
   id: number;
-  role: string; // 'user' | 'assistant' — kept loose because db.ts's MessageParam type is loose
-  content: string | ContentBlock[];
+  role: string; // 'user' | 'assistant' | 'summary' (a compaction marker) — kept loose because db.ts's MessageParam type is loose
+  content: string | ContentBlock[] | { text: string; upTo: number; replaced: number };
 }
+
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+export type TodoStatus = 'pending' | 'in_progress' | 'completed';
+export interface TodoItem { content: string; status: TodoStatus }
+
+/** What the chat shows beyond its messages (GET /api/conversations/:id/state). */
+export interface ConversationStateInfo {
+  mode: 'normal' | 'plan';
+  effort: ReasoningEffort | null;
+  /** Whether the current model accepts a reasoning effort at all. */
+  effortSupported: boolean;
+  todos: TodoItem[];
+  /** Prompt size measured by the provider on the last request; `limit` is the model's window when known. */
+  context: { used: number | null; limit: number | null };
+}
+
+/** Why a turn failed (cli/src/providers/errors.ts). */
+export type TurnErrorKind =
+  | 'context_too_long' | 'auth' | 'budget_exhausted' | 'rate_limited' | 'busy' | 'timeout'
+  | 'tool_parse' | 'not_configured' | 'aborted' | 'unknown';
 
 /** What the composer sends up for an image attachment — see api.ts's sendMessage(). */
 export interface OutgoingAttachment {
@@ -134,6 +154,7 @@ export interface TurnState {
   id: number;
   status: TurnStatus;
   error?: string;
+  kind?: TurnErrorKind;
 }
 
 /**
@@ -245,6 +266,8 @@ export interface ModelOption {
   supportsImages: boolean;
   /** 'none' = the model cannot call tools; the app does not offer such models for chat. */
   toolSchemaMode?: 'full' | 'flat' | 'none';
+  contextLength?: number;
+  supportsEffort?: boolean;
 }
 
 /** A model in the Settings editor — also the switched-off ones. `overridden` lists the fields the user changed. */

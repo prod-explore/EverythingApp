@@ -1,4 +1,5 @@
 import { useEffect, useReducer, useRef } from 'react';
+import type { ConversationStateInfo, TurnErrorKind } from '../types';
 
 /**
  * One entry per tool call made during the currently-running turn, in the
@@ -28,11 +29,21 @@ export interface LiveTurnState {
   running: boolean;
   parts: LivePart[];
   error?: string;
+  /** Why it failed — drives which recovery the banner offers. */
+  errorKind?: TurnErrorKind;
+  /** The provider's own words, for a tooltip. */
+  errorDetail?: string;
+  /** Prompt size the provider measured on the latest request (live; the state endpoint has the stored one). */
+  context?: { used: number; limit: number | null };
+  /** Pushed by the server when plan mode / effort / the todo list change. */
+  convState?: ConversationStateInfo;
+  /** Bumped when the server summarised older messages — consumers refetch the message list. */
+  compactedCount: number;
   /** Bumped on every turn:done/error/aborted — lets consumers notice "a turn just finished" even if `running` briefly reads false in both the old and new state. */
   finishedCount: number;
 }
 
-const INITIAL_STATE: LiveTurnState = { running: false, parts: [], finishedCount: 0 };
+const INITIAL_STATE: LiveTurnState = { running: false, parts: [], finishedCount: 0, compactedCount: 0 };
 
 type Action =
   | { type: 'clear' }
@@ -42,14 +53,23 @@ type Action =
   | { type: 'text'; text: string }
   | { type: 'tool_use'; label: string }
   | { type: 'tool_result'; toolName: string; truncatedOutput: string; isError: boolean; wasTruncated: boolean }
-  | { type: 'finish'; error?: string };
+  | { type: 'finish'; error?: string; kind?: TurnErrorKind; detail?: string }
+  | { type: 'context'; used: number; limit: number | null }
+  | { type: 'conv_state'; state: ConversationStateInfo }
+  | { type: 'compacted' };
 
 function reducer(state: LiveTurnState, action: Action): LiveTurnState {
   switch (action.type) {
     case 'clear':
-      return { running: false, parts: [], finishedCount: state.finishedCount };
+      return { running: false, parts: [], finishedCount: state.finishedCount, compactedCount: state.compactedCount };
     case 'start':
-      return { running: true, parts: [], finishedCount: state.finishedCount };
+      return { running: true, parts: [], finishedCount: state.finishedCount, compactedCount: state.compactedCount, context: state.context, convState: state.convState };
+    case 'context':
+      return { ...state, context: { used: action.used, limit: action.limit } };
+    case 'conv_state':
+      return { ...state, convState: action.state };
+    case 'compacted':
+      return { ...state, compactedCount: state.compactedCount + 1 };
     case 'text_delta': {
       const last = state.parts[state.parts.length - 1];
       if (last?.type === 'text' && last.streaming && last.block === action.block) {
@@ -101,7 +121,7 @@ function reducer(state: LiveTurnState, action: Action): LiveTurnState {
       // content as a persisted message right after this. Leaving parts
       // populated here duplicated every just-finished turn on screen until
       // the next conversation switch cleared it.
-      return { running: false, parts: [], error: action.error, finishedCount: state.finishedCount + 1 };
+      return { ...state, running: false, parts: [], error: action.error, errorKind: action.kind, errorDetail: action.detail, finishedCount: state.finishedCount + 1 };
   }
 }
 
@@ -189,9 +209,17 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
       });
       source.addEventListener('turn:done', () => dispatch({ type: 'finish' }));
       source.addEventListener('turn:error', e => {
-        const data = JSON.parse((e as MessageEvent).data) as { error: string };
-        dispatch({ type: 'finish', error: data.error });
+        const data = JSON.parse((e as MessageEvent).data) as { error: string; kind?: TurnErrorKind; detail?: string };
+        dispatch({ type: 'finish', error: data.error, kind: data.kind, detail: data.detail });
       });
+      source.addEventListener('turn:context', e => {
+        const data = JSON.parse((e as MessageEvent).data) as { used: number; limit: number | null };
+        dispatch({ type: 'context', used: data.used, limit: data.limit });
+      });
+      source.addEventListener('conversation:state', e => {
+        dispatch({ type: 'conv_state', state: JSON.parse((e as MessageEvent).data) as ConversationStateInfo });
+      });
+      source.addEventListener('conversation:compacted', () => dispatch({ type: 'compacted' }));
       source.addEventListener('turn:aborted', e => {
         const data = JSON.parse((e as MessageEvent).data) as { error: string };
         dispatch({ type: 'finish', error: data.error });

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { AlertTriangle, Shield } from 'lucide-react';
+import { AlertTriangle, ClipboardList, Shield } from 'lucide-react';
 import type { ApprovalScope, PendingApproval } from '../../types';
 import { Button } from '../shared/Button';
 import { toolLabel } from '../../lib/toolLabels';
+import { MarkdownText } from '../chat/MarkdownText';
 
 type Respond = (id: string, approved: boolean, scope?: ApprovalScope) => Promise<void>;
 
@@ -16,7 +17,9 @@ function ApprovalCard({ approval, respond }: { approval: PendingApproval; respon
   const [busy, setBusy] = useState(false);
   const { agent, tool } = splitLabel(approval.toolLabel);
   const friendly = toolLabel(tool.split('/').pop() ?? tool, approval.args, false);
-  const danger = approval.dangerous;
+  // A plan proposal is asked every time (so it can never be pre-approved), but it is not a dangerous action.
+  const isPlan = tool.split('/').pop() === 'propose_plan' || tool === 'propose_plan';
+  const danger = approval.dangerous && !isPlan;
 
   async function answer(approved: boolean, scope: ApprovalScope) {
     setBusy(true);
@@ -25,6 +28,24 @@ function ApprovalCard({ approval, respond }: { approval: PendingApproval; respon
     } finally {
       setBusy(false);
     }
+  }
+
+  if (isPlan) {
+    return (
+      <div role="group" aria-label="Plan awaiting approval" className="rounded-container border-2 border-accent/60 bg-accent/5 p-3 text-sm">
+        <div className="mb-2 flex items-center gap-2 font-medium text-accent">
+          <ClipboardList size={16} /> Plan for your approval
+        </div>
+        <div className="prose prose-invert prose-sm mb-3 max-h-80 max-w-none overflow-y-auto text-fg">
+          <MarkdownText type="text" text={String(approval.args['plan'] ?? '')} status={{ type: 'complete' }} />
+        </div>
+        <p className="mb-3 text-xs text-fg-tertiary">Approving turns plan mode off, so the assistant can start making changes. Deny to send it back with your feedback in the next message.</p>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="ghost" disabled={busy} onClick={() => void answer(false, 'once')}>Reject</Button>
+          <Button variant="primary" disabled={busy} onClick={() => void answer(true, 'once')}>Approve plan</Button>
+        </div>
+      </div>
+    );
   }
 
   return (

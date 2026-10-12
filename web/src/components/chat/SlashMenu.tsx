@@ -7,6 +7,8 @@ export interface SlashCommand { name: string; hint: string }
 export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', hint: 'Start a new conversation' },
   { name: 'export', hint: 'Download this chat as Markdown' },
+  { name: 'plan', hint: 'Toggle plan mode (propose a plan first)' },
+  { name: 'compact', hint: 'Summarise older messages to free context' },
   { name: 'sandbox', hint: 'Toggle the sandbox for this chat' },
   { name: 'agents', hint: 'Open the Agents panel' },
   { name: 'files', hint: 'Open the Files panel' },

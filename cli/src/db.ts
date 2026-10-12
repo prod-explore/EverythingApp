@@ -522,10 +522,16 @@ export function clearMessages(db: Database.Database, conversationId: string): vo
  * new branch. Distinct from clearMessages(), which wipes an entire
  * conversation.
  */
+/**
+ * A summary row that only covers messages BEFORE the cut point is still true after the cut (it may have been written
+ * after the message being replaced, hence its higher id) — so retiring/deleting "from here" leaves it alone.
+ */
+const SPARED_SUMMARY = `role = 'summary' AND json_extract(content, '$.upTo') < ?`;
+
 export function deleteMessagesFrom(db: Database.Database, conversationId: string, fromMessageId: number): boolean {
   const result = db
-    .prepare(`DELETE FROM messages WHERE conversation_id = ? AND id >= ?`)
-    .run(conversationId, fromMessageId);
+    .prepare(`DELETE FROM messages WHERE conversation_id = ? AND id >= ? AND NOT (${SPARED_SUMMARY})`)
+    .run(conversationId, fromMessageId, fromMessageId);
   db.prepare(`UPDATE conversations SET updated_at = datetime('now') WHERE id = ?`).run(conversationId);
   return result.changes > 0;
 }
@@ -536,8 +542,9 @@ export function deleteMessagesFrom(db: Database.Database, conversationId: string
  * old branch while keeping it around for potential future branch-history UI.
  */
 export function deactivateMessagesFrom(db: Database.Database, conversationId: string, fromMessageId: number): void {
-  db.prepare(`UPDATE messages SET is_active = 0 WHERE conversation_id = ? AND id >= ? AND is_active = 1`).run(
+  db.prepare(`UPDATE messages SET is_active = 0 WHERE conversation_id = ? AND id >= ? AND is_active = 1 AND NOT (${SPARED_SUMMARY})`).run(
     conversationId,
+    fromMessageId,
     fromMessageId,
   );
 }

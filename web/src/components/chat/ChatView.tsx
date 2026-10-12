@@ -6,6 +6,9 @@ import { Composer } from './Composer';
 import { ChatQuestions } from '../gazeta/ChatQuestions';
 import { InlineApprovals } from '../approval/InlineApprovals';
 import { AssistantBubble, UserBubble } from './MessageBubble';
+import { ChatStatus } from './ChatStatus';
+import { CompactionNotice } from './CompactionNotice';
+import { useConversationState } from '../../hooks/useConversationState';
 import type { useApprovals } from '../../hooks/useApprovals';
 import { AnsweredTrail } from '../gazeta/AnsweredTrail';
 import { Onboarding } from './Onboarding';
@@ -50,7 +53,8 @@ export function ChatView({
   onOpenSettings: () => void;
   approvals: ReturnType<typeof useApprovals>;
 }) {
-  const { runtime, error, retry } = useEverythingAppRuntime(conversationId);
+  const { runtime, live, error, retry } = useEverythingAppRuntime(conversationId);
+  const convState = useConversationState(conversationId, live);
   const content = useFollowBottom(conversationId);
 
   return (
@@ -62,7 +66,9 @@ export function ChatView({
               <Onboarding onOpenSettings={onOpenSettings} />
             </ThreadPrimitive.Empty>
             <ThreadPrimitive.Messages>
-              {({ message }) => (message.role === 'user' ? <UserBubble key={message.id} /> : <AssistantBubble key={message.id} />)}
+              {({ message }) =>
+                message.role === 'user' ? <UserBubble key={message.id} /> : message.role === 'system' ? <CompactionNotice key={message.id} /> : <AssistantBubble key={message.id} />
+              }
             </ThreadPrimitive.Messages>
             <AnsweredTrail conversationId={conversationId} />
             <InlineApprovals pending={approvals.pending} respond={approvals.respond} />
@@ -75,7 +81,14 @@ export function ChatView({
           </SelectionToolbarPrimitive.Quote>
         </SelectionToolbarPrimitive.Root>
         <ChatQuestions conversationId={conversationId} />
-        <Composer error={error} onRetry={retry} />
+        <ChatStatus api={convState} running={live.running} />
+        <Composer
+          error={error}
+          errorKind={live.errorKind}
+          errorDetail={live.errorDetail}
+          onRetry={retry}
+          onCompactAndRetry={async () => { if (await convState.compact()) retry(); }}
+        />
       </ThreadPrimitive.Root>
     </AssistantRuntimeProvider>
   );

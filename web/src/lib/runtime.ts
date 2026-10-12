@@ -51,7 +51,7 @@ export function useEverythingAppRuntime(conversationId: string | null) {
   // where a boolean could stay `false` across both and never fire the effect.
   useEffect(() => {
     refetch();
-  }, [refetch, live.finishedCount]);
+  }, [refetch, live.finishedCount, live.compactedCount]);
 
   const liveMessage = useMemo(() => liveTurnToMessage(live.parts), [live.parts]);
   const messages = useMemo(
@@ -191,5 +191,5 @@ export function useEverythingAppRuntime(conversationId: string | null) {
     }
   }, [conversationId]);
 
-  return { runtime, refetch, error: live.error, retry };
+  return { runtime, refetch, live, error: live.error, retry };
 }

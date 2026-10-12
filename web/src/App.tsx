@@ -214,6 +214,7 @@ function MainApp() {
       else if (name === 'agents') setDockTool('agents');
       else if (name === 'files') setDockTool('files');
       else if (name === 'sandbox') { if (fullConv) handleSandboxToggle(!fullConv.sandboxEnabled); }
+      else if (name === 'plan' || name === 'compact') window.dispatchEvent(new CustomEvent('chat:command', { detail: { name } }));
       else if (name === 'export' && selectedId) window.location.assign(`/api/conversations/${selectedId}/export`);
     };
     window.addEventListener('app:command', onCommand);
