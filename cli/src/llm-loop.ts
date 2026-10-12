@@ -45,7 +45,10 @@ export interface VirtualTool {
   definition: Llm.Tool;
   /** Route through the approval gate before running. Default: false. */
   requiresApproval?: boolean;
-  /** Still allowed while plan mode is on, although it asks for approval (the plan proposal itself). */
+  /**
+   * Plan mode: true = allowed (the plan proposal itself, although it asks for approval), false = refused (e.g. starting
+   * workers). Unset = allowed unless the tool needs approval.
+   */
   planSafe?: boolean;
   /** Always ask a human, never covered by a grant; the text is shown with the request. */
   alwaysAsk?: string;
@@ -333,7 +336,7 @@ export async function runTurn(
       }
 
       // Plan mode: look, think, propose — nothing with an effect until the user approved a plan.
-      if (deps.planMode?.() && !(virtual ? virtual.planSafe === true || virtual.requiresApproval !== true : !deps.tools.requiresApproval(use.name))) {
+      if (deps.planMode?.() && !(virtual ? (virtual.planSafe ?? virtual.requiresApproval !== true) : !deps.tools.requiresApproval(use.name))) {
         const result = { text: `Plan mode is on, so ${use.name} was not run. Research with read-only tools, then call propose_plan with the plan; changes are only allowed after the user approves it.`, isError: true };
         deps.onToolResult?.(use.name, result.text, result.text, true);
         toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });

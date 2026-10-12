@@ -1,7 +1,7 @@
 # EverythingApp
 
 [![CI](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml/badge.svg)](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-746%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-748%20passing-brightgreen)
 ![node](https://img.shields.io/badge/node-22-339933)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
@@ -31,7 +31,7 @@ A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandb
 | **Agents** | `spawn_agent` / `wait_agents` / `send_message`. Per-tree budgets, depth and spawn limits, kill switch. Finished workers can be resumed with a follow-up. |
 | **Sandbox** | Per-project Docker container, no secrets, no `docker.sock`. Files explorer + editor with a checkpoint before every edit, rollback, Source Control, GitHub. |
 | **Browser** | Playwright agent with domain/JS policy, SSRF guard and a quarantined extraction model; live view in the UI. |
-| **Chat functions** | Task list the model keeps (`todo_write`), plan mode (propose → you approve → work), reasoning-effort control, `AGENTS.md` in the project workspace and custom instructions, a context meter with automatic and manual compaction (older messages become a summary for the model; they stay visible), and plain-language errors with the right recovery button. |
+| **Chat functions** | Task list the model keeps (`todo_write`), plan mode (propose → you approve → work), reasoning-effort control, `AGENTS.md` in the project workspace (`/init` has the assistant write it) and custom instructions, a context meter with automatic and manual compaction (older messages become a summary for the model; they stay visible), and plain-language errors with the right recovery button. |
 | **Human in the loop** | Approval gate (inline cards), Gazeta inbox (blocking and async questions, reports, urgent → Web Push), `policy.json` for always-allow / always-block. |
 | **UX** | FTS5 search, Markdown/JSON export, message branching, quote-selection, slash commands, PWA, WCAG-AA clean (axe: 0 violations at 1440×900 and 390×844). |
 
@@ -110,7 +110,7 @@ Deployment notes for a Raspberry Pi (egress guard, Nginx + HTTPS) are in [`deplo
 ## Development
 
 ```bash
-cd cli && npm test            # 360 tests (node:test, in-memory SQLite, fake providers)
+cd cli && npm test            # 362 tests (node:test, in-memory SQLite, fake providers)
 cd git-proxy && npm test      #  40
 cd sandbox-mcp && npm test    #  18
 cd sandbox-supervisor && npm test  # 78

@@ -317,6 +317,15 @@ describe('runTurn — plan mode', () => {
     assert.deepEqual(asked, [{ label: 'propose_plan', force: 'Approve this plan.' }], 'the plan is always asked, never covered by a grant');
   });
 
+  it('refuses a virtual tool that declares itself unsafe for plan mode (starting workers) but allows the harmless ones', async () => {
+    const ran: string[] = [];
+    const mk = (name: string, planSafe?: boolean): VirtualTool => ({ definition: { name, description: name, input_schema: { type: 'object' } }, planSafe, handler: async () => { ran.push(name); return { text: 'ok' }; } });
+    const { llm, calls } = scripted([msg([toolUse('1', 'spawn_like', {}), toolUse('2', 'todo_like', {})], 'tool_use'), msg([text('k')], 'end_turn')]);
+    await runTurn({ ...base, llm, tools: await registry([]), virtualTools: [mk('spawn_like', false), mk('todo_like')], planMode: () => true }, [], 'x');
+    assert.deepEqual(ran, ['todo_like']);
+    assert.equal(((calls[1]!.messages.at(-1)!.content as Llm.ToolResultBlockParam[])[0]!).is_error, true);
+  });
+
   it('is evaluated per call: once the plan is approved the very next tool call is allowed', async () => {
     const executed: string[] = [];
     let plan = true;
@@ -401,6 +410,26 @@ describe('reasoning_effort on the wire', () => {
     assert.equal((await run(true))['reasoning_effort'], 'high');
     assert.equal('reasoning_effort' in (await run(false)), false);
     assert.equal('reasoning_effort' in (await run(true, 'deepseek')), false);
+  });
+
+  it('names the provider by its label in errors and retry notices', async () => {
+    const retries: string[] = [];
+    let n = 0;
+    const client = new OpenAiCompatClient({
+      flavor: 'generic',
+      label: 'My Gateway',
+      baseUrl: 'https://x.example/v1',
+      apiKey: 'k',
+      meta: { get: () => null, set: () => {} },
+      modelInfo: () => getModelInfo('@t/m'),
+      sleep: async () => {},
+      onRetry: i => retries.push(i.provider),
+      fetchImpl: (async () => { n++; return new Response('{"error":{"message":"overloaded"}}', { status: 503 }); }) as unknown as typeof fetch,
+    });
+    await assert.rejects(client.messages.create({ model: '@t/m', max_tokens: 10, messages: [userText('x')] }), (e: Error) => e instanceof ProviderHttpError && e.provider === 'My Gateway' && /^My Gateway API error 503/.test(e.message));
+    assert.ok(n >= 2);
+    assert.deepEqual([...new Set(retries)], ['My Gateway']);
+    assert.match(classifyError(new ProviderHttpError('My Gateway', 503, 'x')).message, /^My Gateway is not answering/);
   });
 
   it('flags a reply that was cut off while writing tool calls', async () => {

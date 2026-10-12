@@ -1,5 +1,5 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
-import { checkSession, createProject, getConversation, getTurnStatus, listProjects, UNAUTHORIZED_EVENT, updateConversation } from './api';
+import { checkSession, createProject, getConversation, getTurnStatus, listProjects, sendMessage, UNAUTHORIZED_EVENT, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
 import { ConversationSearch } from './components/ConversationSearch';
@@ -24,6 +24,12 @@ import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
 import type { BudgetWarning, Conversation, ProjectListItem, ProviderRetry } from './types';
+
+/** Sent by the /init command: has the assistant write the project's AGENTS.md. */
+const INIT_PROMPT =
+  'Look through this project\'s workspace and write an AGENTS.md in its root for future assistants working here: how to build, test and run it, ' +
+  'the layout of the code, conventions to follow, and things to avoid. Base it only on what you find in the files, keep it under 80 lines, ' +
+  'and if an AGENTS.md already exists, show me the changes you would make instead of overwriting it.';
 
 export type DockTool = 'agents' | 'files' | 'git';
 
@@ -214,6 +220,11 @@ function MainApp() {
       else if (name === 'agents') setDockTool('agents');
       else if (name === 'files') setDockTool('files');
       else if (name === 'sandbox') { if (fullConv) handleSandboxToggle(!fullConv.sandboxEnabled); }
+      else if (name === 'init' && selectedId) {
+        // Writing AGENTS.md needs the workspace, so the sandbox is switched on for this chat first.
+        if (fullConv && !fullConv.sandboxEnabled) handleSandboxToggle(true);
+        void sendMessage(selectedId, INIT_PROMPT).catch(() => {});
+      }
       else if (name === 'plan' || name === 'compact') window.dispatchEvent(new CustomEvent('chat:command', { detail: { name } }));
       else if (name === 'export' && selectedId) window.location.assign(`/api/conversations/${selectedId}/export`);
     };

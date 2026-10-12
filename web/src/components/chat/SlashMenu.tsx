@@ -8,6 +8,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: 'new', hint: 'Start a new conversation' },
   { name: 'export', hint: 'Download this chat as Markdown' },
   { name: 'plan', hint: 'Toggle plan mode (propose a plan first)' },
+  { name: 'init', hint: 'Have the assistant write AGENTS.md for this project' },
   { name: 'compact', hint: 'Summarise older messages to free context' },
   { name: 'sandbox', hint: 'Toggle the sandbox for this chat' },
   { name: 'agents', hint: 'Open the Agents panel' },

@@ -177,6 +177,7 @@ export class ProviderRouter {
   private makeClient(provider: ProviderRecord, apiKey: string, withMeta = true): OpenAiCompatClient {
     return new OpenAiCompatClient({
       flavor: provider.flavor,
+      label: provider.label,
       baseUrl: provider.baseUrl.replace(/\/+$/, ''),
       apiKey,
       fetchImpl: this.opts.fetchImpl,

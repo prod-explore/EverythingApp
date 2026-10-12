@@ -48,6 +48,8 @@ export interface OpenAiCompatOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Longest a single request may take. Only a guard against a hung connection. Default 15 min. */
   timeoutMs?: number;
+  /** How the provider is called in messages shown to a person (its label). Defaults to the dialect name. */
+  label?: string;
   maxRetries?: number;
   /**
    * Keep retrying transient failures (429/5xx/network) for up to this long in total — for provider peak hours.
@@ -629,6 +631,9 @@ function linkSignals(external: AbortSignal | undefined, timeoutMs: number): { si
 export class OpenAiCompatClient implements LlmClient {
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
+  private get name(): string {
+    return this.opts.label ?? this.opts.flavor;
+  }
 
   constructor(private readonly opts: OpenAiCompatOptions) {
     this.fetchImpl = opts.fetchImpl ?? fetch;
@@ -788,7 +793,7 @@ export class OpenAiCompatClient implements LlmClient {
             error?: { message?: string };
           };
           try { evt = JSON.parse(data); } catch { continue; }
-          if (evt.error) throw new ProviderHttpError(this.opts.flavor, 502, this.redact(String(evt.error.message ?? 'stream error')));
+          if (evt.error) throw new ProviderHttpError(this.name, 502, this.redact(String(evt.error.message ?? 'stream error')));
           if (evt.id) id = evt.id;
           if (evt.model) model = evt.model;
           if (evt.usage) usage = evt.usage;
@@ -840,7 +845,7 @@ export class OpenAiCompatClient implements LlmClient {
     const res = await this.fetchImpl(`${this.opts.baseUrl}/models`, {
       headers: this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {},
     });
-    if (!res.ok) throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 300)));
+    if (!res.ok) throw new ProviderHttpError(this.name, res.status, this.redact((await res.text()).slice(0, 300)));
   }
 
   /** `GET {base}/models` — the raw entries of the provider's model list (OpenAI shape: `{ data: [...] }`). */
@@ -848,7 +853,7 @@ export class OpenAiCompatClient implements LlmClient {
     const res = await this.fetchImpl(`${this.opts.baseUrl}/models`, {
       headers: this.opts.apiKey ? { Authorization: `Bearer ${this.opts.apiKey}` } : {},
     });
-    if (!res.ok) throw new ProviderHttpError(this.opts.flavor, res.status, this.redact((await res.text()).slice(0, 300)));
+    if (!res.ok) throw new ProviderHttpError(this.name, res.status, this.redact((await res.text()).slice(0, 300)));
     const json = (await res.json()) as { data?: unknown; models?: unknown };
     const list = Array.isArray(json.data) ? json.data : Array.isArray(json.models) ? json.models : [];
     return list.slice(0, 1000);
@@ -870,12 +875,12 @@ export class OpenAiCompatClient implements LlmClient {
         const remaining = budget - (Date.now() - startedAt);
         const delay = retryDelayMs(attempt, retryAfterSec, maxDelay);
         if (remaining <= delay) return null;
-        this.opts.onRetry?.({ provider: this.opts.flavor, attempt: attempt + 1, status, delayMs: delay, remainingMs: remaining });
+        this.opts.onRetry?.({ provider: this.name, attempt: attempt + 1, status, delayMs: delay, remainingMs: remaining });
         return delay;
       }
       if (attempt >= maxRetries) return null;
       const delay = retryAfterSec && retryAfterSec > 0 ? Math.min(retryAfterSec, 30) * 1000 : 1000 * 2 ** attempt;
-      this.opts.onRetry?.({ provider: this.opts.flavor, attempt: attempt + 1, status, delayMs: delay, remainingMs: 0 });
+      this.opts.onRetry?.({ provider: this.name, attempt: attempt + 1, status, delayMs: delay, remainingMs: 0 });
       return delay;
     };
 
@@ -913,7 +918,7 @@ export class OpenAiCompatClient implements LlmClient {
           }
         }
         const gaveUp = budget !== undefined && retryable ? ` (retried for ${Math.round((Date.now() - startedAt) / 60_000)} min, then gave up)` : '';
-        throw new ProviderHttpError(this.opts.flavor, status, this.redact(errBody.slice(0, 500)) + gaveUp);
+        throw new ProviderHttpError(this.name, status, this.redact(errBody.slice(0, 500)) + gaveUp);
       } finally {
         cleanup();
       }

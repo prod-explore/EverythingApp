@@ -14,9 +14,12 @@
  *   "browse: <url>"     → browse_url / browser_open
  *   "spawn"             → spawn_agent (worker on the default agent model) then wait_agents
  *   "tool: <name> <json>" → call any tool by (suffix) name with JSON args
+ *   "todo"              → todo_write with a three-item list
+ *   "plan: <task>"      → propose_plan (the tool exists only while plan mode is on)
  *   "long"              → long markdown answer (streamed slowly)
  *   "error"             → HTTP 500
  * Worker agents (system prompt contains "worker agent") answer with a short report.
+ * A compaction request (system prompt "…compress the earlier part…") is answered with a fixed summary.
  * After any tool result the model summarises it. Supports stream:true (SSE) and plain JSON.
  */
 import http from 'node:http';
@@ -52,6 +55,8 @@ function decide(body) {
     return { text: `Worker report: analysed "${goal.slice(0, 80)}". Result: 42 items checked, no problems found.` };
   }
 
+  if (/compress the earlier part/i.test(system)) return { text: 'Summary: the user chatted with the mock model about markdown, tools and agents.' };
+
   if (last.role === 'tool') {
     const out = textOf(last.content);
     const spawned = /Spawned (\w+)/.exec(out);
@@ -85,6 +90,15 @@ function decide(body) {
   if (lower.startsWith('report')) {
     const t = findTool(tools, 'post_report');
     if (t) return { toolCalls: [call(t, { title: 'Nightly check finished', body: '## Summary\n\n- 3 services healthy\n- 1 warning: disk 81%\n\nNo action needed today.', urgent: true })] };
+  }
+  if (lower === 'todo') {
+    const t = findTool(tools, 'todo_write');
+    if (t) return { text: 'Planning the work.', toolCalls: [call(t, { todos: [{ content: 'Read the code', status: 'completed' }, { content: 'Write the change', status: 'in_progress' }, { content: 'Run the tests', status: 'pending' }] })] };
+  }
+  if (lower.startsWith('plan:')) {
+    const t = findTool(tools, 'propose_plan');
+    if (t) return { toolCalls: [call(t, { plan: `## Plan for ${user.slice(5).trim() || 'the task'}\n\n1. Read the relevant files\n2. Make the change\n3. Run the tests\n\n**Open question:** which branch?` })] };
+    return { text: 'Plan mode is off, so there is nothing to propose.' };
   }
   if (lower.startsWith('bash:')) {
     const t = findTool(tools, 'run_bash');
@@ -122,7 +136,7 @@ function usage(body, text) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url?.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ data: [{ id: 'mock-1', name: 'Mock 1' }, { id: 'mock-fast', name: 'Mock Fast' }] }));
+    res.end(JSON.stringify({ data: [{ id: 'mock-1', name: 'Mock 1', context_length: 20000, supports: ['tools', 'reasoning_effort'] }, { id: 'mock-fast', name: 'Mock Fast' }] }));
     return;
   }
   if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {
