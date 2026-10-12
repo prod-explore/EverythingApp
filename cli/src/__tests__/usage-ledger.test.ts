@@ -1,45 +1,45 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb, runMigrations, createConversation, setProviderWarnLimit } from '../db.js';
+import { openDb, runMigrations, createConversation } from '../db.js';
 import { UsageLedger, rangeStart } from '../usage-ledger.js';
 
 function setup(nowIso = '2026-09-18T10:00:00.000Z') {
   const db = openDb(':memory:');
   runMigrations(db);
   let now = new Date(nowIso);
-  // The catalog ships no price list — claude-sonnet-5 is priced through the override like any other model.
-  const env = { MODEL_PRICING_JSON: '{"claude-sonnet-5":{"input":2,"output":10,"cacheRead":0.2}}' } as NodeJS.ProcessEnv;
-  const ledger = new UsageLedger(db, () => now, env);
+  const ledger = new UsageLedger(db, () => now);
   return { db, ledger, setNow: (iso: string) => void (now = new Date(iso)) };
 }
 
 const usage = (i: number, o: number, cr = 0) => ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: cr, cache_creation_input_tokens: 0 });
 
 describe('UsageLedger', () => {
-  it('prices per model, including cache reads and the batch discount', () => {
-    const { ledger } = setup();
-    // sonnet-5: $2 in / $10 out / $0.2 cache read per MTok
-    const live = ledger.record({ conversationId: null, provider: 'anthropic', model: 'claude-sonnet-5', usage: usage(1_000_000, 100_000, 500_000) });
-    assert.ok(Math.abs(live.costUsd - (2 + 1 + 0.1)) < 1e-9);
-    const batch = ledger.record({ conversationId: null, provider: 'anthropic', model: 'claude-sonnet-5', usage: usage(1_000_000, 0), batch: true });
-    assert.ok(Math.abs(batch.costUsd - 1) < 1e-9);
+  it('counts tokens per call, cache reads separately, and keeps no prices', () => {
+    const { db, ledger } = setup();
+    ledger.record({ conversationId: null, provider: 'p', model: '@p/m', usage: usage(1000, 200, 500) });
+    ledger.record({ conversationId: null, provider: 'p', model: '@p/m', usage: usage(10, 5) });
+    const t = ledger.report('all').totals;
+    assert.deepEqual(
+      { i: t.inputTokens, o: t.outputTokens, cr: t.cacheReadTokens, calls: t.calls },
+      { i: 1010, o: 205, cr: 500, calls: 2 },
+    );
+    const cols = (db.prepare(`PRAGMA table_info(usage_log)`).all() as Array<{ name: string }>).map(c => c.name);
+    assert.ok(!cols.some(c => /cost|pric|batch/.test(c)), `usage_log has no money columns (${cols.join(',')})`);
   });
 
-  it('flags unknown models as unpriced instead of guessing', () => {
+  it('headline is a token count for today', () => {
     const { ledger } = setup();
-    const r = ledger.record({ conversationId: null, provider: 'anthropic', model: 'claude-mystery-9', usage: usage(1000, 1000) });
-    assert.equal(r.pricingKnown, false);
-    assert.equal(r.costUsd, 0);
-    assert.equal(ledger.report('all').totals.unpricedCalls, 1);
-    assert.match(ledger.headline(0), /^≥/);
+    assert.equal(ledger.headline(0), '0 tokens today');
+    ledger.record({ conversationId: null, provider: 'p', model: '@p/m', usage: usage(2000, 300) });
+    assert.equal(ledger.headline(0), '2.3k tokens today');
   });
 
-  it('breaks spend down by provider, model, conversation and day, respecting the timezone offset', () => {
+  it('breaks usage down by provider, model, conversation and day, respecting the timezone offset', () => {
     const { db, ledger, setNow } = setup('2026-09-18T23:30:00.000Z'); // 01:30 on the 19th in UTC+2
     const conv = createConversation(db, { title: 'Chat A' }).id;
-    ledger.record({ conversationId: conv, provider: 'deepseek', model: 'deepseek-chat', usage: usage(1_000_000, 0) });
+    ledger.record({ conversationId: conv, provider: 'deepseek', model: '@deepseek/deepseek-chat', usage: usage(1_000_000, 0) });
     setNow('2026-09-17T12:00:00.000Z');
-    ledger.record({ conversationId: null, provider: 'gemini', model: 'gemini-3.8-flash', usage: usage(1_000_000, 0) });
+    ledger.record({ conversationId: null, provider: 'gemini', model: '@gemini/flash', usage: usage(1_000_000, 0) });
     setNow('2026-09-19T08:00:00.000Z');
 
     const r = ledger.report('7d', 120);
@@ -48,19 +48,6 @@ describe('UsageLedger', () => {
     assert.equal(r.byConversation.find(c => c.conversationId === conv)?.title, 'Chat A');
     assert.deepEqual(r.byDay.map(d => d.day), ['2026-09-17', '2026-09-19'], 'the 23:30 UTC call belongs to the 19th in UTC+2');
     assert.equal(ledger.report('today', 120).totals.calls, 1);
-  });
-
-  it('warns once per month when a provider crosses its soft cap, and re-arms when the cap changes', () => {
-    const { db, ledger } = setup();
-    setProviderWarnLimit(db, 'anthropic', 5);
-    const rec = () => ledger.record({ conversationId: null, provider: 'anthropic', model: 'claude-sonnet-5', usage: usage(2_000_000, 0) }); // $4 each
-    assert.equal(rec().warning, null); // $4
-    const crossed = rec().warning; // $8
-    assert.equal(crossed?.provider, 'anthropic');
-    assert.equal(crossed?.thresholdUsd, 5);
-    assert.equal(rec().warning, null, 'no repeat warning in the same month');
-    setProviderWarnLimit(db, 'anthropic', 10);
-    assert.ok(rec().warning, 're-armed after the threshold was edited (now $12 ≥ $10)');
   });
 
   it('rangeStart handles day/month boundaries', () => {

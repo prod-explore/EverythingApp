@@ -19,11 +19,13 @@ EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions
 | `tags` | gateway | Free-form labels. `free` marks a model as costing nothing (cost guard); `coder`, `reasoning`, `vision` guide the orchestrator |
 | `description` | gateway | One line shown to the orchestrator and as a tooltip |
 | `supports` | gateway | Array, e.g. `["tools","vision"]`. No `"tools"` → the model is never offered tools |
-| `status` | gateway | `online` \| `asleep` \| `waking` (a local node behind Wake-on-LAN) |
-| `pricing.input/output` | gateway | USD per **million** tokens |
-| `name`, `context_length`, `pricing.prompt/completion` (per token), `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, context, price, vision, tool support |
+| `tool_schema` | gateway | `full` \| `flat` \| `none` — how tool schemas are sent (`flat` for small models that cannot emit nested JSON) |
+| `status` | gateway | `online` \| `asleep` \| `waking` (a local node behind Wake-on-LAN); shown next to the model in Settings and the pickers |
+| `name`, `context_length`, `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, context, vision, tool support |
 
-A model priced at zero with no explicit tags gets the `free` tag. Metadata is layered **built-in hint < provider-reported < your override**; override anything per model in the editor (kind, tags, description, price). Rules on refresh: models you edited or added by hand are never dropped; an empty list is refused; a provider with more than 40 models gets the new ones switched off so you enable what you use.
+**The app keeps no prices** — money is the gateway's business; the app counts tokens only. The one thing taken from a price is “costs nothing”: a model a provider lists at price 0 (OpenRouter `:free`) with no explicit tags gets the `free` tag. Metadata is layered **provider-reported < your override**; there is no built-in model list. Override anything per model in the editor (kind, tags, description).
+
+**Models without tool calls are not supported.** The app is an agent framework; a model that reports no `"tools"` support (or is set to `none`) is hidden from the pickers and refused for conversations. Thinking models keep their reasoning: `reasoning_content` / `reasoning` is streamed into a collapsible “Thought process” block and stored with the message, but is never sent back to a provider. Rules on refresh: models you edited or added by hand are never dropped; an empty list is refused; a provider with more than 40 models gets the new ones switched off so you enable what you use.
 
 A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the message is shown as-is and the request is **not** retried, unlike a plain rate limit.
 
@@ -38,8 +40,12 @@ A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the
 
 **Cost guard:** a chat running on a `free` model can only start `free` workers, unless *Allow agents to use paid models* is on. `spawn_agent` takes `model` (an exact id) or `tag` (first usable model with it). The orchestrator's system prompt contains a generated list of the installed models with their tags and the slot assignments, so it always matches what is actually set up.
 
-## Migrating from the pre-catalog versions
+## Availability in Settings
 
-On first start the app imports what was configured before: built-in providers that had a stored key, custom providers with their models, and rewrites stored model ids (`gemini-3.5-flash-lite` → `@gemini/gemini-3.5-flash-lite`, `flash` → `@mindgate/flash`). Anthropic is no longer a provider; `claude-*` ids stop resolving — switch those chats to a catalog model.
+Providers that report `status` (MindGate) are re-queried whenever *Settings → Models* opens, and each provider card shows how many of its models are online / waking / asleep. This is the only place availability is surfaced; a failing request still shows the usual retry banner in the chat.
+
+## Retries
+
+Transient failures (HTTP 408/429/5xx, network errors) are retried with backoff and shown as a banner; Gemini additionally has a long retry budget (`GEMINI_RETRY_BUDGET_HOURS`, 12 h). `budget_exhausted` from a gateway is never retried.
 
 Design rationale: [ADR 0008](adr/0008-unified-provider-catalog.md).

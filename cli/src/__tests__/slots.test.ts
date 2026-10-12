@@ -7,7 +7,7 @@ import {
 import type { ModelInfo } from '../providers/registry.js';
 
 const m = (id: string, tags: string[] = [], label = id): ModelInfo =>
-  ({ id, provider: 'p', upstream: id, label, kind: 'chat', tags, description: '', pricing: null, supportsImages: false });
+  ({ id, provider: 'p', upstream: id, label, kind: 'chat', tags, description: '', supportsImages: false });
 
 const FREE_A = m('@p/free-a', ['free']);
 const FREE_B = m('@p/free-b', ['free', 'coder']);

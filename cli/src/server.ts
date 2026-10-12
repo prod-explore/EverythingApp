@@ -167,9 +167,8 @@ async function main(): Promise<void> {
     }
   }
 
-  // Keys come from the encrypted vault (Settings → Models); ANTHROPIC_API_KEY in
-  // the environment is only a fallback. A missing key is not a startup error
-  // any more — the turn that needs it fails with a message saying so.
+  // Keys come from the encrypted vault (Settings → Models). A missing key is not a
+  // startup error — the turn that needs it fails with a message saying so.
   const router = new ProviderRouter({ db });
   if (!router.vault.enabled) {
     console.warn(`[vault] ${router.vault.disabledReason} — saving API keys from the UI is disabled until it is set.`);
@@ -911,6 +910,7 @@ ${m.body}`),
             },
             onAssistantText: text => sse.emit(convId, 'turn:text', { text }),
             onTextDelta: delta => sse.emit(convId, 'turn:text_delta', delta),
+            onThinkingDelta: delta => sse.emit(convId, 'turn:thinking_delta', delta),
             onToolStart: label => sse.emit(convId, 'turn:tool_use', { label }),
             onToolResult: (toolName, fullOutput, truncatedOutput, isError) => {
               sse.emit(convId, 'turn:tool_result', { toolName, truncatedOutput, isError, wasTruncated: fullOutput !== truncatedOutput });

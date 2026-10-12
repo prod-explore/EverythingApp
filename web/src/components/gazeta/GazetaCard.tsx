@@ -9,7 +9,6 @@ import { Button } from '../shared/Button';
 
 export const TYPE_LABEL: Record<string, string> = {
   approval: 'Approval',
-  batch_result: 'Batch result',
   agent_question: 'Question',
   report: 'Report',
   daily_summary: 'Daily summary',

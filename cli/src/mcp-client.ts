@@ -1,5 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { McpServerConfig } from './config.js';
 
 const TOOL_CALL_TIMEOUT_MS = parseInt(process.env['MCP_TOOL_TIMEOUT_MS'] ?? '330000', 10);
@@ -37,15 +39,30 @@ export class McpConnection {
     return this.cfg.name;
   }
 
+  /**
+   * MCP servers speak one of two HTTP flavours: Streamable HTTP (current) or the older HTTP+SSE transport
+   * (`GET /sse` + `POST /messages` — e.g. obsidian-livesync-mcp at `/mcp/sse`). The path says nothing reliable
+   * (the Streamable servers here are mounted under `/mcp/sse` too), so Streamable HTTP is always tried first —
+   * a legacy server rejects its POST outright — and the SSE transport is the fallback.
+   */
   async connect(): Promise<void> {
-    const transport = new StreamableHTTPClientTransport(new URL(this.cfg.url), {
-      requestInit: this.cfg.apiKey
-        ? { headers: { Authorization: `Bearer ${this.cfg.apiKey}` } }
-        : undefined,
-    });
-    const client = new Client({ name: 'everythingapp-cli', version: '0.1.0' }, { capabilities: {} });
-    await client.connect(transport);
-    this.client = client;
+    const url = new URL(this.cfg.url);
+    const requestInit: RequestInit | undefined = this.cfg.apiKey ? { headers: { Authorization: `Bearer ${this.cfg.apiKey}` } } : undefined;
+    const streamable = (): Transport => new StreamableHTTPClientTransport(url, { requestInit });
+    const sse = (): Transport => new SSEClientTransport(url, { requestInit });
+    let firstError: unknown;
+    for (const make of [streamable, sse]) {
+      const client = new Client({ name: 'everythingapp-cli', version: '0.1.0' }, { capabilities: {} });
+      try {
+        await client.connect(make());
+        this.client = client;
+        return;
+      } catch (err) {
+        firstError ??= err;
+        await client.close().catch(() => {});
+      }
+    }
+    throw firstError instanceof Error ? firstError : new Error(`could not connect to MCP server '${this.cfg.name}'`);
   }
 
   async listTools(): Promise<McpToolInfo[]> {

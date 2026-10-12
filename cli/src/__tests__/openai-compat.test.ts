@@ -61,7 +61,7 @@ describe('toChatMessages', () => {
           { role: 'assistant', content: [{ type: 'text', text: 'ok' }, { type: 'tool_use', id: 'call_1', name: 'sandbox__run_bash', input: { cmd: 'ls' } }] },
           { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: 'a.txt' }, { type: 'text', text: 'thanks' }] },
         ],
-        { system: [{ type: 'text', text: 'be brief', cache_control: { type: 'ephemeral' } }] },
+        { system: [{ type: 'text', text: 'be brief' }] },
       ),
       ctxFor('deepseek', 'deepseek-chat'),
     );
@@ -104,28 +104,28 @@ describe('toChatMessages', () => {
     assert.equal(parts[0]!.image_url!.url, 'data:image/png;base64,AAAA');
   });
 
-  it('flattens Anthropic-only blocks (web search, thinking) so a chat can switch providers mid-way', () => {
+  it('keeps the model\'s thinking out of what is sent back, so a chat can switch providers mid-way', () => {
     const out = toChatMessages(
       params([
         { role: 'user', content: 'news?' },
-        {
-          role: 'assistant',
-          content: [
-            { type: 'thinking', thinking: 'hmm', signature: 'sig' },
-            { type: 'server_tool_use', id: 'srv_1', name: 'web_search', input: { query: 'polish news' } },
-            { type: 'web_search_tool_result', tool_use_id: 'srv_1', content: [{ type: 'web_search_result', title: 'TVN24', url: 'https://tvn24.pl', encrypted_content: 'x', page_age: null }] },
-            { type: 'text', text: 'Here is the news.' },
-          ] as unknown as Llm.ContentBlockParam[],
-        },
+        { role: 'assistant', content: [{ type: 'thinking', thinking: 'hmm, secret reasoning' }, { type: 'text', text: 'Here is the news.' }] },
         { role: 'user', content: 'thanks' },
       ]),
-      ctxFor('deepseek', 'deepseek-chat'),
+      ctxFor('mindgate', 'm'),
     );
     const assistant = out[1] as { content: string };
-    assert.match(assistant.content, /searched the web: "polish news"/);
-    assert.match(assistant.content, /TVN24/);
-    assert.match(assistant.content, /Here is the news\./);
-    assert.ok(!assistant.content.includes('hmm'), 'thinking text must not leak');
+    assert.equal(assistant.content, 'Here is the news.');
+    assert.ok(!JSON.stringify(out).includes('secret reasoning'), 'thinking text must not leak');
+  });
+
+  it('turns reasoning_content / reasoning of a response into a leading thinking block', () => {
+    for (const key of ['reasoning_content', 'reasoning']) {
+      const res = fromChatResponse(
+        { id: 'r', model: 'm', choices: [{ finish_reason: 'stop', message: { content: 'answer', [key]: 'first I think' } }] } as never,
+        'm', ctxFor('mindgate', 'm'), 'mindgate',
+      );
+      assert.deepEqual(res.content, [{ type: 'thinking', thinking: 'first I think' }, { type: 'text', text: 'answer' }], key);
+    }
   });
 
   it('gemini: replays stored thought signatures and adds Google\'s documented stand-in only when none exists', () => {
@@ -170,18 +170,6 @@ describe('toChatMessages', () => {
 });
 
 describe('toChatTools / schema handling', () => {
-  it('skips Anthropic server tools and keeps custom ones', () => {
-    const tools = toChatTools(
-      [
-        { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
-        { name: 'echo', description: 'Echo', input_schema: { type: 'object', properties: { text: { type: 'string' } } } },
-      ] as Llm.MessageCreateParams['tools'],
-      ctxFor('deepseek', 'deepseek-chat'),
-    );
-    assert.equal(tools.length, 1);
-    assert.equal(tools[0]!.function.name, 'echo');
-  });
-
   it('gemini: strips $schema/additionalProperties and drops parameters for no-arg tools', () => {
     const cleaned = sanitizeSchemaForGemini({
       $schema: 'http://json-schema.org/draft-07/schema#',

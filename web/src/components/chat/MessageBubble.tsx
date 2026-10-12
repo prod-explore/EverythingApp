@@ -6,6 +6,7 @@ import type { ComponentProps } from 'react';
 import { MarkdownText } from './MarkdownText';
 import { ToolCallCard } from './ToolCallCard';
 import { StepGroup } from './StepGroup';
+import { Reasoning } from './Reasoning';
 
 const PlainText: TextMessagePartComponent = ({ text }) => <span>{text}</span>;
 
@@ -134,6 +135,8 @@ export function AssistantBubble() {
                 );
               case 'text':
                 return <MarkdownText {...part} />;
+              case 'reasoning':
+                return <Reasoning text={part.text} running={part.status.type === 'running'} />;
               case 'tool-call':
                 return part.toolUI ?? <ToolCallCard {...part} />;
               default:

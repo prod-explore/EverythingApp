@@ -7,8 +7,10 @@
 
 export interface TextBlock { type: 'text'; text: string }
 export interface ToolUseBlock { type: 'tool_use'; id: string; name: string; input: unknown }
+/** The model's visible reasoning (`reasoning_content` / `reasoning`). Stored and shown, never sent back to a provider. */
+export interface ThinkingBlock { type: 'thinking'; thinking: string }
 /** What a model can answer with. */
-export type ContentBlock = TextBlock | ToolUseBlock;
+export type ContentBlock = ThinkingBlock | TextBlock | ToolUseBlock;
 
 export interface TextBlockParam { type: 'text'; text: string }
 export interface ImageBlockParam {
@@ -25,7 +27,7 @@ export interface ToolResultBlockParam {
   is_error?: boolean;
 }
 /** What can appear in a stored / sent message. */
-export type ContentBlockParam = TextBlockParam | ImageBlockParam | ToolUseBlockParam | ToolResultBlockParam;
+export type ContentBlockParam = TextBlockParam | ImageBlockParam | ToolUseBlockParam | ToolResultBlockParam | ThinkingBlock;
 
 export interface MessageParam {
   role: 'user' | 'assistant';
@@ -70,9 +72,9 @@ export interface MessageCreateParamsNonStreaming {
 }
 export type MessageCreateParams = MessageCreateParamsNonStreaming;
 
-/** The one streaming event the app consumes: a piece of reply text. */
+/** The streaming events the app consumes: a piece of reply text or of reasoning. */
 export interface MessageStreamEvent {
   type: 'content_block_delta';
   index: number;
-  delta: { type: 'text_delta'; text: string };
+  delta: { type: 'text_delta'; text: string } | { type: 'thinking_delta'; thinking: string };
 }

@@ -5,7 +5,7 @@ import { useEffect, useReducer, useRef } from 'react';
  * order the backend emitted them. Correlated to their result by POSITION,
  * not by id: server.ts's tool loop emits onToolStart → (approval) →
  * onToolResult strictly one call at a time before moving to the next
- * (see anthropic-loop.ts's `for (const use of toolUses)`), and neither SSE
+ * (see llm-loop.ts's `for (const use of toolUses)`), and neither SSE
  * event carries a tool_use_id — onToolStart gets the human label
  * (`tools.describe(use.name)`), onToolResult gets the raw registry name
  * (`use.name`), which are different strings for the same call. The oldest
@@ -18,7 +18,10 @@ export interface LiveToolCall {
 }
 
 /** `streaming` text is a partial block still being generated; the backend's turn:text with the full block replaces it. */
-export type LivePart = { type: 'text'; text: string; block?: number; streaming?: boolean } | { type: 'tool'; call: LiveToolCall };
+export type LivePart =
+  | { type: 'text'; text: string; block?: number; streaming?: boolean }
+  | { type: 'reasoning'; text: string }
+  | { type: 'tool'; call: LiveToolCall };
 
 export interface LiveTurnState {
   /** True from turn:start until turn:done/error/aborted. */
@@ -35,6 +38,7 @@ type Action =
   | { type: 'clear' }
   | { type: 'start' }
   | { type: 'text_delta'; block: number; text: string }
+  | { type: 'thinking_delta'; text: string }
   | { type: 'text'; text: string }
   | { type: 'tool_use'; label: string }
   | { type: 'tool_result'; toolName: string; truncatedOutput: string; isError: boolean; wasTruncated: boolean }
@@ -54,6 +58,15 @@ function reducer(state: LiveTurnState, action: Action): LiveTurnState {
         return { ...state, parts };
       }
       return { ...state, parts: [...state.parts, { type: 'text', text: action.text, block: action.block, streaming: true }] };
+    }
+    case 'thinking_delta': {
+      const last = state.parts[state.parts.length - 1];
+      if (last?.type === 'reasoning') {
+        const parts = [...state.parts];
+        parts[parts.length - 1] = { ...last, text: last.text + action.text };
+        return { ...state, parts };
+      }
+      return { ...state, parts: [...state.parts, { type: 'reasoning', text: action.text }] };
     }
     case 'text': {
       // The complete block replaces the oldest partial one (blocks finish in order); with no partial
@@ -98,7 +111,6 @@ const SIDE_EVENTS = [
   'gazeta:dismissed',
   'conversation:titled',
   'approval:resolved',
-  'usage:warning',
   'provider:retry',
   'artifact:new',
   'agent:spawned',
@@ -153,6 +165,10 @@ export function useSSE(conversationId: string | null, onSideEvent?: (event: Side
       source.addEventListener('turn:text_delta', e => {
         const data = JSON.parse((e as MessageEvent).data) as { block: number; text: string };
         dispatch({ type: 'text_delta', block: data.block, text: data.text });
+      });
+      source.addEventListener('turn:thinking_delta', e => {
+        const data = JSON.parse((e as MessageEvent).data) as { text: string };
+        dispatch({ type: 'thinking_delta', text: data.text });
       });
       source.addEventListener('turn:text', e => {
         const data = JSON.parse((e as MessageEvent).data) as { text: string };

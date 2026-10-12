@@ -3,10 +3,9 @@ import type { LivePart } from '../hooks/useSSE';
 import type { ContentBlock, RawMessage } from '../types';
 
 /**
- * db.ts stores Anthropic's own message shape: a tool call and its result are
+ * db.ts stores messages as content blocks: a tool call and its result are
  * two separate messages (`assistant` with a `tool_use` block, then `user`
- * with the matching `tool_result` block) — that's how the Anthropic API
- * itself represents a turn. assistant-ui instead wants the result attached
+ * with the matching `tool_result` block). assistant-ui instead wants the result attached
  * directly to the `tool-call` part inside the assistant message that made
  * the call. This fold does that merge, and drops the now-redundant
  * tool-result-only user messages (they carry no content a person typed).
@@ -42,7 +41,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
 
     // Assistant message: text/tool_use parts as-is, then look ahead to the
     // immediately following message for this call's tool_result (that's
-    // always where db.ts/anthropic-loop.ts put it — one user message per
+    // always where db.ts/llm-loop.ts put it — one user message per
     // round of tool results, right after the assistant message that
     // requested them).
     const resultsByCallId = new Map<string, { content: string; isError: boolean }>();
@@ -60,6 +59,8 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
     for (const block of blocks) {
       if (block.type === 'text') {
         parts.push({ type: 'text', text: block.text });
+      } else if (block.type === 'thinking') {
+        if (block.thinking) parts.push({ type: 'reasoning', text: block.thinking });
       } else if (block.type === 'tool_use') {
         const res = resultsByCallId.get(block.id);
         parts.push({
@@ -67,7 +68,7 @@ export function foldRawMessages(raw: RawMessage[]): ThreadMessageLike[] {
           toolCallId: block.id,
           toolName: block.name,
           // Tool args are arbitrary JSON from the model — genuinely JSON-safe
-          // at runtime (Anthropic's API only ever sends JSON), but our own
+          // at runtime (a model only ever sends JSON), but our own
           // ContentBlock type declares `input` as Record<string, unknown>,
           // which is looser than the ReadonlyJSONObject this field wants.
           args: block.input as unknown as Extract<ThreadAssistantMessagePart, { type: 'tool-call' }>['args'],
@@ -107,6 +108,7 @@ export function liveTurnToMessage(parts: LivePart[]): ThreadMessageLike | null {
   if (parts.length === 0) return null;
   const content: ThreadMessageLike['content'] = parts.map((part, index) => {
     if (part.type === 'text') return { type: 'text', text: part.text };
+    if (part.type === 'reasoning') return { type: 'reasoning', text: part.text };
     return {
       type: 'tool-call',
       toolCallId: `live-${index}`,

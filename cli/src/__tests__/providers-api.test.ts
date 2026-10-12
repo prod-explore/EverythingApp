@@ -30,7 +30,7 @@ function req(port: number, method: string, path: string, body?: unknown): Promis
 /** A gateway that lists models (with MindGate-style extensions) and accepts exactly one key. */
 const GATEWAY_MODELS = {
   data: [
-    { id: 'flash', kind: 'chat', tags: ['free'], description: 'Fast and free', supports: ['tools'] },
+    { id: 'flash', kind: 'chat', tags: ['free'], description: 'Fast and free', supports: ['tools'], status: 'waking' },
     { id: 'big', kind: 'chat', tags: ['reasoning', 'coder'], pricing: { input: 3, output: 15 } },
     { id: 'whisper', kind: 'stt' },
   ],
@@ -99,7 +99,11 @@ describe('providers API', () => {
     const flash = models.find((m: any) => m.id === '@mindgate/flash');
     assert.deepEqual([flash.kind, flash.tags, flash.available, flash.providerLabel], ['chat', ['free'], true, 'MindGate']);
     assert.equal(models.find((m: any) => m.id === '@mindgate/whisper').kind, 'stt');
-    assert.equal(models.find((m: any) => m.id === '@mindgate/big').pricingKnown, true);
+    const big = models.find((m: any) => m.id === '@mindgate/big');
+    assert.ok(!('pricing' in big) && !('pricingKnown' in big), 'the app exposes no prices');
+    assert.equal(flash.status, 'waking', 'the gateway-reported availability reaches the pickers');
+    const mg = (await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'mindgate');
+    assert.deepEqual(mg.statusCounts, { waking: 1 });
   });
 
   it('a plain API is added through the very same call', async () => {
@@ -118,9 +122,6 @@ describe('providers API', () => {
     assert.equal((await req(port, 'POST', '/api/providers', { slug: 'mindgate', baseUrl: 'https://x.example' })).status, 409);
     assert.equal((await req(port, 'PUT', '/api/providers/mindgate/key', { key: 'has space in it' })).status, 400);
     assert.equal((await req(port, 'PUT', '/api/providers/nope/key', { key: 'abcdefghij' })).status, 404);
-    assert.equal((await req(port, 'PUT', '/api/providers/mindgate/limits', { warnUsdMonthly: -3 })).status, 400);
-    assert.equal((await req(port, 'PUT', '/api/providers/mindgate/limits', { warnUsdMonthly: 20 })).status, 200);
-    assert.equal((await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'mindgate').warnUsdMonthly, 20);
   });
 
   it('edits a model: switch off, override tags, and clear the override again', async () => {
@@ -137,26 +138,19 @@ describe('providers API', () => {
     await req(port, 'PATCH', '/api/models', { id, enabled: true });
   });
 
-  it('prices: the editor shows the effective price and a user override wins, null clears it', async () => {
-    const id = '@mindgate/whisper'; // no hint, no reported price
-    const get = async () => (await req(port, 'GET', '/api/providers/mindgate/models')).json.models.find((x: any) => x.id === id);
-    assert.equal((await get()).pricing, null);
-    await req(port, 'PATCH', '/api/models', { id, pricing: { input: 0.5, output: 1.5 } });
-    assert.deepEqual((await get()).pricing, { input: 0.5, output: 1.5 });
-    assert.equal((await get()).pricingKnown, true);
-    assert.ok((await get()).overridden.includes('pricing'));
-    await req(port, 'PATCH', '/api/models', { id, pricing: null });
-    assert.equal((await get()).pricing, null);
-  });
-
-  it('a conversation cannot be put on a known non-chat model; legacy ids are stored canonically', async () => {
+  it('a conversation cannot be put on a known non-chat or tool-less model', async () => {
+    await req(port, 'POST', '/api/providers/lan/models', { id: 'notools', toolSchemaMode: 'none' });
     const bad = await req(port, 'POST', '/api/conversations', { model: '@mindgate/whisper' });
     assert.equal(bad.status, 400);
+    assert.equal((await req(port, 'POST', '/api/conversations', { model: '@lan/notools' })).status, 400, 'no tool calls = not a chat model for this app');
     const conv = (await req(port, 'POST', '/api/conversations', {})).json.id;
     assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: '@mindgate/whisper' })).status, 400);
-    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: 'flash' })).status, 200);
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: '@lan/notools' })).status, 400);
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: '@mindgate/flash' })).status, 200);
     assert.equal((await req(port, 'GET', `/api/conversations/${conv}`)).json.model, '@mindgate/flash');
-    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: 'some-unlisted-model' })).status, 200, 'unknown ids are tolerated; the turn reports them');
+    assert.equal((await req(port, 'PATCH', `/api/conversations/${conv}`, { model: '@gone/unlisted-model' })).status, 200, 'unknown ids are tolerated; the turn reports them');
+    const pick = (await req(port, 'GET', '/api/models')).json.models.find((m: any) => m.id === '@lan/notools');
+    assert.equal(pick.toolSchemaMode, 'none', 'pickers get the flag and hide such models');
   });
 
   it('slots: unset ones resolve automatically, explicit ones must be real chat models', async () => {
@@ -207,6 +201,7 @@ describe('providers API', () => {
     const ok = await req(port, 'GET', '/api/usage/report?range=7d&tzOffset=120');
     assert.equal(ok.status, 200);
     assert.ok('totals' in ok.json && Array.isArray(ok.json.byDay));
+    assert.ok(!JSON.stringify(ok.json).match(/cost|pric/i), 'tokens only');
     assert.equal((await req(port, 'GET', '/api/usage/report?range=forever')).status, 400);
   });
 });

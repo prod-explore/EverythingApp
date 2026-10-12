@@ -1,7 +1,7 @@
 # EverythingApp
 
 [![CI](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml/badge.svg)](https://github.com/prod-explore/EverythingApp/actions/workflows/ci.yml)
-![tests](https://img.shields.io/badge/tests-711%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-706%20passing-brightgreen)
 ![node](https://img.shields.io/badge/node-22-339933)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 
@@ -26,7 +26,7 @@ A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandb
 
 | Area | What it does |
 |---|---|
-| **Providers** | One OpenAI-compatible format for everything: a provider is just *base URL + key + dialect* — MindGate (the hub), Gemini, DeepSeek, OpenRouter, a LAN server all go through the same “Add provider” form. Models are discovered from `GET {base}/models` (with `kind` and free-form `tags`: `free`, `coder`, `reasoning`…) and can be edited per model. Internally one Anthropic-shaped message format; the adapter translates. Keys are AES-256-GCM encrypted at rest. |
+| **Providers** | One OpenAI-compatible format for everything: a provider is just *base URL + key + dialect* — MindGate (the hub), Gemini, DeepSeek, OpenRouter, a LAN server all go through the same “Add provider” form. Models are discovered from `GET {base}/models` (with `kind` and free-form `tags`: `free`, `coder`, `reasoning`…) and can be edited per model. Internally one block-based message format of its own (no vendor SDK); the adapter translates. Models without tool calls are not supported. Thinking models show their reasoning in a collapsible block. The app keeps no prices — usage is counted in tokens, money is the gateway's job. Keys are AES-256-GCM encrypted at rest. |
 | **Model slots & cost guard** | Pick a chat default, a helper (titles, digest), an agent model and an escalation model. A chat on a `free` model can only start `free` workers unless “Allow agents to use paid models” is on. The orchestrator gets a generated list of the installed models and their tags to choose from. |
 | **Agents** | `spawn_agent` / `wait_agents` / `send_message`. Per-tree budgets, depth and spawn limits, kill switch. Finished workers can be resumed with a follow-up. |
 | **Sandbox** | Per-project Docker container, no secrets, no `docker.sock`. Files explorer + editor with a checkpoint before every edit, rollback, Source Control, GitHub. |
@@ -109,7 +109,7 @@ Deployment notes for a Raspberry Pi (egress guard, Nginx + HTTPS) are in [`deplo
 ## Development
 
 ```bash
-cd cli && npm test            # 325 tests (node:test, in-memory SQLite, fake providers)
+cd cli && npm test            # 320 tests (node:test, in-memory SQLite, fake providers)
 cd git-proxy && npm test      #  40
 cd sandbox-mcp && npm test    #  18
 cd sandbox-supervisor && npm test  # 78

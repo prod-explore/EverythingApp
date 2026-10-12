@@ -11,7 +11,6 @@ import {
   removeModel,
   removeProvider,
   saveProviderKey,
-  setProviderLimit,
   testProvider,
   updateProvider,
 } from '../../../api';
@@ -34,10 +33,20 @@ type Note = { ok: boolean; text: string } | null;
 
 // ─── model editor ───────────────────────────────────────────────────────────
 
+const STATUS_STYLE = { online: 'bg-success', waking: 'bg-warning', asleep: 'bg-fg-tertiary' } as const;
+
+/** A gateway that manages sleeping nodes (MindGate) reports per model whether it can answer right now. */
+function StatusDot({ status }: { status: 'online' | 'asleep' | 'waking' }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[10px] text-fg-tertiary" title={status === 'asleep' ? 'The node is asleep — the first request wakes it, which takes a while' : status}>
+      <span className={`inline-block h-1.5 w-1.5 rounded-full ${STATUS_STYLE[status]}`} />
+      {status}
+    </span>
+  );
+}
+
 function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void }) {
   const [tags, setTags] = useState(m.tags.join(', '));
-  const [priceIn, setPriceIn] = useState(m.pricing?.input.toString() ?? '');
-  const [priceOut, setPriceOut] = useState(m.pricing?.output.toString() ?? '');
   const [error, setError] = useState<string | null>(null);
 
   async function patch(p: Parameters<typeof patchModel>[1]) {
@@ -49,20 +58,16 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
     if (next.join(',') !== m.tags.join(',')) void patch({ tags: next });
   };
 
-  const commitPrice = () => {
-    const i = Number(priceIn);
-    const o = Number(priceOut);
-    if (priceIn.trim() === '' && priceOut.trim() === '') return;
-    if (priceIn.trim() === '' || priceOut.trim() === '' || !(i >= 0) || !(o >= 0)) { setError('Enter both prices as numbers ≥ 0 (USD per million tokens)'); return; }
-    if (i !== m.pricing?.input || o !== m.pricing?.output) void patch({ pricing: { input: i, output: o } });
-  };
-
   return (
     <li className="rounded-button border border-border px-2 py-1.5">
       <div className="flex items-center gap-2">
         <input type="checkbox" checked={m.enabled} onChange={e => void patch({ enabled: e.target.checked })} aria-label={`Enable ${m.id}`} />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-xs font-medium text-fg" title={m.description || m.label}>{m.label}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-xs font-medium text-fg" title={m.description || m.label}>{m.label}</span>
+            {m.status && <StatusDot status={m.status} />}
+            {m.toolSchemaMode === 'none' && <span className="rounded bg-bg-tertiary px-1 text-[10px] text-danger" title="No tool calls — this model is not offered for chat">no tools</span>}
+          </div>
           <code className="block truncate text-[11px] text-fg-tertiary">{m.upstream}</code>
         </div>
         <select
@@ -90,15 +95,6 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
           >
             <Trash2 size={12} />
           </button>
-        )}
-      </div>
-      <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-6 text-[11px] text-fg-tertiary">
-        <span>Price $/M tokens</span>
-        <input value={priceIn} onChange={e => setPriceIn(e.target.value)} onBlur={commitPrice} inputMode="decimal" placeholder="in" className={`${smallInput} w-16`} aria-label={`Input price of ${m.id}`} />
-        <input value={priceOut} onChange={e => setPriceOut(e.target.value)} onBlur={commitPrice} inputMode="decimal" placeholder="out" className={`${smallInput} w-16`} aria-label={`Output price of ${m.id}`} />
-        {m.pricing === null && <span className="text-fg-secondary">unpriced — usage counts as $0</span>}
-        {m.overridden.includes('pricing') && (
-          <button onClick={() => { setPriceIn(''); setPriceOut(''); void patch({ pricing: null }); }} className="underline hover:text-fg">reset</button>
         )}
       </div>
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
@@ -134,7 +130,7 @@ function ModelsEditor({ p, onChanged }: { p: ProviderInfo; onChanged: () => void
       </div>
       {models.length === 0 && <p className="text-xs text-fg-tertiary">No models yet — use “Refresh models”, or add an id by hand below.</p>}
       <ul className="max-h-72 space-y-1 overflow-y-auto">
-        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}:${m.pricing?.input}:${m.pricing?.output}`} m={m} onChanged={changed} />)}
+        {shown.slice(0, 200).map(m => <ModelRow key={`${m.id}:${m.tags.join()}:${m.kind}:${m.enabled}:${m.status ?? ''}:${m.toolSchemaMode ?? ''}`} m={m} onChanged={changed} />)}
       </ul>
       {shown.length > 200 && <p className="text-xs text-fg-tertiary">Showing 200 of {shown.length} — narrow the filter.</p>}
       <div className="flex gap-2">
@@ -151,7 +147,7 @@ function ModelsEditor({ p, onChanged }: { p: ProviderInfo; onChanged: () => void
       {error && <p className="text-xs text-danger">{error}</p>}
       <p className="text-xs text-fg-tertiary">
         Tags are free-form. <code>free</code> marks a model as costing nothing (the cost guard for agents); others like <code>coder</code>,
-        <code> reasoning</code> or <code>vision</code> help the assistant pick a model for a job. Only <code>chat</code> models show in the pickers.
+        <code> reasoning</code> or <code>vision</code> help the assistant pick a model for a job. Only <code>chat</code> models that can call tools show in the pickers.
       </p>
     </div>
   );
@@ -164,7 +160,6 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<Note>(null);
-  const [limit, setLimit] = useState(p.warnUsdMonthly?.toString() ?? '');
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -220,6 +215,9 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
       </div>
       <p className="mb-3 mt-1 text-xs text-fg-tertiary">
         {status} · {p.enabledModelCount}/{p.modelCount} models on
+        {p.statusCounts && Object.keys(p.statusCounts).length > 0 && (
+          <> · {(['online', 'waking', 'asleep'] as const).filter(k => p.statusCounts![k]).map(k => `${p.statusCounts![k]} ${k}`).join(', ')}</>
+        )}
       </p>
 
       {!p.keyOptional && (
@@ -244,23 +242,6 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs">
-        <label className="flex items-center gap-2 text-fg-secondary">
-          Warn at $
-          <input
-            inputMode="decimal"
-            value={limit}
-            onChange={e => setLimit(e.target.value)}
-            onBlur={() => void run(async () => {
-              const n = limit.trim() === '' ? null : Number(limit);
-              if (n !== null && !(n > 0)) throw new Error('Enter a positive number, or leave empty for no warning');
-              await setProviderLimit(p.id, n);
-              onChanged();
-            })}
-            placeholder="off"
-            className="w-20 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none"
-          />
-          / month
-        </label>
         <button
           onClick={() => void run(async () => { const r = await testProvider(p.id); setNote({ ok: r.ok, text: r.ok ? 'Connection works.' : (r.error ?? 'Test failed') }); })}
           disabled={busy}
@@ -381,6 +362,17 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
   const [message, setMessage] = useState<string | null>(null);
   const reload = useCallback(() => { getProviders().then(setData).catch(() => {}); }, []);
   useEffect(reload, [reload]);
+  // A gateway that reports per-model availability (MindGate) is asked again whenever this page opens, so the statuses are current.
+  useEffect(() => {
+    let cancelled = false;
+    void getProviders().then(async r => {
+      const live = r.providers.filter(p => p.flavor === 'mindgate' && p.enabled && p.configured);
+      if (live.length === 0) return;
+      await Promise.all(live.map(p => refreshProviderModels(p.id).catch(() => {})));
+      if (!cancelled) reload();
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [reload]);
   const changed = useCallback(() => { reload(); onChanged(); }, [reload, onChanged]);
 
   if (!data) return <p className="text-xs text-fg-tertiary">Loading providers…</p>;
@@ -396,7 +388,7 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
         <p className="text-xs text-fg-tertiary">Nothing set up yet. Add MindGate (your hub) or any API directly.</p>
       )}
       {data.providers.map(p => (
-        <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.warnUsdMonthly}:${p.modelCount}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />
+        <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.modelCount}:${JSON.stringify(p.statusCounts ?? {})}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />
       ))}
       <AddProvider presets={data.presets} vaultEnabled={data.vaultEnabled} onAdded={m => { setMessage(m); changed(); }} />
       {message && <p className="text-xs text-fg-secondary">{message}</p>}

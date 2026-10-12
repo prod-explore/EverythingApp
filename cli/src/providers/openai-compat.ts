@@ -5,9 +5,9 @@ import type { ModelInfo } from './registry.js';
 
 /**
  * Adapter for providers that speak the OpenAI chat-completions dialect (Gemini's
- * compatibility endpoint, DeepSeek). The app's canonical message format stays
- * Anthropic-shaped — that is what's persisted and what the tool loop consumes —
- * so this file's whole job is translating *out* to chat-completions and *back*
+ * compatibility endpoint, DeepSeek, MindGate, OpenRouter, LAN servers). The app's
+ * canonical message format (llm-types.ts) is what's persisted and what the tool loop
+ * consumes, so this file's whole job is translating *out* to chat-completions and *back*
  * to an Llm.Message, per request. Nothing provider-specific ever reaches
  * the database or the loop except through MetaStore.
  */
@@ -16,7 +16,7 @@ import type { ModelInfo } from './registry.js';
 export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
 
 /**
- * Provider state that has no slot in the Anthropic message shape but that the
+ * Provider state that has no slot in the message format but that the
  * provider insists on getting back (Gemini 3 thought signatures, DeepSeek
  * reasoning_content during a tool loop). Keyed by tool call id.
  */
@@ -137,6 +137,8 @@ interface OaiResponse {
         extra_content?: { google?: { thought_signature?: string } };
       }>;
       reasoning_content?: string | null;
+      /** OpenRouter and some gateways call it `reasoning`. */
+      reasoning?: string | null;
     };
   }>;
   usage?: OaiUsage;
@@ -384,7 +386,7 @@ export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx:
       return;
     }
 
-    // assistant
+    // assistant (`thinking` blocks are for the UI only — they are skipped below)
     const texts: string[] = [];
     const calls: OaiToolCall[] = [];
     for (const block of m.content) {
@@ -488,7 +490,9 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
       text = '';
     }
   }
-  if (text) content.push({ type: 'text', text, citations: null } as Llm.TextBlock);
+  const reasoning = msg.reasoning_content || msg.reasoning || '';
+  if (reasoning) content.push({ type: 'thinking', thinking: reasoning });
+  if (text) content.push({ type: 'text', text });
 
   calls.forEach((tc, i) => {
     const id = normalizeToolCallId(tc.id);
@@ -519,13 +523,13 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
       id,
       name: ctx.names.original(tc.function?.name ?? ''),
       input,
-    } as Llm.ToolUseBlock);
+    });
 
     const meta: Record<string, unknown> = {};
     const sig = tc.extra_content?.google?.thought_signature;
     if (ctx.flavor === 'gemini' && sig) meta['thoughtSignature'] = sig;
     // One copy of the reasoning per response, hung off the first call — the replay side scans the whole message.
-    if (ctx.flavor === 'deepseek' && i === 0 && msg.reasoning_content) meta['reasoningContent'] = msg.reasoning_content;
+    if (ctx.flavor === 'deepseek' && i === 0 && reasoning) meta['reasoningContent'] = reasoning;
     if (Object.keys(meta).length > 0) ctx.meta.set(id, meta);
   });
 
@@ -677,14 +681,16 @@ export class OpenAiCompatClient implements LlmClient {
    */
   stream(params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike {
     const listeners: Array<(e: Llm.MessageStreamEvent) => void> = [];
-    const emitText = (text: string) => {
-      const event: Llm.MessageStreamEvent = { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } };
+    const emit = (delta: Llm.MessageStreamEvent['delta']) => {
+      const event: Llm.MessageStreamEvent = { type: 'content_block_delta', index: 0, delta };
       for (const l of listeners) l(event);
     };
+    const emitText = (text: string) => emit({ type: 'text_delta', text });
+    const emitThinking = (thinking: string) => emit({ type: 'thinking_delta', thinking });
     const final = (async () => {
       await Promise.resolve(); // let the caller attach listeners first
       if (this.opts.flavor === 'gemini') return this.messages.create(params, options);
-      return this.streamOnce(params, options?.signal, emitText);
+      return this.streamOnce(params, options?.signal, emitText, emitThinking);
     })();
     return {
       on(event: 'streamEvent', listener: (e: Llm.MessageStreamEvent) => void) {
@@ -699,6 +705,7 @@ export class OpenAiCompatClient implements LlmClient {
     params: Llm.MessageCreateParamsNonStreaming,
     external: AbortSignal | undefined,
     emitText: (text: string) => void,
+    emitThinking?: (text: string) => void,
   ): Promise<Llm.Message> {
     const info = this.opts.modelInfo(params.model);
     const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
@@ -766,7 +773,7 @@ export class OpenAiCompatClient implements LlmClient {
           if (data === '[DONE]') { done = true; break; }
           let evt: {
             id?: string; model?: string; usage?: OaiResponse['usage'];
-            choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
+            choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
             error?: { message?: string };
           };
           try { evt = JSON.parse(data); } catch { continue; }
@@ -778,7 +785,8 @@ export class OpenAiCompatClient implements LlmClient {
           if (!choice) continue;
           if (choice.finish_reason) finish = choice.finish_reason;
           const d = choice.delta ?? {};
-          if (d.reasoning_content) reasoning += d.reasoning_content;
+          const thought = d.reasoning_content || d.reasoning;
+          if (thought) { reasoning += thought; emitThinking?.(thought); }
           if (d.content) onText(d.content);
           for (const tc of d.tool_calls ?? []) {
             const i = tc.index ?? calls.length;

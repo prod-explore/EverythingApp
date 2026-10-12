@@ -42,6 +42,8 @@ export interface ProviderStatus {
   keyHint: string;
   modelCount: number;
   enabledModelCount: number;
+  /** Enabled models by the availability the gateway reported (only providers that report it). */
+  statusCounts: Partial<Record<'online' | 'asleep' | 'waking', number>>;
 }
 
 export interface ResolvedModel {
@@ -156,6 +158,7 @@ export class ProviderRouter {
         keyHint: findPreset(p.slug)?.keyHint ?? '',
         modelCount: models.length,
         enabledModelCount: models.filter(m => m.enabled).length,
+        statusCounts: models.filter(m => m.enabled && m.status).reduce<ProviderStatus['statusCounts']>((acc, m) => ({ ...acc, [m.status!]: (acc[m.status!] ?? 0) + 1 }), {}),
       };
     });
   }

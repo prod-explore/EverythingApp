@@ -138,7 +138,7 @@ export function runMigrations(db: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_usage_ts ON usage_log(ts);
     CREATE INDEX IF NOT EXISTS idx_usage_conv ON usage_log(conversation_id);
 
-    -- Phase 3: provider-specific state that has no home in the Anthropic-shaped
+    -- Phase 3: provider-specific state that has no home in the
     -- message format (Gemini 3 thought signatures, DeepSeek reasoning_content),
     -- keyed by tool call id. Lets history stay in one canonical format while
     -- each adapter can still replay what its provider insists on getting back.

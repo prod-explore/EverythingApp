@@ -71,6 +71,8 @@ export interface ConversationDeps {
    * Only fires when the provider supports streaming. onAssistantText still follows with the final text.
    */
   onTextDelta?: (delta: { block: number; text: string }) => void;
+  /** Live reasoning chunks (same conditions as onTextDelta). The complete reasoning is also stored as a `thinking` block. */
+  onThinkingDelta?: (delta: { text: string }) => void;
   /** Called right before a tool actually executes (after approval). */
   onToolStart?: (toolLabel: string) => void;
   /** Called once per API response with that response's usage. */
@@ -191,6 +193,8 @@ function sanitizeBlock(block: Llm.ContentBlockParam): Llm.ContentBlockParam {
       return { type: 'text', text: block.text };
     case 'tool_use':
       return { type: 'tool_use', id: block.id, name: block.name, input: block.input };
+    case 'thinking':
+      return { type: 'thinking', thinking: block.thinking };
     case 'tool_result':
       return { type: 'tool_result', tool_use_id: block.tool_use_id, content: block.content, is_error: block.is_error };
     default:
@@ -247,14 +251,14 @@ export async function runTurn(
     };
     // Lets the kill switch cancel a request that's already in flight, not just the next one.
     const options = { signal: deps.signal };
-    const onTextDelta = deps.onTextDelta;
+    const { onTextDelta, onThinkingDelta } = deps;
     let response: Llm.Message;
-    if (onTextDelta && deps.llm.messages.stream) {
+    if ((onTextDelta || onThinkingDelta) && deps.llm.messages.stream) {
       const stream = deps.llm.messages.stream(params, options);
       stream.on('streamEvent', event => {
-        if (event.type === 'content_block_delta' && event.delta.type === 'text_delta' && event.delta.text) {
-          onTextDelta({ block: event.index, text: event.delta.text });
-        }
+        if (event.type !== 'content_block_delta') return;
+        if (event.delta.type === 'text_delta' && event.delta.text) onTextDelta?.({ block: event.index, text: event.delta.text });
+        else if (event.delta.type === 'thinking_delta' && event.delta.thinking) onThinkingDelta?.({ text: event.delta.thinking });
       });
       response = await stream.finalMessage();
     } else {

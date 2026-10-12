@@ -13,6 +13,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { buildApp } from '../server.js';
+import type { LlmClient } from '../llm-loop.js';
 import { openDb, runMigrations } from '../db.js';
 
 // ─── Minimal Anthropic mock (never actually called by these tests) ──────────
@@ -21,12 +22,8 @@ const fakeAnthropicClient = {
     create: async () => {
       throw new Error('Not expected to be called in artifact/subagent tests');
     },
-    batches: {
-      create: async () => ({ id: 'batch_fake' }),
-      retrieve: async () => ({ processing_status: 'in_progress' }),
-    },
   },
-} as unknown as import('@anthropic-ai/sdk').default;
+} as unknown as LlmClient;
 
 const AUTH = 'test-token-chunk-b';
 

@@ -22,13 +22,13 @@ const toolUse = (id: string, name: string, input: Record<string, unknown> = {}) 
 const tick = () => new Promise(r => setTimeout(r, 5));
 
 const LIMITS: AgentLimits = {
-  maxDepth: 2, maxSpawnsPerTree: 5, maxSteps: 10, softBudgetUsd: 100, hardBudgetUsd: 200, hardBudgetTokens: 1e9,
+  maxDepth: 2, maxSpawnsPerTree: 5, maxSteps: 10, softBudgetTokens: 1e9, hardBudgetTokens: 2e9,
   providerConcurrency: {}, defaultConcurrency: 3,
 };
 
 type Script = (p: Llm.MessageCreateParamsNonStreaming) => Llm.Message | Promise<Llm.Message>;
 
-async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; autoApprove?: string[]; cost?: number } = {}) {
+async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; autoApprove?: string[] } = {}) {
   const db = openDb(':memory:');
   runMigrations(db);
   const conv = createConversation(db, { title: 'chat' }).id;
@@ -67,7 +67,7 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
   const agents = new AgentManager({
     db, router, registry, approval: gate, sse: new SSEManager(),
     limits: { ...LIMITS, ...opts.limits },
-    recordUsage: () => opts.cost ?? 0,
+    recordUsage: () => {},
   });
   const root = createRun(db, { conversationId: conv, model: 'm', goal: 'orchestrate', label: 'assistant' });
   const controller = new AbortController();
@@ -85,9 +85,9 @@ describe('runs table', () => {
     const root = createRun(db, { model: 'm', goal: 'g' });
     assert.equal(root.rootRunId, root.id);
     const child = createRun(db, { parentRunId: root.id, rootRunId: root.id, model: 'm', goal: 'c', depth: 1 });
-    addRunUsage(db, root.id, { inputTokens: 1, outputTokens: 2, costUsd: 0.5 });
-    addRunUsage(db, child.id, { inputTokens: 3, outputTokens: 4, costUsd: 0.25 });
-    assert.deepEqual(treeUsage(db, root.id), { inputTokens: 4, outputTokens: 6, costUsd: 0.75 });
+    addRunUsage(db, root.id, { inputTokens: 1, outputTokens: 2 });
+    addRunUsage(db, child.id, { inputTokens: 3, outputTokens: 4 });
+    assert.deepEqual(treeUsage(db, root.id), { inputTokens: 4, outputTokens: 6 });
 
     postRunMessage(db, { runId: child.id, fromRunId: root.id, fromLabel: 'boss', body: 'hi' });
     assert.deepEqual(drainRunMessages(db, child.id).map(m => m.body), ['hi']);
@@ -182,7 +182,7 @@ describe('AgentManager', () => {
       if (!isWorker(p)) return message([text('?')], 'end_turn');
       calls++;
       return message([toolUse(`t${calls}`, 'srv__x')], 'tool_use'); // never finishes on its own
-    }, { cost: 1, limits: { hardBudgetUsd: 2.5, softBudgetUsd: 1 } });
+    }, { limits: { hardBudgetTokens: 40, softBudgetTokens: 20 } });
     const r = t.agents.spawn(t.root.id, { goal: 'loop', model: 'm', tools: ['srv__x'] });
     assert.ok('runId' in r);
     const { runs } = await t.agents.wait([r.runId], 'all');

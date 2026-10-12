@@ -4,6 +4,7 @@ export type SSEEventName =
   | 'turn:start'
   | 'turn:text'
   | 'turn:text_delta'
+  | 'turn:thinking_delta'
   | 'turn:tool_use'
   | 'turn:tool_result'
   | 'turn:done'

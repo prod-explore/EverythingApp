@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import type * as Llm from '../llm-types.js';
-import { runTurn, type LlmClient } from '../llm-loop.js';
+import { runTurn, sanitizeHistory, type LlmClient } from '../llm-loop.js';
 import { ToolRegistry } from '../tool-registry.js';
 import type { McpConnectionLike, McpToolInfo } from '../mcp-client.js';
 
@@ -435,6 +435,37 @@ describe('runTurn — streaming text deltas (N2b)', () => {
     assert.deepEqual(deltas, [{ block: 0, text: 'Hel' }, { block: 0, text: 'lo' }]);
     assert.deepEqual(finals, ['Hello']);
     assert.equal(createCalls, 0);
+  });
+
+  it('forwards reasoning live, keeps it in the stored history, and never reports it as answer text', async () => {
+    const client: LlmClient = {
+      messages: {
+        async create() { throw new Error('unused'); },
+        stream() {
+          let listener: ((e: Llm.MessageStreamEvent) => void) | undefined;
+          return {
+            on(_event, l) { listener = l; },
+            async finalMessage() {
+              listener?.({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'let me think' } });
+              return fakeMessage([{ type: 'thinking', thinking: 'let me think' } as Llm.ContentBlock, textBlock('answer')], 'end_turn');
+            },
+          };
+        },
+      },
+    };
+    const thoughts: string[] = [];
+    const texts: string[] = [];
+    const history = await runTurn(
+      baseDeps(client, { onThinkingDelta: (d: { text: string }) => thoughts.push(d.text), onAssistantText: (t: string) => texts.push(t) }) as never,
+      [],
+      'hi',
+    );
+    assert.deepEqual(thoughts, ['let me think']);
+    assert.deepEqual(texts, ['answer']);
+    const stored = history[history.length - 1]!.content as Llm.ContentBlockParam[];
+    assert.deepEqual(stored.map(b => b.type), ['thinking', 'text']);
+    // …and a stored thinking block survives the sanitiser on the next turn.
+    assert.equal(sanitizeHistory(history)[1]!.content instanceof Array && (sanitizeHistory(history)[1]!.content as Llm.ContentBlockParam[])[0]!.type, 'thinking');
   });
 
   it('falls back to create() when the client has no stream (e.g. the OpenAI-compatible adapter)', async () => {

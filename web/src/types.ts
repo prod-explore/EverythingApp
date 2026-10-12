@@ -21,9 +21,10 @@ export interface Conversation {
   updatedAt: string;
 }
 
-/** Anthropic-shaped content blocks, as stored (JSON.parse'd) by db.ts's getMessages(). */
+/** Content blocks as stored (JSON.parse'd) by db.ts's getMessages(). */
 export type ContentBlock =
   | { type: 'text'; text: string }
+  | { type: 'thinking'; thinking: string }
   | { type: 'tool_use'; id: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_result'; tool_use_id: string; content: string; is_error?: boolean }
   | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } };
@@ -63,7 +64,7 @@ export interface GazetaAttachment {
   error?: string;
 }
 
-export type GazetaItemType = 'agent_question' | 'report' | 'batch_result' | 'daily_summary';
+export type GazetaItemType = 'agent_question' | 'report' | 'daily_summary';
 export type GazetaStatus = 'pending' | 'responded' | 'dismissed' | 'expired';
 
 export interface GazetaItem {
@@ -210,7 +211,8 @@ export interface ProviderInfo {
   keyHint: string;
   modelCount: number;
   enabledModelCount: number;
-  warnUsdMonthly: number | null;
+  /** How many of the enabled models a gateway reports as online / waking / asleep (empty for providers that report nothing). */
+  statusCounts?: Partial<Record<'online' | 'asleep' | 'waking', number>>;
 }
 
 /** A starting point for "Add provider" — it only pre-fills the same form every provider goes through. */
@@ -240,8 +242,9 @@ export interface ModelOption {
   tags: string[];
   description: string;
   available: boolean;
-  pricingKnown: boolean;
   supportsImages: boolean;
+  /** 'none' = the model cannot call tools; the app does not offer such models for chat. */
+  toolSchemaMode?: 'full' | 'flat' | 'none';
   status?: 'online' | 'asleep' | 'waking';
 }
 
@@ -249,8 +252,6 @@ export interface ModelOption {
 export interface CatalogModelRow extends Omit<ModelOption, 'available' | 'providerLabel'> {
   /** The id as the provider itself names it. */
   upstream: string;
-  /** Effective price in USD per million tokens, null when nobody priced the model. */
-  pricing: { input: number; output: number } | null;
   enabled: boolean;
   source: 'discovered' | 'manual' | 'seed';
   overridden: string[];
@@ -269,13 +270,11 @@ export interface SlotsResponse {
 export type UsageRange = 'today' | '7d' | '30d' | 'month' | 'all';
 
 export interface UsageTotals {
-  costUsd: number;
   inputTokens: number;
   outputTokens: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
   calls: number;
-  unpricedCalls: number;
 }
 
 export interface UsageReport {
@@ -284,8 +283,7 @@ export interface UsageReport {
   byProvider: Array<UsageTotals & { provider: string }>;
   byModel: Array<UsageTotals & { provider: string; model: string }>;
   byConversation: Array<UsageTotals & { conversationId: string | null; title: string | null }>;
-  byDay: Array<{ day: string; costUsd: number; calls: number; tokens: number }>;
-  monthToDate: Array<{ provider: string; costUsd: number; warnUsd: number | null }>;
+  byDay: Array<{ day: string; calls: number; tokens: number }>;
 }
 
 /** A provider answered 429/5xx (e.g. Gemini free tier at peak hours); the server is waiting and will retry on its own. */
@@ -295,12 +293,6 @@ export interface ProviderRetry {
   status: number | 'network';
   delayMs: number;
   remainingMs: number;
-}
-
-export interface SpendWarning {
-  provider: ProviderId;
-  monthSpendUsd: number;
-  thresholdUsd: number;
 }
 
 // ─── §6b Chunk B: Artifacts & Subagent runs ──────────────────────────────────
@@ -322,7 +314,6 @@ export type RunStatus = 'running' | 'waiting_input' | 'waiting_children' | 'done
 export interface RunUsage {
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
 }
 
 export interface RunRow {
@@ -343,7 +334,6 @@ export interface RunRow {
   error: string | null;
   usage: RunUsage;
   heartbeatAt: string | null;
-  batch?: boolean;
   createdAt: string;
   finishedAt: string | null;
 }

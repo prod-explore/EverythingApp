@@ -9,7 +9,7 @@ import { Modal } from '../shared/Modal';
 import { GazetaCard, TYPE_LABEL } from './GazetaCard';
 
 const PAGE = 30;
-const TYPES = ['agent_question', 'report', 'batch_result', 'daily_summary'] as const;
+const TYPES = ['agent_question', 'report', 'daily_summary'] as const;
 
 interface Filters {
   projectId: string;

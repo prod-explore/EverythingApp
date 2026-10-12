@@ -1,8 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { openDb, runMigrations, setSetting, getSetting, createConversation, getConversation } from '../db.js';
+import { openDb, runMigrations } from '../db.js';
 import {
-  AUTO_ENABLE_LIMIT, ModelCatalog, legacyModelId, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
+  AUTO_ENABLE_LIMIT, ModelCatalog, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
 } from '../providers/catalog.js';
 import { getModelInfo, isCatalogModel, parseModelId, supportsTools } from '../providers/registry.js';
 
@@ -21,15 +21,18 @@ describe('parseDiscoveredModel', () => {
     assert.equal(parseDiscoveredModel({ id: 'models/gemini-x' })!.id, 'gemini-x', 'Google prefixes ids with models/');
   });
 
-  it('reads the MindGate extensions: kind, tags, description, supports, status, pricing per million tokens', () => {
+  it('reads the MindGate extensions: kind, tags, description, supports, tool_schema, status', () => {
     const m = parseDiscoveredModel({
       id: 'coder', kind: 'chat', tags: ['Coder', 'free', 'bad tag!', 'free'], description: 'Writes code', supports: ['tools', 'vision'],
       status: 'asleep', pricing: { input: 1.5, output: 6 },
     })!;
+    assert.equal(m.reported.tags!.includes('free'), true);
     assert.deepEqual(m.reported, {
-      kind: 'chat', tags: ['coder', 'free'], description: 'Writes code', supportsImages: true, status: 'asleep', pricing: { input: 1.5, output: 6 },
+      kind: 'chat', tags: ['coder', 'free'], description: 'Writes code', supportsImages: true, status: 'asleep',
     });
+    assert.equal('pricing' in m.reported, false, 'the app keeps no prices');
     assert.equal(parseDiscoveredModel({ id: 'a', supports: ['vision'] })!.reported.toolSchemaMode, 'none', 'no "tools" in supports = no tool calls');
+    assert.equal(parseDiscoveredModel({ id: 'a', supports: ['tools'], tool_schema: 'flat' })!.reported.toolSchemaMode, 'flat');
   });
 
   it('reads OpenRouter: name, context_length, per-token string prices, modalities, supported_parameters', () => {
@@ -41,7 +44,8 @@ describe('parseDiscoveredModel', () => {
     assert.equal(m.reported.contextLength, 128000);
     assert.equal(m.reported.supportsImages, true);
     assert.equal(m.reported.toolSchemaMode, undefined);
-    assert.ok(Math.abs(m.reported.pricing!.input - 0.2) < 1e-9 && Math.abs(m.reported.pricing!.output - 0.6) < 1e-9);
+    assert.equal('pricing' in m.reported, false, 'a non-zero price is not kept');
+    assert.equal(m.reported.tags, undefined, 'and does not make a model free');
   });
 
   it('a model priced at zero is tagged free; an explicit tag list is never overridden', () => {
@@ -57,7 +61,7 @@ describe('parseDiscoveredModel', () => {
 describe('sanitizers', () => {
   it('sanitizeFields drops unknown keys and malformed values', () => {
     assert.deepEqual(
-      sanitizeFields({ label: ' L ', kind: 'bogus', tags: ['A', 'b'], toolSchemaMode: 'weird', pricing: { input: -1, output: 2 }, evil: 1, contextLength: 10.7 }),
+      sanitizeFields({ label: ' L ', kind: 'bogus', tags: ['A', 'b'], toolSchemaMode: 'weird', pricing: { input: 1, output: 2 }, evil: 1, contextLength: 10.7 }),
       { label: 'L', tags: ['a', 'b'], contextLength: 10 },
     );
     assert.deepEqual(sanitizeFields(null), {});
@@ -78,29 +82,21 @@ describe('model ids', () => {
     assert.deepEqual(parseModelId('@or/meta/llama'), { slug: 'or', upstream: 'meta/llama' });
     assert.equal(parseModelId('gpt-4o'), null);
   });
-
-  it('legacyModelId rewrites bare pre-unification ids by rule (no list of names)', () => {
-    assert.equal(legacyModelId('gemini-x'), '@gemini/gemini-x');
-    assert.equal(legacyModelId('deepseek-y'), '@deepseek/deepseek-y');
-    assert.equal(legacyModelId('whatever-local'), '@mindgate/whatever-local', 'everything else was a MindGate model');
-    assert.equal(legacyModelId('claude-sonnet-5'), 'claude-sonnet-5', 'Anthropic is gone — left alone');
-    assert.equal(legacyModelId('@x/y'), '@x/y');
-    assert.equal(legacyModelId(''), '');
-  });
 });
 
 describe('ModelCatalog', () => {
-  it('a new provider has no models; discovery adds them and layers hint < reported < override', () => {
+  it('a new provider has no models; discovery adds them and layers reported < override', () => {
     const { catalog } = fresh();
     catalog.create({ slug: 'gemini', label: 'Gemini', baseUrl: 'https://g.example', keyOptional: false, flavor: 'gemini' });
     assert.deepEqual(catalog.providerModels('gemini'), []);
     const r = catalog.applyDiscovered('gemini', [{ id: 'gemini-3.5-flash-lite' }, { id: 'brand-new', tags: ['coder'] }]);
     assert.deepEqual([r.count, r.added, r.removed], [2, 2, 0]);
 
-    // hint: we know gemini-3.5-flash-lite is free; the provider said nothing about tags
-    assert.ok(getModelInfo('@gemini/gemini-3.5-flash-lite').tags.includes('free'));
+    // nothing is known about a model beyond what the provider reported
+    assert.deepEqual(getModelInfo('@gemini/gemini-3.5-flash-lite').tags, []);
     assert.deepEqual(getModelInfo('@gemini/brand-new').tags, ['coder']);
-    assert.equal(getModelInfo('@gemini/brand-new').pricing, null, 'unknown price stays unknown');
+    // thinking models of the gemini dialect get a bigger output floor without any per-model list
+    assert.equal(getModelInfo('@gemini/brand-new').minOutputTokens, 16000);
 
     // user override wins, null clears it again
     catalog.updateModel('@gemini/brand-new', { fields: { tags: ['free', 'vision'] } });
@@ -148,9 +144,9 @@ describe('ModelCatalog', () => {
     catalog.update('p', { enabled: false });
     assert.equal(catalog.enabledModels().length, 0);
     assert.equal(catalog.providerModels('p').length, 1);
-    assert.equal(catalog.remove('p')?.keyRef, 'p');
+    assert.equal(catalog.remove('p'), true);
     assert.equal(isCatalogModel('@p/a'), false);
-    assert.equal(catalog.remove('p'), null);
+    assert.equal(catalog.remove('p'), false);
   });
 
   it('removeModel deletes a single model', () => {
@@ -167,59 +163,5 @@ describe('ModelCatalog', () => {
     catalog.addManual('p', 'a', { tags: ['free'] });
     const again = new ModelCatalog(db, {});
     assert.deepEqual(again.enabledModels().map(m => [m.id, m.tags]), [['@p/a', ['free']]]);
-  });
-});
-
-describe('legacy import (the pre-unification setup)', () => {
-  function legacyDb() {
-    const db = openDb(':memory:');
-    runMigrations(db);
-    // what the old code had: a stored Gemini key, an Anthropic key, a custom provider, chats on bare ids
-    for (const provider of ['gemini', 'anthropic']) {
-      db.prepare(`INSERT INTO provider_keys (provider, salt, iv, tag, ciphertext, last4) VALUES (?, 'AA==', 'AA==', 'AA==', 'AA==', '1234')`).run(provider);
-    }
-    db.exec(`CREATE TABLE custom_providers (slug TEXT PRIMARY KEY, label TEXT, base_url TEXT, key_optional INTEGER DEFAULT 0, models TEXT, created_at TEXT DEFAULT (datetime('now')))`);
-    db.prepare(`INSERT INTO custom_providers (slug, label, base_url, key_optional, models) VALUES ('or', 'OpenRouter', 'https://openrouter.ai/api/v1', 0, ?)`)
-      .run(JSON.stringify([{ id: 'llama-4', label: 'Llama 4', pricing: { input: 0.2, output: 0.6 } }]));
-    setSetting(db, 'default_model', 'claude-sonnet-5');
-    db.prepare(`DELETE FROM settings WHERE key = 'catalog_v1'`).run(); // never imported yet
-    return db;
-  }
-
-  it('carries over keyed built-in providers and custom providers, rewrites stored ids, drops the Anthropic default', () => {
-    const db = legacyDb();
-    const gem = createConversation(db, { title: 'a', model: 'gemini-3.5-flash-lite' }).id;
-    const flash = createConversation(db, { title: 'b', model: 'flash' }).id;
-    const claude = createConversation(db, { title: 'c', model: 'claude-sonnet-5' }).id;
-    db.prepare(`INSERT INTO approval_grants (tool_label, scope, subject_type, subject_id) VALUES ('x', 'always', 'model', 'deepseek-chat')`).run();
-
-    const catalog = new ModelCatalog(db, {});
-
-    assert.deepEqual(catalog.list().map(p => p.slug).sort(), ['gemini', 'or']);
-    assert.equal(catalog.get('gemini')!.keyRef, 'gemini', 'built-in providers keep their vault row');
-    assert.equal(catalog.get('or')!.keyRef, 'custom:or', 'custom providers keep theirs');
-    assert.ok(catalog.providerModels('gemini').length > 0, 'seeded so the picker is not empty before the first refresh');
-    assert.deepEqual(catalog.providerModels('or').map(m => [m.id, m.pricing?.input]), [['@or/llama-4', 0.2]]);
-
-    assert.equal(getConversation(db, gem)!.model, '@gemini/gemini-3.5-flash-lite');
-    assert.equal(getConversation(db, flash)!.model, '@mindgate/flash');
-    assert.equal(getConversation(db, claude)!.model, 'claude-sonnet-5', 'Claude ids are left alone — they simply stop resolving');
-    assert.equal(getSetting(db, 'default_model'), '', 'a default pointing at a model that no longer exists is cleared');
-    assert.equal((db.prepare(`SELECT subject_id AS s FROM approval_grants WHERE subject_type = 'model'`).get() as { s: string }).s, '@deepseek/deepseek-chat');
-  });
-
-  it('runs once: later startups change nothing, even if the user deleted the imported providers', () => {
-    const db = legacyDb();
-    const first = new ModelCatalog(db, {});
-    first.remove('or');
-    const second = new ModelCatalog(db, {});
-    assert.equal(second.get('or'), undefined);
-  });
-
-  it('keeps a default that names a model which exists after the import', () => {
-    const db = legacyDb();
-    setSetting(db, 'default_model', 'gemini-3.5-flash-lite');
-    new ModelCatalog(db, {});
-    assert.equal(getSetting(db, 'default_model'), '@gemini/gemini-3.5-flash-lite');
   });
 });

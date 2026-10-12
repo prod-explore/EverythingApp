@@ -14,7 +14,7 @@ function sse(events: unknown[]): Response {
 }
 
 function client(fetchImpl: typeof fetch, flavor: 'deepseek' | 'gemini' | 'generic' = 'deepseek') {
-  return new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id, {}), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
+  return new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
 }
 
 const params = { model: 'deepseek-chat', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Llm.MessageCreateParamsNonStreaming;
@@ -46,6 +46,26 @@ describe('OpenAI-compat streaming (N2b)', () => {
     assert.equal(tool.name, 'srv__x');
     assert.deepEqual(tool.input, { a: 42 });
     assert.equal(msg.usage.input_tokens, 7);
+  });
+
+  it('streams reasoning separately from the answer and keeps it as a thinking block', async () => {
+    const c = client((async () => sse([
+      { id: 'r', model: 'm', choices: [{ delta: { reasoning_content: 'Hmm, ' } }] },
+      { choices: [{ delta: { reasoning: 'let me see.' } }] },
+      { choices: [{ delta: { content: 'Done.' }, finish_reason: 'stop' }] },
+      '[DONE]',
+    ])) as typeof fetch, 'generic');
+    const thoughts: string[] = [];
+    const texts: string[] = [];
+    const s = c.messages.stream!({ ...params, tools: undefined });
+    s.on('streamEvent', e => {
+      if (e.delta.type === 'thinking_delta') thoughts.push(e.delta.thinking);
+      else texts.push(e.delta.text);
+    });
+    const msg = await s.finalMessage();
+    assert.deepEqual(thoughts, ['Hmm, ', 'let me see.']);
+    assert.deepEqual(texts, ['Done.']);
+    assert.deepEqual(msg.content, [{ type: 'thinking', thinking: 'Hmm, let me see.' }, { type: 'text', text: 'Done.' }]);
   });
 
   it('falls back to the non-streaming path on an HTTP error, and gemini never streams', async () => {

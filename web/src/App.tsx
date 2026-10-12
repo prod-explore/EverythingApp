@@ -23,7 +23,7 @@ const GitPanel = lazy(() => import('./components/git/GitPanel').then(m => ({ def
 import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
-import type { BudgetWarning, Conversation, ProjectListItem, ProviderRetry, SpendWarning } from './types';
+import type { BudgetWarning, Conversation, ProjectListItem, ProviderRetry } from './types';
 
 export type DockTool = 'agents' | 'files' | 'git';
 
@@ -97,7 +97,6 @@ function MainApp() {
   const [artifactRefresh, setArtifactRefresh] = useState(0);
   const { models } = useModels();
   const approvals = useApprovals(selectedId);
-  const [spendWarning, setSpendWarning] = useState<SpendWarning | null>(null);
   const [providerRetry, setProviderRetry] = useState<ProviderRetry | null>(null);
   // A successful retry emits no event, so the notice simply expires shortly after its own wait is over.
   useEffect(() => {
@@ -233,7 +232,6 @@ function MainApp() {
     if (event === 'turn:done' || event === 'conversation:titled') void refreshConversations();
     if (event === 'agent:spawned' || event === 'agent:finished') setAgentsRefresh(r => r + 1);
     if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
-    if (event === 'usage:warning') setSpendWarning(data as SpendWarning);
     if (event === 'provider:retry') setProviderRetry(data as ProviderRetry);
     if (event === 'turn:done') setProviderRetry(null);
     if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
@@ -377,14 +375,6 @@ function MainApp() {
             {providerRetry.remainingMs > 0 ? `, giving up in ${formatWait(providerRetry.remainingMs)}` : ''}. Use stop to cancel.
           </span>
           <button onClick={() => setProviderRetry(null)} className="shrink-0 underline">Hide</button>
-        </div>
-      )}
-      {spendWarning && (
-        <div className="flex items-center justify-between gap-3 border-b border-danger/40 px-4 py-2 text-xs text-danger">
-          <span>
-            {spendWarning.provider} spend this month is ${spendWarning.monthSpendUsd.toFixed(2)} — past your ${spendWarning.thresholdUsd.toFixed(2)} warning threshold.
-          </span>
-          <button onClick={() => setSpendWarning(null)} className="shrink-0 underline">Dismiss</button>
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">

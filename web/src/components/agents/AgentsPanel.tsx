@@ -67,7 +67,7 @@ export function AgentsPanel({ conversationId, refreshKey, budgetWarning, onClose
     <DockPanel title="Agents" icon={<Bot size={16} />} onClose={onClose}>
       {budgetWarning && (
         <div className="border-b border-danger/40 px-3 py-2 text-xs text-danger" role="status">
-          This task's agents have spent ${budgetWarning.usage.costUsd.toFixed(2)} — close to the budget. New agents will be refused at the limit.
+          This task's agents have used {(budgetWarning.usage.inputTokens + budgetWarning.usage.outputTokens).toLocaleString()} tokens — close to the budget. New agents will be refused at the limit.
         </div>
       )}
       {error && <PanelMessage tone="error">{error}</PanelMessage>}
@@ -140,8 +140,7 @@ function AgentCard({ run, startedBy, onChanged }: { run: RunRow; startedBy?: str
             <span className="font-medium text-fg">{run.label}</span>
             <span className={`rounded px-1.5 py-0.5 text-[10px] font-medium ${STATUS_STYLE[run.status] ?? ''}`}>{STATUS_LABEL[run.status] ?? run.status}</span>
             <span className="text-fg-tertiary">{run.model}</span>
-            {run.batch && <span className="rounded bg-bg-tertiary px-1.5 py-0.5 text-[10px] text-fg-secondary" title="Every step runs through the Batch API: 50% cheaper, minutes per step">batch</span>}
-            <span className="text-fg-tertiary">{tokens.toLocaleString()} tok · ${run.usage.costUsd.toFixed(3)}</span>
+            <span className="text-fg-tertiary">{tokens.toLocaleString()} tokens</span>
             {startedBy && run.depth > 1 && <span className="text-fg-tertiary">· started by {startedBy}</span>}
           </div>
           <p className={`mt-0.5 text-xs text-fg-secondary ${open ? 'whitespace-pre-wrap' : 'truncate'}`}>{run.goal}</p>
@@ -187,7 +186,7 @@ function AgentCard({ run, startedBy, onChanged }: { run: RunRow; startedBy?: str
   );
 }
 
-/** Compact text rendering of a worker's Anthropic-format transcript. */
+/** Compact text rendering of a worker's stored transcript. */
 function renderTranscript(messages: Array<{ role: string; content: unknown }>): string {
   const out: string[] = [];
   for (const m of messages) {

@@ -18,7 +18,7 @@ export type VaultReadResult =
  *   scrypt together with KEY_VAULT_SECRET, so the same secret never yields the
  *   same derived key twice.
  * - The provider id is bound in as AAD: a ciphertext copied from the
- *   `anthropic` row into the `gemini` row fails authentication instead of
+ *   `openrouter` row into the `gemini` row fails authentication instead of
  *   quietly sending one provider's key to another.
  * - KEY_VAULT_SECRET lives in the process environment, not the database, so a
  *   stolen everythingapp.db (or a backup of it) is not enough on its own.

@@ -373,10 +373,6 @@ export function refreshProviderModels(id: ProviderId): Promise<RefreshResult> {
   return request(`/api/providers/${encodeURIComponent(id)}/refresh-models`, { method: 'POST' });
 }
 
-export function setProviderLimit(id: ProviderId, warnUsdMonthly: number | null): Promise<{ ok: true }> {
-  return request(`/api/providers/${encodeURIComponent(id)}/limits`, { method: 'PUT', body: JSON.stringify({ warnUsdMonthly }) });
-}
-
 export function listProviderModels(id: ProviderId): Promise<{ models: CatalogModelRow[] }> {
   return request(`/api/providers/${encodeURIComponent(id)}/models`);
 }
@@ -388,7 +384,6 @@ export type ModelPatch = Partial<{
   tags: string[] | null;
   description: string | null;
   supportsImages: boolean | null;
-  pricing: { input: number; output: number } | null;
 }>;
 
 /** A field set to null goes back to what the provider reports. */
