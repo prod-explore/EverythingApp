@@ -343,7 +343,7 @@ export function addProvider(p: NewProvider): Promise<{ ok: true; id: string; ref
 
 export function updateProvider(
   id: ProviderId,
-  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null; timeoutSec: number | null; retryMin: number | null }>,
+  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null }>,
 ): Promise<{ ok: true }> {
   return request(`/api/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }

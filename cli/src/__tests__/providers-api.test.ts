@@ -74,10 +74,11 @@ describe('providers API', () => {
     assert.equal(r.json.vaultEnabled, true);
     assert.deepEqual(r.json.providers, []);
     assert.ok(r.json.presets.some((p: any) => p.slug === 'mindgate'));
-    // presets only suggest patience: MindGate may wake a node first, Gemini has peak hours — both are plain per-provider settings
+    // presets only suggest the busy-retry window: Gemini has peak hours; nothing is special-cased
     const preset = (slug: string) => r.json.presets.find((p: any) => p.slug === slug);
-    assert.deepEqual([preset('mindgate').timeoutSec, preset('mindgate').retryMin], [900, null]);
-    assert.deepEqual([preset('gemini').timeoutSec, preset('gemini').retryMin], [null, 720]);
+    assert.equal(preset('mindgate').retryMin, null);
+    assert.equal(preset('gemini').retryMin, 720);
+    assert.equal('timeoutSec' in preset('gemini'), false);
     assert.deepEqual((await req(port, 'GET', '/api/models')).json.models, []);
   });
 
@@ -125,16 +126,14 @@ describe('providers API', () => {
     assert.equal((await req(port, 'PUT', '/api/providers/nope/key', { key: 'abcdefghij' })).status, 404);
   });
 
-  it('patience is a plain per-provider setting: preset values carry over, edits are validated and can be cleared', async () => {
+  it('the busy-retry window is a plain per-provider setting: validated and clearable', async () => {
     const get = async () => (await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'mindgate');
-    assert.deepEqual([(await get()).timeoutSec, (await get()).retryMin], [900, null], 'from the preset');
-    assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { timeoutSec: 5 })).status, 400);
+    assert.equal((await get()).retryMin, null, 'from the preset');
     assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { retryMin: 0.5 })).status, 400);
-    assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { timeoutSec: 300, retryMin: 90 })).status, 200);
-    assert.deepEqual([(await get()).timeoutSec, (await get()).retryMin], [300, 90]);
-    assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { timeoutSec: null, retryMin: null })).status, 200);
-    assert.deepEqual([(await get()).timeoutSec, (await get()).retryMin], [null, null], 'null = back to the default');
-    await req(port, 'PATCH', '/api/providers/mindgate', { timeoutSec: 900 });
+    assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { retryMin: 90 })).status, 200);
+    assert.equal((await get()).retryMin, 90);
+    assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { retryMin: null })).status, 200);
+    assert.equal((await get()).retryMin, null, 'null = back to the default');
   });
 
   it('edits a model: switch off, override tags, and clear the override again', async () => {

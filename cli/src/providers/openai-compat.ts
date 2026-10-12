@@ -46,6 +46,7 @@ export interface OpenAiCompatOptions {
   modelInfo: (modelId: string) => ModelInfo;
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
+  /** Longest a single request may take. Only a guard against a hung connection. Default 15 min. */
   timeoutMs?: number;
   maxRetries?: number;
   /**
@@ -600,6 +601,8 @@ export function effectiveStatus(flavor: CompatFlavor, status: number, body: stri
 /** Ollama / llama.cpp messages for a generated tool call that is not valid JSON. */
 const TOOL_PARSE_ERROR = /looks like object|can'?t find closing|error parsing tool call|invalid tool call|failed to parse.*tool/i;
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60_000;
+
 function linkSignals(external: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(new Error(`request timed out after ${timeoutMs}ms`)), timeoutMs);
@@ -718,7 +721,7 @@ export class OpenAiCompatClient implements LlmClient {
       stream_options: { include_usage: true },
       ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
     };
-    const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? 180_000);
+    const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
     try {
       const res = await this.fetchImpl(`${this.opts.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -869,7 +872,7 @@ export class OpenAiCompatClient implements LlmClient {
     };
 
     for (let attempt = 0; ; attempt++) {
-      const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? 180_000);
+      const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
       try {
         let res: Response;
         try {

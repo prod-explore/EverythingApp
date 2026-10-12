@@ -33,7 +33,6 @@ export interface ProviderStatus {
   enabled: boolean;
   keyOptional: boolean;
   concurrency: number | null;
-  timeoutSec: number | null;
   retryMin: number | null;
   configured: boolean;
   source: KeySource;
@@ -144,7 +143,6 @@ export class ProviderRouter {
         enabled: p.enabled,
         keyOptional: p.keyOptional,
         concurrency: p.concurrency,
-        timeoutSec: p.timeoutSec,
         retryMin: p.retryMin,
         configured: key !== null,
         source: stored.present && key ? 'vault' : null,
@@ -182,7 +180,6 @@ export class ProviderRouter {
       baseUrl: provider.baseUrl.replace(/\/+$/, ''),
       apiKey,
       fetchImpl: this.opts.fetchImpl,
-      ...(provider.timeoutSec ? { timeoutMs: provider.timeoutSec * 1000 } : {}),
       ...(provider.retryMin ? { retryBudgetMs: provider.retryMin * 60_000 } : {}),
       onRetry: info => this.onProviderRetry?.(info),
       modelInfo: id => getModelInfo(id),
@@ -272,6 +269,6 @@ export class ProviderRouter {
   /** Presets the "Add provider" form offers, minus the ones already added. */
   availablePresets() {
     const have = new Set(this.catalog.list().map(p => p.slug));
-    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, timeoutSec: p.timeoutSec, retryMin: p.retryMin, keyHint: p.keyHint }));
+    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, retryMin: p.retryMin, keyHint: p.keyHint }));
   }
 }

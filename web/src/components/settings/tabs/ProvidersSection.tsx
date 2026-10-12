@@ -147,7 +147,6 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<Note>(null);
-  const [timeout, setTimeoutSec] = useState(p.timeoutSec?.toString() ?? '');
   const [retry, setRetry] = useState(p.retryMin?.toString() ?? '');
 
   async function run(fn: () => Promise<void>) {
@@ -156,12 +155,12 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
     try { await fn(); } catch (e) { setNote({ ok: false, text: (e as Error).message }); } finally { setBusy(false); }
   }
 
-  const savePatience = (field: 'timeoutSec' | 'retryMin', raw: string, lo: number, hi: number) =>
+  const saveRetry = (raw: string, lo: number, hi: number) =>
     run(async () => {
       const n = raw.trim() === '' ? null : Number(raw);
       if (n !== null && !(Number.isInteger(n) && n >= lo && n <= hi)) throw new Error(`Enter a whole number from ${lo} to ${hi}, or leave empty for the default`);
-      if (n === p[field]) return;
-      await updateProvider(p.id, { [field]: n });
+      if (n === p.retryMin) return;
+      await updateProvider(p.id, { retryMin: n });
       onChanged();
     });
 
@@ -237,14 +236,9 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-fg-secondary">
-        <label className="flex items-center gap-2" title="How long to wait for one answer. Raise it for a gateway that may have to wake a sleeping node first.">
-          Wait up to
-          <input inputMode="numeric" value={timeout} onChange={e => setTimeoutSec(e.target.value)} onBlur={() => void savePatience('timeoutSec', timeout, 10, 3600)} placeholder="180" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Seconds to wait for an answer from ${p.label}`} />
-          s
-        </label>
         <label className="flex items-center gap-2" title="Keep retrying overloaded / rate-limited answers for this long (peak hours). Empty = two quick retries.">
           Retry busy errors for
-          <input inputMode="numeric" value={retry} onChange={e => setRetry(e.target.value)} onBlur={() => void savePatience('retryMin', retry, 1, 1440)} placeholder="off" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Minutes to retry busy errors from ${p.label}`} />
+          <input inputMode="numeric" value={retry} onChange={e => setRetry(e.target.value)} onBlur={() => void saveRetry(retry, 1, 1440)} placeholder="off" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Minutes to retry busy errors from ${p.label}`} />
           min
         </label>
       </div>

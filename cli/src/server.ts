@@ -1459,7 +1459,6 @@ ${formatHumanResponse(response)}`;
       keyOptional,
       flavor: isFlavor(b['flavor']) ? b['flavor'] : preset?.flavor ?? 'generic',
       concurrency: preset?.concurrency ?? null,
-      timeoutSec: patience(b['timeoutSec'], 10, 3600) ?? preset?.timeoutSec ?? null,
       retryMin: patience(b['retryMin'], 1, 24 * 60) ?? preset?.retryMin ?? null,
     });
     if (apiKey) router.saveKey(slug, apiKey);
@@ -1477,10 +1476,8 @@ ${formatHumanResponse(response)}`;
     if (b['flavor'] !== undefined && !isFlavor(b['flavor'])) { res.status(400).json({ error: 'invalid flavor' }); return; }
     const c = b['concurrency'];
     if (c !== undefined && c !== null && !(typeof c === 'number' && Number.isInteger(c) && c >= 1 && c <= 32)) { res.status(400).json({ error: 'concurrency: integer 1–32, or null for the default' }); return; }
-    for (const [key, lo, hi, what] of [['timeoutSec', 10, 3600, 'timeoutSec: 10–3600 seconds, or null for the default'], ['retryMin', 1, 1440, 'retryMin: 1–1440 minutes, or null for the classic two retries']] as const) {
-      const v = b[key];
-      if (v !== undefined && v !== null && !(typeof v === 'number' && Number.isInteger(v) && v >= lo && v <= hi)) { res.status(400).json({ error: what }); return; }
-    }
+    const rm = b['retryMin'];
+    if (rm !== undefined && rm !== null && !(typeof rm === 'number' && Number.isInteger(rm) && rm >= 1 && rm <= 1440)) { res.status(400).json({ error: 'retryMin: 1–1440 minutes, or null for the classic two retries' }); return; }
     router.catalog.update(p.slug, {
       label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : undefined,
       baseUrl,
@@ -1488,7 +1485,6 @@ ${formatHumanResponse(response)}`;
       flavor: isFlavor(b['flavor']) ? b['flavor'] : undefined,
       enabled: typeof b['enabled'] === 'boolean' ? b['enabled'] : undefined,
       concurrency: c === undefined ? undefined : (c as number | null),
-      timeoutSec: b['timeoutSec'] as number | null | undefined,
       retryMin: b['retryMin'] as number | null | undefined,
     });
     res.json({ ok: true });
