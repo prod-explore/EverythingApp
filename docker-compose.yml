@@ -1,5 +1,5 @@
 # EverythingApp — Docker Compose
-# Phase 4: Sandbox Hardening, Playwright, GitHub Connector, n8n Pipelines
+# Sandbox Hardening, Playwright browser agent, Git Proxy, Orchestrator
 #
 # Run: docker compose up
 # Prerequisites:
@@ -152,7 +152,7 @@ services:
       EVERYTHINGAPP_POLICY_FILE: ${EVERYTHINGAPP_POLICY_FILE:-}
       PORT: 3000
       # Connectors: add playwright when services are deployed.
-      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,obsidian,playwright}
+      MCP_CONNECTORS: ${EVERYTHINGAPP_MCP_CONNECTORS:-sandbox,playwright}
       MCP_SANDBOX_URL: http://sandbox-mcp:3002/mcp/sse
       MCP_SANDBOX_API_KEY: ${MCP_API_KEY:-}
       MCP_PLAYWRIGHT_URL: http://playwright-mcp:3003/mcp/sse

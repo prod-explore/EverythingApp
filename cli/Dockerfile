@@ -30,7 +30,6 @@ RUN apk add --no-cache python3 make g++ \
   && apk del python3 make g++
 
 COPY --from=cli-builder /cli/dist/ ./dist/
-COPY --from=web-builder /web/dist/ /web/dist/
 COPY --from=web-builder /web/dist/ /app/web/dist/
 
 # node user is uid 1000 in node:alpine — no special group needed here,
