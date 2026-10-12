@@ -1,0 +1,18 @@
+# 0009 — Context management and built-in chat functions
+
+**Status:** accepted
+
+**Context.** A long chat or a few large tool outputs ended in a raw provider error. The model's context length was in the catalog but nothing used it. The features people expect from Claude Code / Antigravity — a visible task list, "plan first, then act", project instructions, a reasoning-effort control — did not exist, and the "custom instructions" setting was saved but never sent.
+
+**Decision.**
+- **Three layers of context management**, cheapest first.
+  1. *Trim:* before each request, if the estimate exceeds 60 % of the window, old tool outputs are replaced by a stub, oldest first, never the newest. This only changes the copy sent to the model — the stored history keeps the full outputs.
+  2. *Compact:* before a turn, if the last measured prompt size (the provider's `usage`) plus the new message exceeds 75 % of the window, the older part of the conversation is summarised by the **helper** model (else the chat model) and the summary is stored as a `summary` message row `{ text, upTo }`. For the model, everything with `id <= upTo` is replaced by the text (merged into the first kept user message); the last user turns stay verbatim. The UI still lists every original message and shows a notice where the summary starts. Long histories are folded into the summary chunk by chunk. Retiring or deleting "from here" keeps a summary that only covers earlier messages.
+  3. *React:* if a provider still answers "context too long" (recognised by wording and status; the limit it names is shown), the turn compacts once more, tighter, and repeats the request — only when no tool has run yet in that turn, since repeating could redo effects. Otherwise the person gets the plain-language error and a *Compact & retry* button.
+  Without a known window nothing is done proactively. Compaction failing never blocks the turn.
+- **Errors are classified** (`providers/errors.ts`): context too long, auth, budget exhausted, rate limit, busy, timeout, malformed tool call, not configured, stopped. The UI gets a sentence plus the kind; the provider's text stays as detail. Unparseable tool-call arguments never reach a tool: the model gets a clear error (and a hint when its reply was cut off by the output limit).
+- **Chat functions are virtual tools plus per-conversation state** (`conversation_state`): `todo_write` (full list each time, shown above the composer), **plan mode** (toggle or `/plan`: only read-only tools — those on the auto-approve list — run; `propose_plan` always asks the human, can never be covered by a grant, and approving it switches plan mode off), a reasoning-effort setting.
+- **Reasoning effort** is sent as `reasoning_effort` only to models marked as supporting it (reported by the provider or ticked in the model editor) and never to DeepSeek; an unknown parameter makes strict servers answer 400.
+- **Instructions:** the *custom instructions* setting is appended to the system prompt; `AGENTS.md` in the project workspace root (sandbox chats) is read at the start of each turn (best effort, 4 s, 20 k characters).
+
+**Consequences.** Long chats keep working and the person sees how full the window is. Token counts for the *decision* are estimates (characters / 3.5) corrected by the provider's measured size after every request. The summary is lossy by nature; the originals remain visible but are not seen by the model. Not built: automatic fallback to another model, background retry of failed turns, checkpoint/rewind of the whole chat state.

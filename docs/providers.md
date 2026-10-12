@@ -18,13 +18,16 @@ EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions
 | `kind` | gateway | `chat` \| `image` \| `tts` \| `stt` \| `embedding`; guessed from the id when absent. Pickers show `chat` only |
 | `tags` | gateway | Free-form labels. `free` marks a model as costing nothing (cost guard); `coder`, `reasoning`, `vision` guide the orchestrator |
 | `description` | gateway | One line shown to the orchestrator and as a tooltip |
-| `supports` | gateway | Array, e.g. `["tools","vision"]`. No `"tools"` → the model is never offered tools |
+| `supports` | gateway | Array, e.g. `["tools","vision","reasoning_effort"]`. No `"tools"` → the model is never offered tools; `"reasoning_effort"` shows the Effort control in chats |
 | `tool_schema` | gateway | `full` \| `flat` \| `none` — how tool schemas are sent (`flat` for small models that cannot emit nested JSON) |
-| `name`, `context_length`, `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, context, vision, tool support |
+| `context_length` (or `contextLength`) | gateway / OpenRouter | The model's window in tokens — what context management works from |
+| `name`, `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, vision, tool support, reasoning effort |
 
-**The app keeps no prices** — money is the gateway's business; the app counts tokens only. The one thing taken from a price is “costs nothing”: a model a provider lists at price 0 (OpenRouter `:free`) with no explicit tags gets the `free` tag. Metadata is layered **provider-reported < your override**; there is no built-in model list. Override anything per model in the editor (kind, tags, description).
+**The app keeps no prices** — money is the gateway's business; the app counts tokens only. The one thing taken from a price is “costs nothing”: a model a provider lists at price 0 (OpenRouter `:free`) with no explicit tags gets the `free` tag. Metadata is layered **provider-reported < your override**; there is no built-in model list. Override anything per model in the editor (kind, tags, description, **context window**, **reasoning effort**). A provider that does not report `context_length` (Gemini's compat endpoint doesn't) needs the window typed in once if you want chats compacted *before* they overflow; without it the app reacts only when the provider refuses.
 
 **Models without tool calls are not supported.** The app is an agent framework; a model that reports no `"tools"` support (or is set to `none`) is hidden from the pickers and refused for conversations. Thinking models keep their reasoning: `reasoning_content` / `reasoning` is streamed into a collapsible “Thought process” block and stored with the message, but is never sent back to a provider. Rules on refresh: models you edited or added by hand are never dropped; an empty list is refused; a provider with more than 40 models gets the new ones switched off so you enable what you use.
+
+A request that fails is turned into a sentence a person can act on (rejected key, rate limit that outlived the retry window, budget used up, timeout, conversation too long for the model) with the provider's own words kept as a tooltip.
 
 A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the message is shown as-is and the request is **not** retried, unlike a plain rate limit.
 
