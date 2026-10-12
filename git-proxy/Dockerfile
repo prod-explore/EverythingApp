@@ -1,3 +1,12 @@
+# Build stage
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json tsconfig*.json ./
+RUN npm ci
+COPY src/ ./src/
+RUN npm run build
+
+# Runtime stage
 FROM node:20-alpine
 
 # No docker.sock, no volumes: proxy tokens live in memory, GitHub credentials are fetched from the
@@ -7,7 +16,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY dist/ ./dist/
+COPY --from=builder /app/dist ./dist
 
 # node user is uid 1000 in node:alpine
 USER node

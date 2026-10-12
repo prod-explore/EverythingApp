@@ -1,3 +1,10 @@
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json tsconfig*.json ./
+RUN npm ci
+COPY src/ ./src/
+RUN npm run build
+
 FROM mcr.microsoft.com/playwright:v1.48.0-noble
 
 # Install Node.js 20
@@ -13,7 +20,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY dist/ ./dist/
+COPY --from=builder /app/dist ./dist
 
 # Playwright browsers are bundled in the base image.
 # Only Chromium is needed; others are excluded to save ~500MB.

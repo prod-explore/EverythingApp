@@ -1,3 +1,12 @@
+# Build stage
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json tsconfig*.json ./
+RUN npm ci
+COPY src/ ./src/
+RUN npm run build
+
+# Runtime stage
 FROM node:20-alpine
 
 # Avoid root-owned files in volumes (lesson learned from obsidian-mcp incident).
@@ -17,7 +26,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY dist/ ./dist/
+COPY --from=builder /app/dist ./dist
 
 # node user is uid 1000 in node:alpine
 USER node

@@ -1,10 +1,24 @@
+# Stage 1: Build web frontend
+FROM node:20-alpine AS web-builder
+WORKDIR /web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
+
+# Stage 2: Build cli backend
+FROM node:20-alpine AS cli-builder
+WORKDIR /cli
+COPY cli/package*.json cli/tsconfig*.json ./
+RUN apk add --no-cache python3 make g++ \
+  && npm ci
+COPY cli/src/ ./src/
+RUN npm run build
+
+# Stage 3: Runtime image
 FROM node:20-alpine
 
 WORKDIR /app
-
-# Build context is the repo root (see docker-compose.yml) so this can reach
-# both cli/ and the sibling web/dist/ — Docker can't COPY from outside its
-# build context, and web/dist lives one level up from cli/.
 
 COPY cli/package*.json ./
 # better-sqlite3 is a native module. Prebuilt binaries exist for linux-arm64
@@ -15,8 +29,9 @@ RUN apk add --no-cache python3 make g++ \
   && npm ci --omit=dev \
   && apk del python3 make g++
 
-COPY cli/dist/ ./dist/
-COPY web/dist/ ./web/dist/
+COPY --from=cli-builder /cli/dist/ ./dist/
+COPY --from=web-builder /web/dist/ /web/dist/
+COPY --from=web-builder /web/dist/ /app/web/dist/
 
 # node user is uid 1000 in node:alpine — no special group needed here,
 # unlike sandbox-supervisor (no docker.sock access from this container).
