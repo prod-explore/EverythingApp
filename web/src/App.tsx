@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import { checkSession, createProject, getConversation, getTurnStatus, listProjects, UNAUTHORIZED_EVENT, updateConversation } from './api';
 import { ApprovalBanner } from './components/approval/ApprovalBanner';
 import { ChatView } from './components/chat/ChatView';
@@ -19,14 +19,13 @@ import { useConversations } from './hooks/useConversations';
 import { GazetaContext, useGazetaStore } from './hooks/useGazeta';
 const AgentsPanel = lazy(() => import('./components/agents/AgentsPanel').then(m => ({ default: m.AgentsPanel })));
 const ExplorerPanel = lazy(() => import('./components/workspace/ExplorerPanel').then(m => ({ default: m.ExplorerPanel })));
-const SourceControlPanel = lazy(() => import('./components/scm/SourceControlPanel').then(m => ({ default: m.SourceControlPanel })));
-const GitHubPanel = lazy(() => import('./components/github/GitHubPanel').then(m => ({ default: m.GitHubPanel })));
+const GitPanel = lazy(() => import('./components/git/GitPanel').then(m => ({ default: m.GitPanel })));
 import { useApprovals } from './hooks/useApprovals';
 import { useModels } from './hooks/useModels';
 import { useSSE } from './hooks/useSSE';
 import type { BudgetWarning, Conversation, ProjectListItem, ProviderRetry, SpendWarning } from './types';
 
-export type DockTool = 'agents' | 'files' | 'scm' | 'github';
+export type DockTool = 'agents' | 'files' | 'git';
 
 function formatWait(ms: number): string {
   const s = Math.max(1, Math.round(ms / 1000));
@@ -81,6 +80,18 @@ function MainApp() {
       return false;
     }
   });
+  // Desktop right-dock width: drag the left edge (or use the arrow keys on it). Remembered across reloads.
+  const [dockWidth, setDockWidth] = useState(() => {
+    try {
+      const v = Number(localStorage.getItem('dockWidth'));
+      return Number.isFinite(v) && v >= 320 ? v : 440;
+    } catch {
+      return 440;
+    }
+  });
+  const clampDock = useCallback((w: number) => Math.round(Math.min(Math.max(320, w), Math.min(960, window.innerWidth * 0.7))), []);
+  const persistDock = useCallback((w: number) => { try { localStorage.setItem('dockWidth', String(w)); } catch { /* not persisted */ } }, []);
+  const dockDrag = useRef<{ x: number; w: number } | null>(null);
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false);
   const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
   const [artifactRefresh, setArtifactRefresh] = useState(0);
@@ -143,9 +154,24 @@ function MainApp() {
     setEditProjectId(null);
     setSelectedProjectId(prev => (prev === id ? null : prev));
     const list = await refreshConversations();
-    if (selectedId && !list.some(c => c.id === selectedId)) setSelectedId(list[0]?.id ?? null);
+    if (list.length === 0) {
+      await createConversation();
+    } else if (selectedId && !list.some(c => c.id === selectedId)) {
+      setSelectedId(list[0]?.id ?? null);
+    }
     void refreshProjects();
   }
+
+  // Guard against empty state: if all conversations were deleted or selectedId is unset,
+  // automatically spawn a new one so the user never gets stuck on an infinite "Loading…" screen.
+  useEffect(() => {
+    if (loading) return;
+    if (conversations.length === 0) {
+      void createConversation();
+    } else if (!selectedId || !conversations.some(c => c.id === selectedId)) {
+      setSelectedId(conversations[0].id);
+    }
+  }, [loading, conversations, selectedId, createConversation, setSelectedId]);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
   const projectOfChat = selected?.projectId ?? null;
@@ -374,12 +400,35 @@ function MainApp() {
             aria-hidden="true"
             onClick={() => { setBrowserPanelOpen(false); setArtifactsPanelOpen(false); setDockTool(null); }}
           />
-          <aside className="fixed inset-x-0 bottom-0 z-40 flex h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-bg shadow-2xl md:static md:inset-auto md:z-auto md:h-auto md:w-[420px] md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none lg:w-[480px]">
+          <aside
+            style={{ '--dock-w': `${clampDock(dockWidth)}px` } as CSSProperties}
+            className="fixed inset-x-0 bottom-0 z-40 flex h-[85dvh] flex-col rounded-t-2xl border-t border-border bg-bg shadow-2xl md:relative md:inset-auto md:z-auto md:h-auto md:w-[var(--dock-w)] md:shrink-0 md:rounded-none md:border-l md:border-t-0 md:shadow-none"
+          >
+            <div
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize side panel"
+              aria-valuemin={320}
+              aria-valuenow={clampDock(dockWidth)}
+              tabIndex={0}
+              onPointerDown={e => { dockDrag.current = { x: e.clientX, w: clampDock(dockWidth) }; e.currentTarget.setPointerCapture(e.pointerId); }}
+              onPointerMove={e => { if (dockDrag.current) setDockWidth(clampDock(dockDrag.current.w - (e.clientX - dockDrag.current.x))); }}
+              onPointerUp={() => { if (dockDrag.current) { dockDrag.current = null; persistDock(clampDock(dockWidth)); } }}
+              onPointerCancel={() => { dockDrag.current = null; }}
+              onKeyDown={e => {
+                if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                e.preventDefault();
+                const next = clampDock(dockWidth + (e.key === 'ArrowLeft' ? 24 : -24));
+                setDockWidth(next);
+                persistDock(next);
+              }}
+              className="absolute inset-y-0 left-0 z-10 hidden w-1.5 -translate-x-1/2 cursor-col-resize touch-none hover:bg-border-hover focus-visible:bg-border-hover md:block"
+            />
             <div className="mx-auto mt-2 h-1 w-10 shrink-0 rounded-full bg-border md:hidden" aria-hidden="true" />
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               <Suspense fallback={<p className="px-3 py-4 text-center text-xs text-fg-tertiary">Loading…</p>}>
               {browserPanelOpen && (
-                <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} />
+                <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} fill={!dockTool && !artifactsPanelOpen} />
               )}
               {dockTool === 'agents' && selectedId && (
                 <AgentsPanel conversationId={selectedId} refreshKey={agentsRefresh} budgetWarning={budgetWarning} onClose={() => setDockTool(null)} />
@@ -387,15 +436,10 @@ function MainApp() {
               {dockTool === 'files' && selectedId && (
                 <ExplorerPanel key={workspaceOwner ?? ''} owner={workspaceOwner ?? selectedId} onClose={() => setDockTool(null)} />
               )}
-              {dockTool === 'scm' && (projectOfChat ? (
-                <SourceControlPanel key={projectOfChat} projectId={projectOfChat} onClose={() => setDockTool(null)} />
+              {dockTool === 'git' && (projectOfChat ? (
+                <GitPanel key={projectOfChat} projectId={projectOfChat} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
               ) : (
-                <NeedsProject title="Source Control" onClose={() => setDockTool(null)} />
-              ))}
-              {dockTool === 'github' && (projectOfChat ? (
-                <GitHubPanel key={projectOfChat} projectId={projectOfChat} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
-              ) : (
-                <NeedsProject title="GitHub" onClose={() => setDockTool(null)} />
+                <NeedsProject title="Git" onClose={() => setDockTool(null)} />
               ))}
               {artifactsPanelOpen && (
                 <ArtifactsPanel

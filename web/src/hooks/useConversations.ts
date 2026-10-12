@@ -67,8 +67,12 @@ export function useConversations() {
     async (id: string) => {
       await apiDeleteConversation(id);
       const list = await refresh();
-      if (selectedId === id) {
-        setSelectedId(list[0]?.id ?? null);
+      if (list.length === 0) {
+        const { id: newId } = await apiCreateConversation({ title: 'New conversation' });
+        await refresh();
+        setSelectedId(newId);
+      } else if (selectedId === id || !list.some(c => c.id === selectedId)) {
+        setSelectedId(list[0].id);
       }
     },
     [refresh, selectedId],

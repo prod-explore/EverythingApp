@@ -3,6 +3,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { BrowserSessionPool } from './sessionPool.js';
 import type { PlaywrightConfig } from './config.js';
+import { checkTargetUrl, effectivePolicy } from './tools/policyArgs.js';
 
 /**
  * §6b Live-view + human takeover.
@@ -43,6 +44,7 @@ const FRAME_INTERVAL_MS = 200; // 5 fps — enough for "can I see what's happeni
 const JPEG_QUALITY = 60; // balance between latency and clarity on mobile
 
 type ClientMsg =
+  | { type: 'open'; url?: string }
   | { type: 'takeover'; active: boolean }
   | { type: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: 'left' | 'right' | 'middle' }
   | { type: 'keyboard'; action: 'down' | 'up' | 'press'; key: string }
@@ -110,7 +112,7 @@ export function attachLiveView(
       } catch {
         return; // ignore malformed messages
       }
-      handleClientMessage(client, msg, pool).catch(err => {
+      handleClientMessage(client, msg, pool, config).catch(err => {
         console.error('[liveview] error handling client message:', err);
       });
     });
@@ -173,11 +175,71 @@ function stopFraming(client: SessionClient): void {
   }
 }
 
+/** Opens in-flight per conversation, so a double click can't launch two Chromium processes. */
+const opening = new Map<string, Promise<void>>();
+
+/** "example.com" → "https://example.com/"; only http(s) is accepted. */
+export function normalizeUrl(raw: string): string | null {
+  const withScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const u = new URL(withScheme);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Human-initiated "Open browser": claims this conversation's session without the agent having to
+ * call browser_open first. Uses the same domain/SSRF checks as the tool (env policy; an existing
+ * session keeps its own override). An empty URL just opens a blank tab the human can take over.
+ */
+async function openSession(client: SessionClient, rawUrl: unknown, pool: BrowserSessionPool, config: PlaywrightConfig): Promise<void> {
+  let target: string | null = null;
+  if (typeof rawUrl === 'string' && rawUrl.trim()) {
+    target = normalizeUrl(rawUrl.trim());
+    if (!target) {
+      safeSend(client.ws, JSON.stringify({ type: 'error', message: 'Enter a valid http(s) address.' }));
+      return;
+    }
+  }
+  try {
+    const existing = pool.get(client.convId);
+    const policy = effectivePolicy(config, existing?.state.override);
+    if (target) {
+      const blocked = await checkTargetUrl(config, policy, target);
+      if (blocked) {
+        safeSend(client.ws, JSON.stringify({ type: 'error', message: blocked.replace(/^Error:\s*/, '') }));
+        return;
+      }
+    }
+    const { session } = await pool.claim(client.convId, { policy });
+    if (target) {
+      session.page.setDefaultTimeout(config.navTimeoutMs);
+      await session.page.goto(target, { waitUntil: 'domcontentloaded', timeout: config.navTimeoutMs });
+      pool.setCurrentUrl(client.convId, session.page.url());
+    }
+  } catch (err) {
+    safeSend(client.ws, JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }));
+  }
+}
+
 async function handleClientMessage(
   client: SessionClient,
   msg: ClientMsg,
   pool: BrowserSessionPool,
+  config: PlaywrightConfig,
 ): Promise<void> {
+  if (msg.type === 'open') {
+    let p = opening.get(client.convId);
+    if (!p) {
+      p = openSession(client, msg.url, pool, config).finally(() => opening.delete(client.convId));
+      opening.set(client.convId, p);
+    }
+    await p;
+    return;
+  }
+
   if (msg.type === 'takeover') {
     client.takeover = msg.active;
     return;

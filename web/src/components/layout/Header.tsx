@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Download, FolderOpen, FolderTree, GitBranch, GitMerge as Github, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
+import { Bot, Download, FolderOpen, FolderTree, GitBranch, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
 import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
@@ -8,8 +8,7 @@ import type { ModelOption } from '../../types';
 const TOOLS: { id: DockTool; label: string; icon: typeof Bot }[] = [
   { id: 'agents', label: 'Agents', icon: Bot },
   { id: 'files', label: 'Files', icon: FolderTree },
-  { id: 'scm', label: 'Source Control', icon: GitBranch },
-  { id: 'github', label: 'GitHub', icon: Github },
+  { id: 'git', label: 'Git', icon: GitBranch },
 ];
 
 function logout() {

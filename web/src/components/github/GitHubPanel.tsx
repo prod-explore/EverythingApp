@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, CircleCheck, CircleDot, CircleX, Clock, ExternalLink, GitPullRequest, GitMerge as Github, Play } from 'lucide-react';
-import { githubApi, githubConnect, githubText, scmRepos } from '../../api-workspace';
+import { ArrowLeft, CircleCheck, CircleDot, CircleX, Clock, ExternalLink, GitPullRequest, Play } from 'lucide-react';
+import { githubApi, githubText } from '../../api-workspace';
 import { MarkdownBody as MarkdownText } from '../chat/MarkdownText';
-import { DockPanel, PanelMessage } from '../shared/DockPanel';
+import { PanelMessage } from '../shared/DockPanel';
 
 /* Minimal shapes of the GitHub REST responses we render. */
 interface GhUser { login: string }
@@ -27,76 +27,25 @@ function StateIcon({ status, conclusion }: { status: string; conclusion: string 
   return <CircleX size={13} className="shrink-0 text-danger" />;
 }
 
-/** GitHub panel (Plan v3 §7.2): PRs, issues, checks and Actions for the repos in this sandbox and on the connected account, through the server. */
-export function GitHubPanel({ projectId, onClose, onConnect }: { projectId: string; onClose: () => void; onConnect: () => void }) {
-  const [connected, setConnected] = useState<boolean | null>(null);
-  useEffect(() => {
-    githubConnect.status().then(s => setConnected(s.connected)).catch(() => setConnected(true)); // unknown → let the panel show its own errors
-  }, []);
-  // Repositories: first the ones checked out in this project's sandbox, then the account's most recently pushed.
-  const [repos, setRepos] = useState<Array<{ id: string; owner: string; repo: string }> | null>(null);
-  const [repo, setRepo] = useState<{ id: string; owner: string; repo: string } | null>(null);
-  const [tab, setTab] = useState<'pulls' | 'issues' | 'actions'>('pulls');
+export type GitHubTab = 'pulls' | 'issues' | 'actions';
+
+/**
+ * GitHub body (Plan v3 §7.2): PRs, issues, checks and Actions for one repository, through the server.
+ * Rendered as the PRs / Issues / Actions tabs of the unified Git panel (git/GitPanel.tsx), which owns the
+ * repository selector, the tab bar and the "not connected" state. Remount (key) on repo or tab change.
+ */
+export function GitHubBody({ projectId, repo, tab }: { projectId: string; repo: { owner: string; repo: string }; tab: GitHubTab }) {
   const [view, setView] = useState<View>({ kind: 'list' });
-
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const seen = new Set<string>();
-      const list: Array<{ id: string; owner: string; repo: string }> = [];
-      const add = (owner: string, repo: string) => {
-        const id = `${owner}/${repo}`.toLowerCase();
-        if (!seen.has(id)) { seen.add(id); list.push({ id, owner, repo }); }
-      };
-      try { for (const r of (await scmRepos.list(projectId)).repos) if (r.owner && r.repo) add(r.owner, r.repo); } catch { /* sandbox may be asleep */ }
-      try { for (const r of await githubApi<Array<{ name: string; owner: { login: string } }>>(projectId, '/user/repos?sort=pushed&per_page=50')) add(r.owner.login, r.name); } catch { /* not connected / offline */ }
-      if (cancelled) return;
-      setRepos(list);
-      setRepo(list[0] ?? null);
-    })();
-    return () => { cancelled = true; };
-  }, [projectId]);
-
-  const base = repo ? `/repos/${repo.owner}/${repo.repo}` : '';
-
+  const base = `/repos/${repo.owner}/${repo.repo}`;
   return (
-    <DockPanel title="GitHub" icon={<Github size={16} />} onClose={onClose}>
-      {connected === false ? (
-        <div className="space-y-3 p-4 text-center">
-          <PanelMessage>GitHub is not connected yet.</PanelMessage>
-          <button onClick={onConnect} className="rounded-button bg-fg px-4 py-2 text-sm font-medium text-bg hover:opacity-90">Connect GitHub</button>
-        </div>
-      ) : (<>
-      {repos && repos.length === 0 && <PanelMessage>No repositories found. Clone one in Source Control, or log in to GitHub in Settings.</PanelMessage>}
-      {repo && (
-        <>
-          <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
-            <select
-              aria-label="Repository"
-              value={repo.id}
-              onChange={e => { setRepo(repos!.find(r => r.id === e.target.value) ?? null); setView({ kind: 'list' }); }}
-              className="min-w-0 flex-1 rounded border border-border bg-bg px-1 py-0.5 text-fg"
-            >
-              {repos!.map(r => <option key={r.id} value={r.id}>{r.owner}/{r.repo}</option>)}
-            </select>
-            <div className="flex rounded-button border border-border" role="tablist">
-              {(['pulls', 'issues', 'actions'] as const).map(t => (
-                <button key={t} role="tab" aria-selected={tab === t} onClick={() => { setTab(t); setView({ kind: 'list' }); }} className={`px-2 py-0.5 ${tab === t ? 'bg-bg-secondary text-fg' : 'text-fg-tertiary'}`}>
-                  {t === 'pulls' ? 'PRs' : t === 'issues' ? 'Issues' : 'Actions'}
-                </button>
-              ))}
-            </div>
-          </div>
-          {view.kind === 'list' && tab === 'pulls' && <IssueList projectId={projectId} path={`${base}/pulls?state=open&per_page=50`} onOpen={n => setView({ kind: 'pull', number: n })} />}
-          {view.kind === 'list' && tab === 'issues' && <IssueList projectId={projectId} path={`${base}/issues?state=open&per_page=50`} filterPulls onOpen={n => setView({ kind: 'issue', number: n })} />}
-          {view.kind === 'list' && tab === 'actions' && <RunList projectId={projectId} base={base} onOpen={id => setView({ kind: 'run', id })} />}
-          {view.kind === 'pull' && <PullDetail projectId={projectId} base={base} number={view.number} onBack={() => setView({ kind: 'list' })} />}
-          {view.kind === 'issue' && <IssueDetail projectId={projectId} base={base} number={view.number} onBack={() => setView({ kind: 'list' })} />}
-          {view.kind === 'run' && <RunDetail projectId={projectId} base={base} id={view.id} onBack={() => setView({ kind: 'list' })} />}
-        </>
-      )}
-      </>)}
-    </DockPanel>
+    <>
+      {view.kind === 'list' && tab === 'pulls' && <IssueList projectId={projectId} path={`${base}/pulls?state=open&per_page=50`} onOpen={n => setView({ kind: 'pull', number: n })} />}
+      {view.kind === 'list' && tab === 'issues' && <IssueList projectId={projectId} path={`${base}/issues?state=open&per_page=50`} filterPulls onOpen={n => setView({ kind: 'issue', number: n })} />}
+      {view.kind === 'list' && tab === 'actions' && <RunList projectId={projectId} base={base} onOpen={id => setView({ kind: 'run', id })} />}
+      {view.kind === 'pull' && <PullDetail projectId={projectId} base={base} number={view.number} onBack={() => setView({ kind: 'list' })} />}
+      {view.kind === 'issue' && <IssueDetail projectId={projectId} base={base} number={view.number} onBack={() => setView({ kind: 'list' })} />}
+      {view.kind === 'run' && <RunDetail projectId={projectId} base={base} id={view.id} onBack={() => setView({ kind: 'list' })} />}
+    </>
   );
 }
 

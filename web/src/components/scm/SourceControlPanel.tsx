@@ -1,18 +1,31 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ArrowDown, ArrowLeft, ArrowUp, GitBranch, GitCommitHorizontal, Minus, Plus, RefreshCw, Undo2 } from 'lucide-react';
-import { fetchWorkspaceFile, scm, scmRepos } from '../../api-workspace';
-import type { ScmBranch, ScmCommit, ScmFile, ScmRepo, ScmStatus } from '../../types-workspace';
-import { DockPanel, PanelMessage } from '../shared/DockPanel';
+import { fetchWorkspaceFile, scm } from '../../api-workspace';
+import type { ScmBranch, ScmCommit, ScmFile, ScmStatus } from '../../types-workspace';
+import { PanelMessage } from '../shared/DockPanel';
 
 /**
- * Source Control (Plan v3 §7.3), like VS Code's: git runs inside the project sandbox; clicks here are
+ * Source Control body (Plan v3 §7.3), like VS Code's: git runs inside the project sandbox; clicks here are
  * the human's own actions (no approval), network operations go through git-proxy.
+ * Rendered as the Changes / History / Branches tabs of the unified Git panel (git/GitPanel.tsx), which owns
+ * the repository selector and the tab bar.
  */
-export function SourceControlPanel({ projectId, onClose }: { projectId: string; onClose: () => void }) {
-  const [repos, setRepos] = useState<ScmRepo[]>([]);
-  const [cloneUrl, setCloneUrl] = useState('');
-  const [dir, setDir] = useState<string>('');
-  const [tab, setTab] = useState<'changes' | 'history' | 'branches'>('changes');
+export function ScmBody({
+  projectId,
+  dir,
+  tab,
+  refreshKey,
+  suggestedCloneUrl,
+  onCloned,
+}: {
+  projectId: string;
+  dir: string;
+  tab: 'changes' | 'history' | 'branches';
+  refreshKey: number;
+  suggestedCloneUrl?: string;
+  onCloned: (dirName: string) => void | Promise<void>;
+}) {
+  const [cloneUrl, setCloneUrl] = useState(suggestedCloneUrl ?? '');
   const [status, setStatus] = useState<ScmStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [output, setOutput] = useState<string | null>(null);
@@ -20,14 +33,8 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
   const [diffFile, setDiffFile] = useState<{ file: ScmFile; staged: boolean } | null>(null);
   const [conflict, setConflict] = useState<string | null>(null);
 
-  const loadRepos = useCallback(async (preferred?: string) => {
-    try {
-      const r = await scmRepos.list(projectId);
-      setRepos(r.repos);
-      setDir(d => preferred ?? (d || r.repos[0]?.dir || ''));
-    } catch { /* the panel shows its own errors once a repo is selected */ }
-  }, [projectId]);
-  useEffect(() => { void loadRepos(); }, [loadRepos]);
+  useEffect(() => { setCloneUrl(suggestedCloneUrl ?? ''); }, [suggestedCloneUrl]);
+  useEffect(() => { setDiffFile(null); setConflict(null); setOutput(null); }, [dir]);
 
   const refresh = useCallback(async () => {
     try {
@@ -39,7 +46,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
     }
   }, [projectId, dir]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useEffect(() => { void refresh(); }, [refresh, refreshKey]);
 
   async function act(label: string, fn: () => Promise<unknown>) {
     setBusy(label);
@@ -62,27 +69,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
   const notRepo = error?.includes('not a git repository');
 
   return (
-    <DockPanel
-      title="Source Control"
-      icon={<GitBranch size={16} />}
-      onClose={onClose}
-      actions={
-        <button onClick={() => void refresh()} className="rounded p-1 text-fg-tertiary hover:text-fg" aria-label="Refresh"><RefreshCw size={14} /></button>
-      }
-    >
-      <div className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-xs">
-        <label className="sr-only" htmlFor="scm-dir">Repository</label>
-        <select id="scm-dir" value={dir} onChange={e => { setDir(e.target.value); setDiffFile(null); }} className="min-w-0 flex-1 rounded border border-border bg-bg px-1 py-0.5 text-fg">
-          {repos.filter(r => r.dir !== '').map(r => <option key={r.dir} value={r.dir}>/workspace/{r.dir}{r.owner ? ` (${r.owner}/${r.repo})` : ''}</option>)}
-          <option value="">/workspace</option>
-        </select>
-        <div className="flex rounded-button border border-border" role="tablist">
-          {(['changes', 'history', 'branches'] as const).map(t => (
-            <button key={t} role="tab" aria-selected={tab === t} onClick={() => setTab(t)} className={`px-2 py-0.5 capitalize ${tab === t ? 'bg-bg-secondary text-fg' : 'text-fg-tertiary'}`}>{t}</button>
-          ))}
-        </div>
-      </div>
-
+    <>
       {error && !status && !notRepo ? (
         <div className="space-y-2 p-3 text-center">
           <PanelMessage tone="error">{error}</PanelMessage>
@@ -101,7 +88,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
                 const r = await scm.sync(projectId, '', 'clone', url);
                 const name = url.replace(/\/+$/, '').replace(/\.git$/, '').split(/[/:]/).pop() ?? '';
                 setCloneUrl('');
-                await loadRepos(name);
+                await onCloned(name);
                 return r;
               });
             }}
@@ -180,7 +167,7 @@ export function SourceControlPanel({ projectId, onClose }: { projectId: string; 
           {tab === 'branches' && <BranchesView projectId={projectId} dir={dir} onChanged={refresh} onOutput={setOutput} />}
         </>
       )}
-    </DockPanel>
+    </>
   );
 }
 
