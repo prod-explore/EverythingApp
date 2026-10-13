@@ -34,6 +34,8 @@ export interface ProviderStatus {
   keyOptional: boolean;
   concurrency: number | null;
   retryMin: number | null;
+  /** The user marked everything behind this provider as running on their own hardware (see ProviderRecord.local). */
+  local: boolean;
   configured: boolean;
   source: KeySource;
   /** Last four characters of the stored key — enough to tell keys apart, useless to an attacker. */
@@ -144,6 +146,7 @@ export class ProviderRouter {
         keyOptional: p.keyOptional,
         concurrency: p.concurrency,
         retryMin: p.retryMin,
+        local: p.local,
         configured: key !== null,
         source: stored.present && key ? 'vault' : null,
         last4: stored.present && key ? stored.last4 : null,

@@ -3,6 +3,8 @@ import type {
   ApprovalScope,
   ConnectorInfo,
   ConnectorTestResult,
+  WebSearchSettings,
+  WebSearchTestResult,
   Conversation,
   ConversationStateInfo,
   ConversationSummary,
@@ -14,6 +16,7 @@ import type {
   CatalogModelRow,
   CompatFlavor,
   ModelKind,
+  ModelLocality,
   ModelOption,
   PendingApproval,
   ProjectListItem,
@@ -107,7 +110,9 @@ export function createConversation(opts?: {
   systemPrompt?: string;
   model?: string;
   sandboxEnabled?: boolean;
-}): Promise<{ id: string }> {
+  /** A ghost chat: local models only, no internet. Decided here and never changeable. */
+  ghost?: boolean;
+}): Promise<{ id: string; ghost?: boolean }> {
   return request('/api/conversations', { method: 'POST', body: JSON.stringify(opts ?? {}) });
 }
 
@@ -252,6 +257,18 @@ export const connectorsApi = {
     request(`/api/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 };
 
+// ─── Web (Settings → Web) ─────────────────────────────────────────────────
+
+export const webSearchApi = {
+  get: (): Promise<WebSearchSettings> => request('/api/web-search'),
+  /** braveKey: a string saves it, null removes it, undefined keeps it. */
+  save: (input: { backend: WebSearchSettings['backend']; searxngUrl?: string; braveKey?: string | null }): Promise<WebSearchSettings> =>
+    request('/api/web-search', { method: 'PUT', body: JSON.stringify(input) }),
+  /** Tries a search with the unsaved form values. */
+  test: (input: { backend: WebSearchSettings['backend']; searxngUrl?: string; braveKey?: string }): Promise<WebSearchTestResult> =>
+    request('/api/web-search/test', { method: 'POST', body: JSON.stringify(input) }),
+};
+
 // ─── Skills ───────────────────────────────────────────────────────────────
 
 export function listSkills(): Promise<{ skills: Skill[] }> {
@@ -370,6 +387,8 @@ export interface NewProvider {
   flavor?: CompatFlavor;
   apiKey?: string;
   keyOptional?: boolean;
+  /** Everything behind this URL runs on the user's own hardware. */
+  local?: boolean;
 }
 
 export type RefreshResult = { ok: true; count: number; added: number; removed: number } | { ok: false; error: string };
@@ -381,7 +400,7 @@ export function addProvider(p: NewProvider): Promise<{ ok: true; id: string; ref
 
 export function updateProvider(
   id: ProviderId,
-  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null }>,
+  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>,
 ): Promise<{ ok: true }> {
   return request(`/api/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
@@ -424,6 +443,7 @@ export type ModelPatch = Partial<{
   supportsImages: boolean | null;
   contextLength: number | null;
   supportsEffort: boolean | null;
+  locality: ModelLocality | null;
 }>;
 
 /** A field set to null goes back to what the provider reports. */
@@ -455,8 +475,8 @@ export function listProjects(): Promise<{ projects: ProjectListItem[] }> {
   return request('/api/projects');
 }
 
-export function createProject(name: string, description?: string): Promise<ProjectRow> {
-  return request('/api/projects', { method: 'POST', body: JSON.stringify({ name, description }) });
+export function createProject(name: string, description?: string, ghost?: boolean): Promise<ProjectRow> {
+  return request('/api/projects', { method: 'POST', body: JSON.stringify({ name, description, ghost }) });
 }
 
 export function getProject(id: string): Promise<ProjectRow> {

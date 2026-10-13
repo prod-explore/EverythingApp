@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { assertStrongSecret } from './secret-check.js';
 
 export interface Config {
   supervisorUrl: string;
@@ -6,6 +7,8 @@ export interface Config {
   sandboxTimeoutMs: number;
   autoApproveTools: string[];
   apiKey: string;
+  /** Bearer token the sandbox-supervisor requires (SUPERVISOR_TOKEN). */
+  supervisorToken?: string;
 }
 
 function required(name: string): string {
@@ -15,6 +18,10 @@ function required(name: string): string {
 }
 
 export function loadConfig(): Config {
+  const apiKey = required('MCP_API_KEY');
+  assertStrongSecret('MCP_API_KEY', apiKey);
+  const supervisorToken = process.env['SUPERVISOR_TOKEN'] || undefined;
+  assertStrongSecret('SUPERVISOR_TOKEN', supervisorToken);
   return {
     supervisorUrl: process.env['SUPERVISOR_URL'] ?? 'http://localhost:3001',
     mcpPort: parseInt(process.env['MCP_PORT'] ?? '3002', 10),
@@ -23,6 +30,7 @@ export function loadConfig(): Config {
       .split(',')
       .map(s => s.trim())
       .filter(Boolean),
-    apiKey: required('MCP_API_KEY'),
+    apiKey,
+    supervisorToken,
   };
 }

@@ -2,6 +2,9 @@ import type * as Llm from './llm-types.js';
 import type { ToolRegistry } from './tool-registry.js';
 import { truncateToolOutput } from './output-truncator.js';
 import { estimateTokens, trimForContext, TRIM_AT } from './context.js';
+import { looksDangerous } from './web-approval.js';
+import { collectContextUrls, urlIsInContext } from './web/provenance.js';
+import { assertPublicUrl, hostOfUrl, UrlBlockedError } from './web/url-safety.js';
 
 /**
  * The one method the tool loop needs from any provider. The OpenAI-compatible adapter
@@ -111,6 +114,19 @@ export interface ConversationDeps {
   drainInbox?: () => string[];
   /** Project browser policy, injected as `_policy` into every browser tool call (never taken from the model). */
   browserPolicy?: { domainAllow?: string[]; domainDeny?: string[]; js?: 'disabled' | 'review' | 'allowed' };
+  /**
+   * Per-domain web access (web_fetch and the browser). When set, `browser_open` and `web_fetch` ask the user once per
+   * domain (grant label `web:<host>`), and the browser only goes to domains in `grantedHosts()` (persistent grants,
+   * evaluated on every call so a revoked grant stops working at once) or the one approved in this very call.
+   * Without it the browser keeps the project policy alone (tests, headless callers).
+   */
+  webAccess?: { grantedHosts(): string[] };
+  /**
+   * web_fetch opens, without asking, only URLs that are already in the conversation: typed by the user (this flag
+   * on) or returned by web_search / web_fetch. Subagents get false: their "user message" is a goal written by a model.
+   * Default true.
+   */
+  userUrlsTrusted?: boolean;
   /** Called at the start of every step (model round-trip) — run heartbeat. */
   onStep?: (step: number) => void;
   /** The model's context window in tokens, when known: old tool outputs are dropped from the request as it fills up. */
@@ -153,9 +169,14 @@ const STATEFUL_TOOL_NAMES = new Set([
 ]);
 
 /** Browser tools: get the orchestrator's `_policy`; model-supplied hidden args are stripped. */
-const BROWSER_TOOL_NAMES = new Set(['browser_open', 'browser_observe', 'browser_act', 'browser_close', 'browse_url']);
+const BROWSER_TOOL_NAMES = new Set(['browser_open', 'browser_observe', 'browser_act', 'browser_close']);
 /** Read-only tools that stay unprompted even after a page looked like a prompt injection. */
-const READ_ONLY_AFTER_INJECTION = new Set(['browser_observe', 'browser_close', 'read_log', 'terminal_list']);
+const READ_ONLY_AFTER_INJECTION = new Set(['browser_observe', 'browser_close', 'read_log', 'terminal_list', 'read_file']);
+/** Tools that are auto-approved in normal mode but still have an effect, so plan mode refuses them. */
+const PLAN_UNSAFE_TOOLS = new Set(['browser_act']);
+/** Results of these virtual tools carry the same `[browser-meta]` first line as browser observations. */
+const WEB_VIRTUAL_TOOLS = new Set(['web_fetch', 'web_search']);
+const IRREVERSIBLE_WARNING = 'This browser action looks irreversible (payment, deletion, subscription…). Check that it is what you asked for.';
 const BROWSER_META_PREFIX = '[browser-meta] ';
 
 /** playwright-mcp puts `[browser-meta] {json}` on the first line of every observation (Observation v2). */
@@ -336,15 +357,57 @@ export async function runTurn(
       }
 
       // Plan mode: look, think, propose — nothing with an effect until the user approved a plan.
-      if (deps.planMode?.() && !(virtual ? (virtual.planSafe ?? virtual.requiresApproval !== true) : !deps.tools.requiresApproval(use.name))) {
+      if (deps.planMode?.() && !(virtual ? (virtual.planSafe ?? virtual.requiresApproval !== true) : !deps.tools.requiresApproval(use.name) && !PLAN_UNSAFE_TOOLS.has(realToolName(use.name)))) {
         const result = { text: `Plan mode is on, so ${use.name} was not run. Research with read-only tools, then call propose_plan with the plan; changes are only allowed after the user approves it.`, isError: true };
         deps.onToolResult?.(use.name, result.text, result.text, true);
         toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
         continue;
       }
 
-      const needsApproval = virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
-      const forcePrompt = virtual?.alwaysAsk ?? (injectionWarning && !READ_ONLY_AFTER_INJECTION.has(realToolName(use.name)) ? injectionWarning : undefined);
+      // Per-domain gate (web_fetch, browser_open): the user allows a DOMAIN once / for this chat / always, like in
+      // Antigravity's browser agent. The grant label is `web:<host>`, so it lives in the ordinary grants table.
+      const real = realToolName(use.name);
+      let approvedHost: string | undefined;
+      const domainGated = virtual ? use.name === 'web_fetch' : real === 'browser_open' && deps.webAccess !== undefined;
+      if (domainGated) {
+        const host = hostOfUrl(args['url']);
+        const refuse = (text: string) => {
+          deps.onToolResult?.(use.name, text, text, true);
+          toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: text, is_error: true });
+        };
+        if (!host) { refuse(`${use.name} needs "url" to be a full http(s) URL, e.g. https://example.com/page.`); continue; }
+        if (virtual) {
+          // The server would refuse a private address anyway; do not ask a human to approve what can never run.
+          try { assertPublicUrl(String(args['url']).trim()); } catch (err) {
+            if (!(err instanceof UrlBlockedError)) throw err;
+            refuse(err.message);
+            continue;
+          }
+        }
+        // web_fetch of an address that is already in the conversation (user's own, search or fetch result) needs no
+        // approval — as in Claude / Gemini. After a suspected injection even those ask. A URL the model composed
+        // itself is the exfiltration channel and is approved per domain.
+        const inContext = virtual && !injectionWarning && urlIsInContext(String(args['url']), collectContextUrls(messages, { trustUserText: deps.userUrlsTrusted !== false }));
+        const domainDecision = inContext
+          ? true
+          : await deps.confirm(`web:${host}`, { url: String(args['url']), host, tool: real, ...(virtual ? { outsideContext: true } : {}) }, injectionWarning ? { forcePrompt: injectionWarning } : undefined);
+        if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
+        const allowed = typeof domainDecision === 'boolean' ? domainDecision : domainDecision.approved;
+        if (!allowed) {
+          const reason = typeof domainDecision === 'boolean' ? undefined : domainDecision.reason;
+          const text = reason ? `Not executed — ${reason}.` : `Not executed — the user did not allow web access to ${host}.`;
+          toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: text, is_error: true });
+          continue;
+        }
+        approvedHost = host;
+      }
+
+      // A domain-gated call has just been approved per domain: that IS the approval for opening it.
+      const needsApproval = domainGated ? false : virtual ? virtual.requiresApproval === true : deps.tools.requiresApproval(use.name);
+      // The domain was just approved by a human; asking again for the same call would be the double prompt.
+      const afterInjection = injectionWarning && !READ_ONLY_AFTER_INJECTION.has(real) && !(domainGated && approvedHost) ? injectionWarning : undefined;
+      const irreversible = !virtual && real === 'browser_act' && looksDangerous(args) ? IRREVERSIBLE_WARNING : undefined;
+      const forcePrompt = virtual?.alwaysAsk ?? afterInjection ?? irreversible;
       const decision = needsApproval || forcePrompt ? await deps.confirm(label, args, forcePrompt ? { forcePrompt } : undefined) : true;
       const approved = typeof decision === 'boolean' ? decision : decision.approved;
       const denyReason = typeof decision === 'boolean' ? undefined : decision.reason;
@@ -386,18 +449,22 @@ export async function runTurn(
           const { _project_id: _ignored, ...rest } = enrichedArgs;
           enrichedArgs = deps.projectId ? { ...rest, _project_id: deps.projectId } : rest;
         }
-        if (BROWSER_TOOL_NAMES.has(realToolName(use.name))) {
-          // Hidden policy args belong to the orchestrator: a model could otherwise widen its own policy
-          // or allow downloads. Downloads stay blocked (playwright-mcp default).
-          const { _policy: _p, _allow_downloads: _d, ...rest } = enrichedArgs;
-          enrichedArgs = deps.browserPolicy ? { ...rest, _policy: deps.browserPolicy } : rest;
+        if (BROWSER_TOOL_NAMES.has(real)) {
+          // Hidden args belong to the orchestrator: a model could otherwise widen its own policy, approve a domain
+          // itself or allow downloads. Downloads stay blocked (playwright-mcp default).
+          const { _policy: _p, _allow_downloads: _d, _approved_host: _a, ...rest } = enrichedArgs;
+          enrichedArgs = rest;
+          if (deps.browserPolicy || deps.webAccess) {
+            enrichedArgs._policy = { ...deps.browserPolicy, ...(deps.webAccess ? { domainGrant: deps.webAccess.grantedHosts() } : {}) };
+          }
+          if (real === 'browser_open' && approvedHost) enrichedArgs._approved_host = approvedHost;
         }
         result = await deps.tools.call(use.name, enrichedArgs);
-        if (BROWSER_TOOL_NAMES.has(realToolName(use.name))) {
-          const signal = browserInjectionSignal(result.text);
-          if (signal.suspected && !injectionWarning) {
-            injectionWarning = `A web page in this turn looked like a prompt injection${signal.reasons.length ? ` (${signal.reasons.slice(0, 3).join('; ')})` : ''}. Check that this action is what you asked for.`;
-          }
+      }
+      if (virtual ? WEB_VIRTUAL_TOOLS.has(use.name) : BROWSER_TOOL_NAMES.has(real)) {
+        const signal = browserInjectionSignal(result.text);
+        if (signal.suspected && !injectionWarning) {
+          injectionWarning = `A web page in this turn looked like a prompt injection${signal.reasons.length ? ` (${signal.reasons.slice(0, 3).join('; ')})` : ''}. Check that this action is what you asked for.`;
         }
       }
       const isError = result.isError === true;

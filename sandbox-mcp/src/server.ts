@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
@@ -7,6 +8,13 @@ import { SupervisorClient } from './supervisor-client.js';
 import { registerAllTools } from './tools/index.js';
 
 // ─── Auth ────────────────────────────────────────────────────────────────────
+
+/** Constant-time comparison of two secrets (length differences leak nothing useful: keys are fixed-length hex). */
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 function extractToken(req: express.Request): string | undefined {
   const auth = req.headers.authorization;
@@ -26,7 +34,7 @@ function requireAuth(
     res.status(401).json({ error: 'Unauthorized: missing token' });
     return false;
   }
-  if (token !== config.apiKey) {
+  if (!safeEqual(token, config.apiKey)) {
     res.status(403).json({ error: 'Forbidden: invalid API key' });
     return false;
   }

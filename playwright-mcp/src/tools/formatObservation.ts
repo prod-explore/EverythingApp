@@ -82,15 +82,6 @@ export function formatObservationText(obs: Observation, notes: Array<string | nu
     `── Page text (${obs.pageTextChars} chars${obs.pageTextTruncated ? ', truncated' : ''}) ──`,
     wrapUntrusted(obs.pageText || '(no visible text)', obs.nonce),
   ];
-  if (obs.summary) {
-    lines.push(
-      '',
-      `── Summary by quarantine model ${obs.summaryModel ?? ''} (derived from untrusted page content) ──`,
-      wrapUntrusted(obs.summary, obs.nonce, 'untrusted_page_summary'),
-    );
-  } else if (obs.summaryError) {
-    lines.push('', `(quarantine summary unavailable: ${obs.summaryError})`);
-  }
   lines.push(
     '',
     'To act, call browser_act with the [ref] number of the element and a `label` copied from its line above ' +

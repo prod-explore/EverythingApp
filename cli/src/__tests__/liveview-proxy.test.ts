@@ -34,6 +34,7 @@ after(() => {
   for (const s of [proxy, upstream]) { s.closeAllConnections(); s.close(); }
 });
 
+const AUTH = { Authorization: `Bearer ${APP_TOKEN}` };
 const wsHeaders = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' };
 
 function connect(path: string, extra: http.OutgoingHttpHeaders = {}): Promise<{ status: number; socket?: import('node:net').Socket }> {
@@ -50,7 +51,7 @@ describe('live-view WebSocket proxy', () => {
   it('rejects a missing or wrong token with 401 and never contacts upstream', async () => {
     seen = {};
     assert.equal((await connect('/api/liveview?conversationId=c1')).status, 401);
-    assert.equal((await connect('/api/liveview?conversationId=c1&token=nope')).status, 401);
+    assert.equal((await connect('/api/liveview?conversationId=c1', { Authorization: 'Bearer nope' })).status, 401);
     assert.equal(seen.url, undefined);
   });
 
@@ -70,12 +71,18 @@ describe('live-view WebSocket proxy', () => {
     assert.equal(seen.url, undefined);
   });
 
+  it('does not accept the token in the URL', async () => {
+    seen = {};
+    assert.equal((await connect(`/api/liveview?conversationId=c1&token=${APP_TOKEN}`)).status, 401);
+    assert.equal(seen.url, undefined);
+  });
+
   it('requires a conversationId', async () => {
-    assert.equal((await connect(`/api/liveview?token=${APP_TOKEN}`)).status, 400);
+    assert.equal((await connect('/api/liveview', AUTH)).status, 400);
   });
 
   it('relays bytes both ways after the 101 handshake', async () => {
-    const { status, socket } = await connect(`/api/liveview?conversationId=c1&token=${APP_TOKEN}`);
+    const { status, socket } = await connect('/api/liveview?conversationId=c1', AUTH);
     assert.equal(status, 101);
     const reply = await new Promise<string>(resolve => {
       socket!.once('data', d => resolve(d.toString()));
@@ -87,7 +94,7 @@ describe('live-view WebSocket proxy', () => {
 
   it('sends the server-side key upstream, never the user token, cookie or origin', async () => {
     seen = {};
-    const { socket } = await connect(`/api/liveview?conversationId=${encodeURIComponent('a b')}&token=${APP_TOKEN}`, { Cookie: 'sid=1', Origin: 'https://evil.example' });
+    const { socket } = await connect(`/api/liveview?conversationId=${encodeURIComponent('a b')}`, { ...AUTH, Cookie: 'sid=1', Origin: 'https://evil.example' });
     socket!.destroy();
     assert.equal(seen.url, '/mcp/liveview?conversationId=a%20b');
     assert.equal(seen.headers?.authorization, `Bearer ${UPSTREAM_KEY}`);
@@ -103,7 +110,7 @@ describe('live-view WebSocket proxy', () => {
   });
 
   it('closes unknown upgrade paths', async () => {
-    await assert.rejects(connect(`/other?token=${APP_TOKEN}`));
+    await assert.rejects(connect('/other', AUTH));
   });
 
   it('answers 503 when playwright-mcp is not configured', async () => {
@@ -111,7 +118,7 @@ describe('live-view WebSocket proxy', () => {
     attachLiveViewProxy(bare, { authToken: APP_TOKEN });
     const port = await listen(bare);
     const status = await new Promise<number>(resolve => {
-      const r = http.request({ host: '127.0.0.1', port, path: `/api/liveview?conversationId=c&token=${APP_TOKEN}`, agent: false, headers: wsHeaders });
+      const r = http.request({ host: '127.0.0.1', port, path: '/api/liveview?conversationId=c', agent: false, headers: { ...wsHeaders, ...AUTH } });
       r.on('response', res => { res.resume(); resolve(res.statusCode ?? 0); });
       r.on('upgrade', () => resolve(101));
       r.on('error', () => resolve(-1));
@@ -126,7 +133,7 @@ describe('live-view WebSocket proxy', () => {
     attachLiveViewProxy(dead, { authToken: APP_TOKEN, upstreamUrl: 'http://127.0.0.1:1', upstreamApiKey: 'k' });
     const port = await listen(dead);
     const status = await new Promise<number>(resolve => {
-      const r = http.request({ host: '127.0.0.1', port, path: `/api/liveview?conversationId=c&token=${APP_TOKEN}`, agent: false, headers: wsHeaders });
+      const r = http.request({ host: '127.0.0.1', port, path: '/api/liveview?conversationId=c', agent: false, headers: { ...wsHeaders, ...AUTH } });
       r.on('response', res => { res.resume(); resolve(res.statusCode ?? 0); });
       r.on('error', () => resolve(-1));
       r.end();
@@ -152,7 +159,7 @@ describe('live-view proxy — half-closed peers', () => {
     const port = await listen(front);
 
     const socket = await new Promise<import('node:net').Socket>((resolve, reject) => {
-      const r = http.request({ host: '127.0.0.1', port, path: `/api/liveview?conversationId=c&token=${APP_TOKEN}`, agent: false, headers: wsHeaders });
+      const r = http.request({ host: '127.0.0.1', port, path: '/api/liveview?conversationId=c', agent: false, headers: { ...wsHeaders, ...AUTH } });
       r.on('upgrade', (_res, s) => resolve(s));
       r.on('error', reject);
       r.end();

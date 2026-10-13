@@ -63,12 +63,16 @@ export interface HealthResult {
  * project shares that project's sandbox and workspace.
  */
 export class SupervisorClient {
-  constructor(private readonly baseUrl: string) {}
+  constructor(private readonly baseUrl: string, private readonly token?: string) {}
+
+  private auth(extra: Record<string, string> = {}): Record<string, string> {
+    return this.token ? { ...extra, Authorization: `Bearer ${this.token}` } : extra;
+  }
 
   private async post<T>(path: string, body: unknown): Promise<T> {
     const res = await fetch(`${this.baseUrl}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.auth({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (!res.ok) throw new Error(`Supervisor ${path} failed (${res.status}): ${await res.text()}`);
@@ -90,7 +94,7 @@ export class SupervisorClient {
   }
 
   async listTerminals(ownerId: string): Promise<TerminalInfo[]> {
-    const res = await fetch(`${this.baseUrl}/terminals?ownerId=${encodeURIComponent(ownerId)}`);
+    const res = await fetch(`${this.baseUrl}/terminals?ownerId=${encodeURIComponent(ownerId)}`, { headers: this.auth() });
     if (!res.ok) throw new Error(`Supervisor /terminals failed (${res.status}): ${await res.text()}`);
     return ((await res.json()) as { terminals: TerminalInfo[] }).terminals;
   }
@@ -106,7 +110,7 @@ export class SupervisorClient {
 
   /** Checkpoints of the owner's /workspace, newest first. */
   async listCheckpoints(ownerId: string): Promise<CheckpointInfo[]> {
-    const res = await fetch(`${this.baseUrl}/sandboxes/${encodeURIComponent(ownerId)}/checkpoints`);
+    const res = await fetch(`${this.baseUrl}/sandboxes/${encodeURIComponent(ownerId)}/checkpoints`, { headers: this.auth() });
     if (!res.ok) throw new Error(`Supervisor /checkpoints failed (${res.status}): ${await res.text()}`);
     return ((await res.json()) as { checkpoints: CheckpointInfo[] }).checkpoints;
   }

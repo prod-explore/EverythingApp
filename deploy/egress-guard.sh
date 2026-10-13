@@ -18,7 +18,7 @@
 #                   br-ea-browser = browser-egress network in docker-compose.yml
 #                   br-ea-sandbox = the code-sandbox network the supervisor creates (N3)
 #   EGRESS_ALLOW    space-separated "IP" or "IP:PORT" exceptions reachable from the guarded bridges,
-#                   e.g. the quarantine model on your PC:  EGRESS_ALLOW="192.168.1.50:11434"
+#                   e.g. a NAS the browser may read:  EGRESS_ALLOW="192.168.1.50:8080"
 #
 # Notes:
 #  - Replies to connections opened FROM outside (host -> published port) are allowed: only NEW
@@ -59,7 +59,7 @@ apply() {
   for br in "${BRIDGES[@]}"; do
     # 2. bridge-local traffic is not ours to judge here
     ipt -A "$CHAIN" -i "$br" -o "$br" -j RETURN
-    # 3. explicit operator exceptions (e.g. the quarantine model on the PC)
+    # 3. explicit operator exceptions (e.g. a NAS the browser may read)
     for entry in "${ALLOW[@]}"; do
       ip="${entry%%:*}"; port=""
       [[ "$entry" == *:* ]] && port="${entry##*:}"

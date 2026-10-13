@@ -1,5 +1,5 @@
 # Build stage
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json tsconfig*.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY src/ ./src/
 RUN npm run build
 
 # Runtime stage
-FROM node:20-alpine
+FROM node:22-alpine
 
 # Avoid root-owned files in volumes (lesson learned from obsidian-mcp incident).
 # The supervisor needs to call docker, but we grant that via group, not by running as root.

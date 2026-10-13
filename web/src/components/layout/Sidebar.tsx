@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { FolderOpen, MessageSquarePlus, Newspaper, Pencil, Plus, Settings, Trash2 } from 'lucide-react';
+import { FolderOpen, Ghost, MessageSquarePlus, Newspaper, Pencil, Plus, Settings, Trash2 } from 'lucide-react';
 import type { ConversationSummary, ProjectListItem } from '../../types';
 import { Button } from '../shared/Button';
 import { GazetaCounter } from '../gazeta/GazetaCounter';
@@ -32,7 +32,7 @@ export function Sidebar({
   view: SidebarView;
   onViewChange: (view: SidebarView) => void;
   onSelect: (id: string) => void;
-  onCreate: (projectId?: string) => void;
+  onCreate: (projectId?: string, ghost?: boolean) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onOpenGazeta: () => void;
@@ -87,9 +87,18 @@ export function Sidebar({
 
       {view === 'chats' ? (
         <>
-          <div className="p-3">
-            <Button variant="ghost" className="flex w-full items-center justify-center gap-2" onClick={() => onCreate()}>
+          <div className="flex gap-2 p-3">
+            <Button variant="ghost" className="flex min-w-0 flex-1 items-center justify-center gap-2" onClick={() => onCreate()}>
               <MessageSquarePlus size={16} /> New conversation
+            </Button>
+            <Button
+              variant="ghost"
+              className="flex shrink-0 items-center justify-center px-3"
+              onClick={() => onCreate(undefined, true)}
+              title="New ghost chat — local models only, no internet. Can't be changed later."
+              aria-label="New ghost chat"
+            >
+              <Ghost size={16} />
             </Button>
           </div>
 
@@ -111,8 +120,9 @@ export function Sidebar({
                     className="min-w-0 flex-1 rounded bg-bg-secondary px-1 py-0.5 text-fg outline-none"
                   />
                 ) : (
-                  <button onClick={() => onSelect(c.id)} className="min-w-0 flex-1 truncate text-left">
-                    {c.title}
+                  <button onClick={() => onSelect(c.id)} className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
+                    {c.ghost && <Ghost size={12} className="shrink-0 text-fg-tertiary" aria-label="Ghost chat" />}
+                    <span className="truncate">{c.title}</span>
                   </button>
                 )}
                 <button
@@ -153,7 +163,7 @@ export function Sidebar({
                     p.id === selectedProjectId ? 'bg-bg-tertiary text-fg' : 'text-fg-secondary hover:bg-bg-secondary'
                   }`}
                 >
-                  <FolderOpen size={14} className="shrink-0" />
+                  {p.ghost ? <Ghost size={14} className="shrink-0" aria-label="Ghost project" /> : <FolderOpen size={14} className="shrink-0" />}
                   <span className="min-w-0 flex-1 truncate text-left">{p.name}</span>
                   <span className="shrink-0 text-xs text-fg-tertiary group-hover:hidden [@media(hover:none)]:hidden">{p.conversationCount}</span>
                   <span

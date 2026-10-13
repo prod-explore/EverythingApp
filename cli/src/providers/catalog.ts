@@ -3,9 +3,11 @@ import type { CompatFlavor } from './openai-compat.js';
 import {
   formatModelId,
   isModelKind,
+  isModelLocality,
   setCatalogSnapshot,
   type ModelInfo,
   type ModelKind,
+  type ModelLocality,
   type ProviderRecord,
   type ToolSchemaMode,
 } from './registry.js';
@@ -41,6 +43,8 @@ export interface ModelFields {
   contextLength?: number;
   minOutputTokens?: number;
   supportsEffort?: boolean;
+  /** Where the model runs; a gateway reports it (`locality`), the user can set it per model, a provider can claim it for all its models. */
+  locality?: ModelLocality;
 }
 
 export type ModelSource = 'discovered' | 'manual' | 'seed';
@@ -94,6 +98,7 @@ export function sanitizeFields(raw: unknown): ModelFields {
   if (typeof o['description'] === 'string') f.description = o['description'].trim().slice(0, 300);
   if (typeof o['supportsImages'] === 'boolean') f.supportsImages = o['supportsImages'];
   if (typeof o['supportsEffort'] === 'boolean') f.supportsEffort = o['supportsEffort'];
+  if (isModelLocality(o['locality'])) f.locality = o['locality'];
   if (o['toolSchemaMode'] === 'full' || o['toolSchemaMode'] === 'flat' || o['toolSchemaMode'] === 'none') f.toolSchemaMode = o['toolSchemaMode'];
   const ctx = finiteNum(o['contextLength']);
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
@@ -115,7 +120,7 @@ function guessKind(id: string): ModelKind {
  * One entry of `GET {base}/models` → our ModelFields. Understands the plain OpenAI shape (`id` only), OpenRouter's
  * extensions (`name`, `context_length`, `pricing` — only "free" is used —, `architecture.input_modalities`,
  * `supported_parameters`) and the gateway extensions defined for MindGate: `kind`, `tags`, `description`,
- * `supports` (tools / vision / reasoning), `tool_schema`.
+ * `supports` (tools / vision / reasoning), `tool_schema`, `locality` (`local` | `cloud`).
  */
 export function parseDiscoveredModel(raw: unknown): { id: string; reported: ModelFields } | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -129,6 +134,7 @@ export function parseDiscoveredModel(raw: unknown): { id: string; reported: Mode
   f.kind = isModelKind(o['kind']) ? o['kind'] : guessKind(id);
   const tags = sanitizeTags(o['tags']);
   if (tags) f.tags = tags;
+  if (isModelLocality(o['locality'])) f.locality = o['locality'];
   if (typeof o['description'] === 'string' && o['description'].trim()) f.description = o['description'].trim().slice(0, 300);
   const ctx = finiteNum(o['context_length']) ?? finiteNum(o['contextLength']);
   if (ctx !== undefined) f.contextLength = Math.trunc(ctx);
@@ -190,9 +196,12 @@ export function migrateCatalogSchema(db: Database.Database): void {
       PRIMARY KEY (provider, model_id)
     );
   `);
+  // Added with Ghost mode; guarded ALTER because this table is created lazily by the catalog itself.
+  const cols = db.prepare(`PRAGMA table_info(providers)`).all() as Array<{ name: string }>;
+  if (!cols.some(c => c.name === 'local')) db.exec(`ALTER TABLE providers ADD COLUMN local INTEGER NOT NULL DEFAULT 0`);
 }
 
-interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null; retry_min: number | null }
+interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null; retry_min: number | null; local: number }
 interface ModelRow { provider: string; model_id: string; enabled: number; source: string; reported: string; overrides: string }
 
 const toRecord = (r: ProviderRow): ProviderRecord => ({
@@ -204,6 +213,7 @@ const toRecord = (r: ProviderRow): ProviderRecord => ({
   enabled: r.enabled === 1,
   concurrency: r.concurrency,
   retryMin: r.retry_min,
+  local: r.local === 1,
 });
 
 export interface DiscoveryResult {
@@ -233,16 +243,20 @@ export class ModelCatalog {
     return r ? toRecord(r) : undefined;
   }
 
-  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; retryMin?: number | null }): ProviderRecord {
+  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; retryMin?: number | null; local?: boolean }): ProviderRecord {
     const pos = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM providers`).get() as { p: number }).p;
     this.db
-      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, retry_min, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, input.retryMin ?? null, pos);
+      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, retry_min, local, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, input.retryMin ?? null, input.local ? 1 : 0, pos);
     this.sync();
     return this.get(input.slug)!;
   }
 
-  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; enabled: boolean; concurrency: number | null; retryMin: number | null }>): boolean {
+  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>): boolean {
+    // "This URL is my own hardware" is a statement about one address: pointing the provider elsewhere withdraws it
+    // unless the same edit confirms it again.
+    const before = patch.baseUrl !== undefined ? this.get(slug) : undefined;
+    if (before && before.baseUrl !== patch.baseUrl && patch.local === undefined) patch = { ...patch, local: false };
     const r = this.db
       .prepare(`
         UPDATE providers SET
@@ -260,6 +274,7 @@ export class ModelCatalog {
     if (!r.changes) return false;
     if (patch.concurrency !== undefined) this.db.prepare(`UPDATE providers SET concurrency = ? WHERE slug = ?`).run(patch.concurrency, slug);
     if (patch.retryMin !== undefined) this.db.prepare(`UPDATE providers SET retry_min = ? WHERE slug = ?`).run(patch.retryMin, slug);
+    if (patch.local !== undefined) this.db.prepare(`UPDATE providers SET local = ? WHERE slug = ?`).run(patch.local ? 1 : 0, slug);
     this.sync();
     return true;
   }
@@ -401,6 +416,9 @@ export class ModelCatalog {
         toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode,
         contextLength: ov.contextLength ?? rep.contextLength,
         supportsEffort: ov.supportsEffort ?? rep.supportsEffort ?? false,
+        // The user's per-model word beats what the provider reports; a model that reports itself as cloud stays cloud
+        // even under a provider the user marked local (fail-closed); otherwise the provider-level statement applies.
+        locality: ov.locality ?? rep.locality ?? (provider.local ? 'local' : undefined),
         enabled: r.enabled === 1,
         source: (r.source === 'manual' || r.source === 'seed' ? r.source : 'discovered') as ModelSource,
         overridden: Object.keys(ov),

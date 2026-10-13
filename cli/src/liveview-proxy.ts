@@ -59,9 +59,10 @@ export function attachLiveViewProxy(server: http.Server, opts: LiveViewProxyOpti
       return;
     }
 
-    // Auth: browsers cannot set headers on a WebSocket, so the token travels as ?token= (same as SSE).
+    // Auth: the browser's session cookie (same-origin handshake), or a Bearer header for non-browser clients.
+    // The token is never accepted in the URL: it would end up in proxy logs and Referer headers.
     const header = req.headers.authorization;
-    const supplied = header?.startsWith('Bearer ') ? header.slice(7) : (url.searchParams.get('token') ?? undefined);
+    const supplied = header?.startsWith('Bearer ') ? header.slice(7) : undefined;
     const cookieOk = opts.isCookieValid?.(req.headers.cookie) ?? false;
     if (cookieOk && req.headers.origin) {
       // Cookies ride along on cross-site WebSocket handshakes too — only same-origin pages may use them.

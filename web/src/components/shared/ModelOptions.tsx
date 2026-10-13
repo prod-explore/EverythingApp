@@ -1,10 +1,13 @@
 import type { ModelOption } from '../../types';
 
-const tagSuffix = (m: ModelOption) => (m.tags.length ? ` · ${m.tags.slice(0, 3).join(', ')}` : '');
+const tagSuffix = (m: ModelOption) => {
+  const parts = [...(m.locality === 'local' ? ['local'] : []), ...m.tags.slice(0, 3)];
+  return parts.length ? ` · ${parts.join(', ')}` : '';
+};
 
 /** <option>s grouped by provider (chat models that can call tools — the app is an agent, a model without tools is of no use); models whose provider has no key are shown but disabled. */
-export function ModelOptions({ models, current }: { models: ModelOption[]; current?: string | null }) {
-  const chat = models.filter(m => m.kind === 'chat' && m.toolSchemaMode !== 'none');
+export function ModelOptions({ models, current, onlyLocal = false }: { models: ModelOption[]; current?: string | null; /** Ghost chats: only models known to run on the user's own hardware. */ onlyLocal?: boolean }) {
+  const chat = models.filter(m => m.kind === 'chat' && m.toolSchemaMode !== 'none' && (!onlyLocal || m.locality === 'local'));
   const groups = [...new Set(chat.map(m => m.provider))];
   const known = chat.some(m => m.id === current);
   return (

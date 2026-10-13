@@ -244,13 +244,13 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
     assert.equal(calls[0]!.args['action'], 'click');
   });
 
-  it('does NOT inject _conversation_id into a non-stateful tool (e.g. browse_url)', async () => {
+  it('does NOT inject _conversation_id into a non-stateful tool (e.g. get_path)', async () => {
     const calls: Array<{ tool: string; args: Record<string, unknown> }> = [];
-    const registry = new ToolRegistry(['browse_url']);
-    await registry.loadFrom([connectionCapturingArgs('playwright', ['browse_url'], calls)]);
+    const registry = new ToolRegistry(['get_path']);
+    await registry.loadFrom([connectionCapturingArgs('obsidian', ['get_path'], calls)]);
 
     const llm = scriptedLlm([
-      fakeMessage([toolUseBlock('t1', 'playwright__browse_url', { url: 'https://example.com', extract: 'title' })], 'tool_use'),
+      fakeMessage([toolUseBlock('t1', 'obsidian__get_path', { path: 'Notes/a.md' })], 'tool_use'),
       fakeMessage([textBlock('done')], 'end_turn'),
     ]);
 
@@ -264,7 +264,7 @@ describe('runTurn — _conversation_id injection (§6b: generalized beyond sandb
         conversationId: 'conv-abc123',
       },
       [],
-      'get the title',
+      'find the note',
     );
 
     assert.equal(calls.length, 1);

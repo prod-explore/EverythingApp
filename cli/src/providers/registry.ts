@@ -20,6 +20,15 @@ export const isModelKind = (v: unknown): v is ModelKind => typeof v === 'string'
 
 export type ToolSchemaMode = 'full' | 'flat' | 'none';
 
+/**
+ * Where a model runs. `local` = on hardware the user controls (a node behind MindGate, Ollama/vLLM on the LAN): what
+ * is sent to it does not reach a third party. Anything else is `cloud` or unknown — and unknown is treated as cloud:
+ * Ghost mode only ever uses models that are positively known to be local (see ghost.ts).
+ */
+export const MODEL_LOCALITIES = ['local', 'cloud'] as const;
+export type ModelLocality = (typeof MODEL_LOCALITIES)[number];
+export const isModelLocality = (v: unknown): v is ModelLocality => typeof v === 'string' && (MODEL_LOCALITIES as readonly string[]).includes(v);
+
 export interface ModelInfo {
   /** Canonical id: `@<provider>/<upstream>`. */
   id: string;
@@ -49,9 +58,14 @@ export interface ModelInfo {
   contextLength?: number;
   /** Accepts `reasoning_effort` (low | medium | high). Sent only when the provider reports it or the user switched it on. */
   supportsEffort?: boolean;
+  /** Where it runs (see ModelLocality). Undefined = nobody said so = not local. */
+  locality?: ModelLocality;
   /** false = switched off in Settings; kept in the catalog so it can be re-enabled. Default true. */
   enabled?: boolean;
 }
+
+/** True only for a model that is positively known to run on the user's own hardware. Fail-closed. */
+export const isLocalModel = (info: Pick<ModelInfo, 'locality'>): boolean => info.locality === 'local';
 
 export interface ProviderRecord {
   slug: ProviderId;
@@ -67,6 +81,11 @@ export interface ProviderRecord {
   concurrency: number | null;
   /** Keep retrying busy/overloaded errors (429/5xx/network) for this many minutes; null = the classic two retries. For peak hours. */
   retryMin: number | null;
+  /**
+   * The user's statement "everything behind this URL runs on my own hardware" (a LAN Ollama/vLLM). Never inferred from
+   * the URL. A model that reports itself as `cloud` (a hub with mixed upstreams) still counts as cloud.
+   */
+  local: boolean;
 }
 
 // ─── Model ids ───────────────────────────────────────────────────────────────

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto';
 import express from 'express';
 import { HttpError, SandboxManager } from './sandboxes.js';
 import { TerminalManager } from './terminals.js';
@@ -7,9 +8,35 @@ const MAX_TIMEOUT_MS = 30 * 60_000;
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 const statusOf = (err: unknown, fallback: number) => (err instanceof HttpError ? err.status : fallback);
 
-export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs = 30_000): express.Express {
+function bearerMatches(header: string | undefined, secret: string): boolean {
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const actual = Buffer.from(header ?? '');
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+export interface SupervisorAppOptions {
+  /**
+   * Shared secret (SUPERVISOR_TOKEN). When set, every route except GET /health needs `Authorization: Bearer <token>`.
+   * The API can run commands in, read files of and delete the volumes of every managed sandbox, so anything that can
+   * reach the port (the shared network, the host's loopback) must prove it is the orchestrator or sandbox-mcp.
+   */
+  token?: string;
+}
+
+export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs = 30_000, opts: SupervisorAppOptions = {}): express.Express {
   const app = express();
   app.disable('x-powered-by');
+  if (opts.token) {
+    const token = opts.token;
+    app.use((req, res, next) => {
+      if (req.method === 'GET' && req.path === '/health') return next();
+      if (!bearerMatches(req.headers.authorization, token)) {
+        res.status(401).json({ error: 'unauthorized: missing or wrong SUPERVISOR_TOKEN' });
+        return;
+      }
+      next();
+    });
+  }
   app.use(express.json());
 
   const ownerOf = (body: { ownerId?: unknown; conversationId?: unknown }): string | undefined => {

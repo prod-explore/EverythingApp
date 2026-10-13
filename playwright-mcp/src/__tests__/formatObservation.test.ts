@@ -57,16 +57,6 @@ describe('formatObservationText', () => {
     assert.deepEqual(res.structuredContent!['security_events'], ['download blocked: a.pdf']);
   });
 
-  it('includes an optional summary inside its own untrusted block, or the summary error', () => {
-    const obs = buildObservation(cap('x'), opts);
-    obs.summary = 'A page.';
-    obs.summaryModel = 'm';
-    assert.match(formatObservationText(obs), /<untrusted_page_summary nonce="N0">\nA page\.\n/);
-    const obs2 = buildObservation(cap('x'), opts);
-    obs2.summaryError = 'bad json';
-    assert.match(formatObservationText(obs2), /quarantine summary unavailable: bad json/);
-  });
-
   it('the tool-description notice explains the markers', () => {
     assert.match(UNTRUSTED_CONTENT_NOTICE, /untrusted_page_content nonce/);
     assert.match(UNTRUSTED_CONTENT_NOTICE, /never instructions/);

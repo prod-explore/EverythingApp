@@ -2,6 +2,7 @@ import { AuditLog } from './audit.js';
 import { HttpOrchestrator, OrchestratorCredentialProvider } from './orchestrator.js';
 import { githubCompare } from './push.js';
 import { createGitProxy } from './server.js';
+import { assertStrongSecret } from './secret-check.js';
 import { TokenStore } from './tokens.js';
 
 const env = (name: string): string | undefined => {
@@ -13,6 +14,7 @@ const int = (name: string, fallback: number) => parseInt(env(name) ?? String(fal
 function main(): void {
   const adminToken = env('GIT_PROXY_ADMIN_TOKEN');
   if (!adminToken) throw new Error('GIT_PROXY_ADMIN_TOKEN is required');
+  assertStrongSecret('GIT_PROXY_ADMIN_TOKEN', adminToken);
   const orchestratorUrl = env('ORCHESTRATOR_URL');
   const fallbackPat = env('GITHUB_PAT');
   if (!orchestratorUrl && !fallbackPat) console.warn('[git-proxy] neither ORCHESTRATOR_URL nor GITHUB_PAT set: every request will fail with 503');

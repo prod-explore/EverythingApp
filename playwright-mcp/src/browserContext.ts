@@ -3,7 +3,7 @@ import { checkNavigation, checkRequest, jsContextOptions, OPEN_POLICY, type Effe
 import type { UrlGuard } from './urlSafety.js';
 
 /**
- * One place that creates every browser context (sessions and one-shot browse_url alike), with the
+ * One place that creates every browser context (browser sessions), with the
  * N3b lockdown: ephemeral profile, domain/JS policy, no downloads/uploads unless the orchestrator
  * passed `_allow_downloads`, no permissions, WebRTC leak protection, no extensions, blocked
  * chrome:/file:/devtools: schemes, and the private-network SSRF guard on every request.
@@ -14,6 +14,8 @@ export interface SessionState {
   policy: EffectivePolicy;
   /** The last `_policy` override the orchestrator sent — sticky for calls that omit it. */
   override?: PolicyOverride;
+  /** Hosts the user approved for THIS session ("allow once" on browser_open). Lives and dies with the session. */
+  approvedHosts: Set<string>;
   /** Set per call from `_allow_downloads`; reset after the call. */
   allowDownloads: boolean;
   /** Security-relevant events since the last tool result (blocked navigations, downloads…). Drained by tools. */
@@ -21,7 +23,8 @@ export interface SessionState {
 }
 
 export function newSessionState(policy: EffectivePolicy = OPEN_POLICY, override?: PolicyOverride): SessionState {
-  return { policy, override, allowDownloads: false, events: [] };
+  const approvedHosts = new Set<string>();
+  return { policy: { ...policy, approvedHosts }, override, approvedHosts, allowDownloads: false, events: [] };
 }
 
 export function drainEvents(state: SessionState): string[] {

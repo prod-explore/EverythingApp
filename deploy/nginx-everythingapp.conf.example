@@ -15,27 +15,67 @@
 # sites-enabled, `nginx -t`, then `systemctl reload nginx` — same as
 # whatever pattern the other services on this host already use.
 
+# Login attempts are also limited in the app (8 per 15 minutes per client); this is the cheap first line.
+limit_req_zone $binary_remote_addr zone=ea_login:1m rate=10r/m;
+
 server {
     listen 80;
     listen [::]:80;
     server_name everythingapp.twoja-domena.pl;
 
-    location / {
-        proxy_pass http://127.0.0.1:3000;
+    # Attachments travel as base64 inside the JSON body of a message (up to ~8 MB of base64 per image).
+    client_max_body_size 16m;
 
-        # Standard forwarded headers — the app doesn't currently read any
-        # of these itself, but keeping them is normal practice for anything
-        # you might add later (real client IP in logs, etc.), and
-        # `trust_proxy` is already set server-side to expect them.
+    # NEVER reachable from outside: /internal/* is the git-proxy -> orchestrator channel (hands out GitHub tokens),
+    # guarded only by GIT_PROXY_ADMIN_TOKEN. git-proxy reaches it over the Docker network, not through this server.
+    location /internal/ {
+        return 404;
+    }
+
+    # Server-sent events: one long-lived response per open chat. The app sends a keepalive every 25 s.
+    location ~ ^/api/conversations/[^/]+/stream$ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
         proxy_set_header Host              $http_host;
         proxy_set_header X-Real-IP         $remote_addr;
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
-        # No need for extended proxy_read_timeout/proxy_send_timeout here:
-        # every request the app serves (including POST /api/message)
-        # returns in well under a second — a turn runs detached from the
-        # request that starts it, and the client polls GET /api/status for
-        # the result. Nginx's defaults (60s) are already generous for that.
+    # Browser live view: a WebSocket relayed to playwright-mcp. Needs the Upgrade headers.
+    location /api/liveview {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_read_timeout 1h;
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /api/login {
+        limit_req zone=ea_login burst=5 nodelay;
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+
+        # The app trusts exactly one proxy hop (`trust proxy 1`) and reads X-Forwarded-For / -Proto from it: the
+        # real client address for the login limiter and the Secure flag on the session cookie.
+        proxy_set_header Host              $http_host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 }

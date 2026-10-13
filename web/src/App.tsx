@@ -132,8 +132,8 @@ function MainApp() {
   }, [refreshProjects]);
 
   // Throws on failure so the modal can stay open and say so.
-  async function submitNewProject(name: string) {
-    const project = await createProject(name);
+  async function submitNewProject(name: string, ghost: boolean) {
+    const project = await createProject(name, undefined, ghost);
     await refreshProjects();
     setSelectedProjectId(project.id);
     setNewProjectOpen(false);
@@ -144,8 +144,14 @@ function MainApp() {
     setSelectedProjectId(prev => (prev === id ? null : id));
   }
 
-  async function handleCreate(projectId?: string) {
-    await createConversation(undefined, projectId);
+  async function handleCreate(projectId?: string, ghost?: boolean) {
+    try {
+      await createConversation(undefined, projectId, ghost);
+    } catch (e) {
+      // A ghost chat needs a local model; with none configured the server says so — show it instead of failing silently.
+      window.alert((e as Error).message);
+      return;
+    }
     if (projectId) void refreshProjects(); // conversationCount changed
   }
 
@@ -200,8 +206,11 @@ function MainApp() {
   function handleModelChange(model: string) {
     if (!selectedId) return;
     setFullConv(prev => (prev ? { ...prev, model } : prev));
-    void updateConversation(selectedId, { model }).catch(() => {
-      // Best-effort — worst case the next turn uses the previous model, not worth a visible error for this.
+    const id = selectedId;
+    void updateConversation(id, { model }).catch(() => {
+      // Best-effort for a normal chat — worst case the next turn uses the previous model. A ghost chat refuses a
+      // model that is not local; show what the server really has instead of leaving the picker on the refused one.
+      getConversation(id).then(c => setFullConv(prev => (prev && prev.id === id ? c : prev))).catch(() => {});
     });
   }
 
@@ -365,6 +374,7 @@ function MainApp() {
     >
       <Header
         title={selected?.title ?? ''}
+        ghost={fullConv?.ghost ?? selected?.ghost ?? false}
         conversationId={selected?.id ?? null}
         usage={usage}
         model={fullConv ? fullConv.model || fullConv.effectiveModel || null : null}

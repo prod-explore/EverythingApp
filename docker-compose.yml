@@ -23,6 +23,8 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      # Shared secret for the supervisor API (exec / files / volumes of every sandbox): sandbox-mcp and the web server send it.
+      SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN is required (openssl rand -hex 32)}
       SANDBOX_IMAGE: ${SANDBOX_IMAGE:-everything-sandbox:latest}
       SUPERVISOR_PORT: ${SUPERVISOR_PORT:-3001}
       # One sandbox per project (or standalone chat); idle ones are STOPPED, never deleted, workspace volumes are kept.
@@ -43,6 +45,11 @@ services:
     restart: unless-stopped
     networks:
       - sandbox-internal
+    # Limits for the services themselves (sandboxes have their own, set by the supervisor). Raise one if its
+    # container gets OOM-killed under real load.
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 256
 
   sandbox-mcp:
     build:
@@ -50,6 +57,7 @@ services:
       dockerfile: Dockerfile
     environment:
       SUPERVISOR_URL: http://sandbox-supervisor:3001
+      SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN is required (openssl rand -hex 32)}
       MCP_PORT: ${MCP_PORT:-3002}
       SANDBOX_TIMEOUT_MS: ${SANDBOX_TIMEOUT_MS:-30000}
       AUTO_APPROVE_TOOLS: ${AUTO_APPROVE_TOOLS:-}
@@ -61,10 +69,16 @@ services:
     restart: unless-stopped
     networks:
       - sandbox-internal
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   # Playwright browser tool — controlled web browsing. Observations are built deterministically
-  # (sanitised, length-bounded, wrapped as untrusted data, injection heuristically flagged); the
-  # local quarantine model (QUARANTINE_MODEL_URL) is optional and only used for browse_url extraction.
+  # (sanitised, length-bounded, wrapped as untrusted data, injection heuristically flagged); no model
+  # sits between the page and the agent. The orchestrator asks the user per domain before the browser
+  # may go there (Allow once / this chat / always).
   # Network: public internet allowed; private networks are NOT (see deploy/egress-guard.sh
   # for the network layer and playwright-mcp/src/urlSafety.ts for the application layer).
   # No docker.sock. Lives on its own `browser-egress` bridge — it shares NO network with the
@@ -77,18 +91,11 @@ services:
     environment:
       MCP_PORT: 3003
       MCP_API_KEY: ${PLAYWRIGHT_MCP_API_KEY:?PLAYWRIGHT_MCP_API_KEY is required}
-      # URL of your local OpenAI-compatible API for quarantine extraction.
-      # host.docker.internal resolves to the Docker host — use the IP of
-      # the machine running LM Studio / Ollama if on the same LAN.
-      QUARANTINE_MODEL_URL: ${QUARANTINE_MODEL_URL:-http://host.docker.internal:11434/v1}
-      QUARANTINE_MODEL: ${QUARANTINE_MODEL:-llama-3.1-8b-instruct}
-      QUARANTINE_MAX_INPUT_CHARS: ${QUARANTINE_MAX_INPUT_CHARS:-80000}
       NAV_TIMEOUT_MS: ${NAV_TIMEOUT_MS:-30000}
       # §6b: browser-agent sessions (browser_open/observe/act/close).
       PLAYWRIGHT_MAX_SESSIONS: ${PLAYWRIGHT_MAX_SESSIONS:-4}
       PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS: ${PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS:-1800000}
       PLAYWRIGHT_WATCHDOG_INTERVAL_MS: ${PLAYWRIGHT_WATCHDOG_INTERVAL_MS:-120000}
-      OBSERVATION_MAX_INPUT_CHARS: ${OBSERVATION_MAX_INPUT_CHARS:-40000}
       # SSRF guard: the browser may only reach the PUBLIC internet. Comma-separated private
       # hostnames/IPs to allow on purpose (default none), e.g. a NAS you want the agent to read.
       BROWSER_ALLOW_PRIVATE_HOSTS: ${BROWSER_ALLOW_PRIVATE_HOSTS:-}
@@ -97,9 +104,7 @@ services:
       BROWSER_DOMAIN_ALLOW: ${BROWSER_DOMAIN_ALLOW:-}
       BROWSER_DOMAIN_DENY: ${BROWSER_DOMAIN_DENY:-}
       BROWSER_JS_POLICY: ${BROWSER_JS_POLICY:-allowed}   # disabled | review | allowed
-      # Observation v2: deterministic observations; the quarantine model is optional.
-      QUARANTINE_EXTRACT_ENABLED: ${QUARANTINE_EXTRACT_ENABLED:-true}
-      OBSERVATION_QUARANTINE_ENABLED: ${OBSERVATION_QUARANTINE_ENABLED:-false}
+      # Observation v2: deterministic observations.
       OBSERVATION_MAX_TEXT_CHARS: ${OBSERVATION_MAX_TEXT_CHARS:-12000}
     # No volumes on purpose: browser profiles are EPHEMERAL (no persistent logins). A leftover
     # `playwright_profiles` volume from older versions can be deleted:
@@ -111,6 +116,10 @@ services:
     # bridge, so a page (or a prompt-injected URL) cannot reach the other services by name.
     networks:
       - browser-egress
+    # PLAYWRIGHT_MAX_SESSIONS Chromium instances live in here (~400 MB each).
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 1024
 
 
   # N4: git smart-HTTP proxy to github.com. Sandboxes push/pull through it with short-lived proxy
@@ -137,6 +146,11 @@ services:
     restart: unless-stopped
     networks:
       - sandbox-internal
+    mem_limit: 256m
+    cpus: 1
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
 
   # Core EverythingApp web server
   everythingapp-web:
@@ -161,14 +175,22 @@ services:
       MCP_OBSIDIAN_API_KEY: ${MCP_OBSIDIAN_API_KEY:-}
       # N3: workspace Explorer / checkpoints (byte reads + in-sandbox git only).
       SUPERVISOR_URL: http://sandbox-supervisor:3001
+      SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN is required (openssl rand -hex 32)}
       # N4: git-proxy (orchestrator mints sandbox tokens; git-proxy calls back /internal/*).
       GIT_PROXY_URL: http://git-proxy:8080
-      GIT_PROXY_ADMIN_TOKEN: ${GIT_PROXY_ADMIN_TOKEN:-}
+      GIT_PROXY_ADMIN_TOKEN: ${GIT_PROXY_ADMIN_TOKEN:?GIT_PROXY_ADMIN_TOKEN is required}
       # URL git INSIDE the sandbox uses for the proxy (sandbox bridge gateway + GIT_PROXY_BIND port).
       GIT_PROXY_SANDBOX_URL: ${GIT_PROXY_SANDBOX_URL:-http://git-proxy:8080}
       # GitHub App (device flow). Without it, connect with a fine-grained PAT in Settings → GitHub.
       GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
       GITHUB_APP_CLIENT_SECRET: ${GITHUB_APP_CLIENT_SECRET:-}
+      # web_search defaults for a fresh install (Settings → Web overrides them): a SearXNG URL and/or a Brave key.
+      SEARXNG_URL: ${SEARXNG_URL:-}
+      BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      # Ghost chats: which connectors they may use (comma-separated; empty = none). Web, browser, GitHub and connectors added by hand are never in the list.
+      GHOST_CONNECTORS: ${GHOST_CONNECTORS-sandbox,obsidian}
+      # Usage / audit / replay rows older than this many months are deleted daily (0 = keep everything). Chats are never deleted.
+      RETENTION_MONTHS: ${RETENTION_MONTHS:-12}
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
@@ -179,6 +201,11 @@ services:
       - git-proxy
     container_name: everythingapp-web
     restart: unless-stopped
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
     networks:
       - sandbox-internal
       - browser-egress  # only to call playwright-mcp; the browser's own requests are guarded (urlSafety.ts)

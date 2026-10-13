@@ -4,14 +4,16 @@
  *
  * Add it in EverythingApp like any provider (Settings → Models → + Other, or the MindGate preset with
  * MINDGATE_BASE_URL=http://127.0.0.1:4010/v1): base URL http://127.0.0.1:4010/v1, "No key needed";
- *   its model list (GET /models) offers "mock-1" and "mock-fast".
+ *   its model list (GET /models) offers "mock-1" and "mock-fast" (both reported as `locality: local`, so ghost chats can be tried).
  *
  * Behaviour is driven by the latest user message (case-insensitive):
  *   "ask: <q>"          → request_human_input (blocking form with fields)
  *   "ask later: <q>"    → request_human_input with wait=false
  *   "report"            → post_report (urgent)
  *   "bash: <cmd>"       → the first tool whose name ends with run_bash
- *   "browse: <url>"     → browse_url / browser_open
+ *   "browse: <url>"     → browser_open
+ *   "fetch: <url>"      → web_fetch
+ *   "search: <query>"   → web_search
  *   "spawn"             → spawn_agent (worker on the default agent model) then wait_agents
  *   "tool: <name> <json>" → call any tool by (suffix) name with JSON args
  *   "todo"              → todo_write with a three-item list
@@ -107,9 +109,19 @@ function decide(body) {
   }
   if (lower.startsWith('browse:')) {
     const url = user.slice(7).trim();
-    const t = findTool(tools, 'browse_url') ?? findTool(tools, 'browser_open');
-    if (t) return { toolCalls: [call(t, t.endsWith('browse_url') ? { url, extract: 'the main heading and a one-sentence summary' } : { url })] };
+    const t = findTool(tools, 'browser_open');
+    if (t) return { toolCalls: [call(t, { url })] };
     return { text: 'No browser tool is connected.' };
+  }
+  if (lower.startsWith('fetch:')) {
+    const t = findTool(tools, 'web_fetch');
+    if (t) return { toolCalls: [call(t, { url: user.slice(6).trim() })] };
+    return { text: 'web_fetch is not available.' };
+  }
+  if (lower.startsWith('search:')) {
+    const t = findTool(tools, 'web_search');
+    if (t) return { toolCalls: [call(t, { query: user.slice(7).trim() })] };
+    return { text: 'web_search is not configured (Settings → Web).' };
   }
   if (lower.startsWith('spawn')) {
     const t = findTool(tools, 'spawn_agent');
@@ -136,7 +148,7 @@ function usage(body, text) {
 const server = http.createServer(async (req, res) => {
   if (req.method === 'GET' && req.url?.endsWith('/models')) {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ data: [{ id: 'mock-1', name: 'Mock 1', context_length: 20000, supports: ['tools', 'reasoning_effort'] }, { id: 'mock-fast', name: 'Mock Fast' }] }));
+    res.end(JSON.stringify({ data: [{ id: 'mock-1', name: 'Mock 1', context_length: 20000, supports: ['tools', 'reasoning_effort'], locality: 'local' }, { id: 'mock-fast', name: 'Mock Fast', locality: 'local' }] }));
     return;
   }
   if (req.method !== 'POST' || !req.url?.endsWith('/chat/completions')) {

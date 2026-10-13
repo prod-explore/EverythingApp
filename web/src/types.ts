@@ -7,6 +7,8 @@ export interface ConversationSummary {
   title: string;
   updatedAt: string;
   messageCount: number;
+  /** Ghost chat: local models only, no internet, fixed at creation. */
+  ghost?: boolean;
 }
 
 export interface Conversation {
@@ -17,6 +19,8 @@ export interface Conversation {
   /** What the next turn will actually use: the conversation's own model, else the default. Set by the server. */
   effectiveModel?: string;
   sandboxEnabled: boolean;
+  /** Ghost chat (own flag or its project's). Never changes. */
+  ghost?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -162,6 +166,22 @@ export interface ConnectorTestResult {
   tools?: Array<{ name: string; description?: string }>;
 }
 
+export interface WebSearchSettings {
+  backend: 'none' | 'searxng' | 'brave';
+  searxngUrl: string;
+  braveKey: { present: boolean; last4: string | null; fromEnv: boolean };
+  vaultEnabled: boolean;
+  vaultDisabledReason: string | null;
+  /** web_search is available to the assistant right now. */
+  active: boolean;
+}
+
+export interface WebSearchTestResult {
+  ok: boolean;
+  results?: number;
+  error?: string;
+}
+
 export type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';
 
 export interface TurnState {
@@ -185,6 +205,7 @@ export interface ProjectRow {
   description: string | null;
   workspaceVolume: string | null;
   policy: Record<string, unknown>;
+  ghost?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -193,6 +214,7 @@ export interface ProjectListItem {
   id: string;
   name: string;
   description: string | null;
+  ghost?: boolean;
   conversationCount: number;
   createdAt: string;
   updatedAt: string;
@@ -230,6 +252,7 @@ export type ProviderId = string;
 export type ModelKind = 'chat' | 'image' | 'tts' | 'stt' | 'embedding';
 export const MODEL_KINDS: ModelKind[] = ['chat', 'image', 'tts', 'stt', 'embedding'];
 export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
+export type ModelLocality = 'local' | 'cloud';
 
 export interface ProviderInfo {
   id: ProviderId;
@@ -241,6 +264,8 @@ export interface ProviderInfo {
   concurrency: number | null;
   /** Minutes to keep retrying busy errors; null = the classic two retries. */
   retryMin: number | null;
+  /** The user said everything behind this provider runs on their own hardware (ghost chats may then use its models). */
+  local: boolean;
   configured: boolean;
   source: 'vault' | null;
   last4: string | null;
@@ -282,6 +307,8 @@ export interface ModelOption {
   toolSchemaMode?: 'full' | 'flat' | 'none';
   contextLength?: number;
   supportsEffort?: boolean;
+  /** Where it runs. Missing = unknown = not usable in a ghost chat. */
+  locality?: ModelLocality;
 }
 
 /** A model in the Settings editor — also the switched-off ones. `overridden` lists the fields the user changed. */

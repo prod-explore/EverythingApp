@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Download, FolderOpen, FolderTree, GitBranch, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
+import { Bot, Download, FolderOpen, FolderTree, GitBranch, Ghost, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
 import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
@@ -31,8 +31,11 @@ export function Header({
   dockTool,
   onToggleTool,
   conversationId,
+  ghost = false,
 }: {
   title: string;
+  /** Ghost chat: local models only, no internet; fixed at creation. */
+  ghost?: boolean;
   /** Enables the export download for the open chat. */
   conversationId?: string | null;
   usage: string;
@@ -85,6 +88,15 @@ export function Header({
       </button>
       <h1 className="min-w-0 flex-1 truncate text-sm font-medium text-fg">{title}</h1>
 
+      {ghost && (
+        <span
+          title="Ghost chat — only local models, no internet, nothing leaves this machine. This can't be changed."
+          className="flex shrink-0 items-center gap-1 rounded-full border border-fg/30 px-2 py-0.5 text-xs font-medium text-fg"
+        >
+          <Ghost size={12} /> Ghost
+        </span>
+      )}
+
       {/* Desktop: everything inline. */}
       {sandboxEnabled !== undefined && (
         <button
@@ -110,7 +122,7 @@ export function Header({
           aria-label="Model for this conversation"
           className="max-w-[8rem] shrink-0 truncate rounded-full border border-border bg-bg-secondary px-3 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover md:max-w-[11rem]"
         >
-          <ModelOptions models={models} current={model} />
+          <ModelOptions models={models} current={model} onlyLocal={ghost} />
         </select>
       )}
 

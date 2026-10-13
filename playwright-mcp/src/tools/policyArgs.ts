@@ -12,7 +12,7 @@ import { guardFor } from '../urlGuardFor.js';
 export const hiddenPolicyArgs = {
   _policy: policyOverrideSchema
     .optional()
-    .describe('Internal: project browser policy {domainAllow, domainDeny, js}. Set by the orchestrator, never by the model.'),
+    .describe('Internal: browser policy {domainAllow, domainDeny, domainGrant, js}. Set by the orchestrator, never by the model.'),
   _allow_downloads: z
     .boolean()
     .optional()
@@ -23,14 +23,15 @@ export function envPolicy(config: PlaywrightConfig): PolicyOverride {
   return { domainAllow: config.domainAllow, domainDeny: config.domainDeny, js: config.jsPolicy };
 }
 
-export function effectivePolicy(config: PlaywrightConfig, override?: PolicyOverride): EffectivePolicy {
-  return mergePolicy(envPolicy(config), override);
+export function effectivePolicy(config: PlaywrightConfig, override?: PolicyOverride, approvedHosts?: ReadonlySet<string>): EffectivePolicy {
+  const policy = mergePolicy(envPolicy(config), override);
+  return approvedHosts ? { ...policy, approvedHosts } : policy;
 }
 
 /** Applies this call's `_policy` (sticky: a call without one keeps the session's last override). */
 export function applyCallPolicy(config: PlaywrightConfig, state: SessionState, override: PolicyOverride | undefined): void {
   if (override) state.override = override;
-  state.policy = effectivePolicy(config, state.override);
+  state.policy = effectivePolicy(config, state.override, state.approvedHosts);
 }
 
 /** Runs `fn` with downloads allowed only if this call carried `_allow_downloads: true`. */

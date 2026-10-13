@@ -21,6 +21,7 @@ EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions
 | `supports` | gateway | Array, e.g. `["tools","vision","reasoning_effort"]`. No `"tools"` → the model is never offered tools; `"reasoning_effort"` shows the Effort control in chats |
 | `tool_schema` | gateway | `full` \| `flat` \| `none` — how tool schemas are sent (`flat` for small models that cannot emit nested JSON) |
 | `context_length` (or `contextLength`) | gateway / OpenRouter | The model's window in tokens — what context management works from |
+| `locality` | gateway | `local` \| `cloud` — where the model runs. Only models positively marked `local` can be used in a ghost chat; absent = unknown = not local |
 | `name`, `architecture.input_modalities`, `supported_parameters` | OpenRouter | Mapped to label, vision, tool support, reasoning effort |
 
 **The app keeps no prices** — money is the gateway's business; the app counts tokens only. The one thing taken from a price is “costs nothing”: a model a provider lists at price 0 (OpenRouter `:free`) with no explicit tags gets the `free` tag. Metadata is layered **provider-reported < your override**; there is no built-in model list. Override anything per model in the editor (kind, tags, description, **context window**, **reasoning effort**). A provider that does not report `context_length` (Gemini's compat endpoint doesn't) needs the window typed in once if you want chats compacted *before* they overflow; without it the app reacts only when the provider refuses.
@@ -31,12 +32,22 @@ A request that fails is turned into a sentence a person can act on (rejected key
 
 A gateway can also answer with `error.code = "budget_exhausted"` (HTTP 429): the message is shown as-is and the request is **not** retried, unlike a plain rate limit.
 
+## Where a model runs (ghost chats)
+
+Ghost chats and projects ([ADR 0013](adr/0013-ghost-mode.md)) use only models known to run on your own hardware. Three places can say so, strongest last-word first:
+
+1. **You, per model** — Settings → Models, the *where?* selector on a model (`local` / `cloud` / unknown). It overrides everything below.
+2. **The model itself** — a gateway reports `locality` in `GET /models` (MindGate does, per node). A model that reports `cloud` stays cloud even under a provider you marked local.
+3. **You, per provider** — *Runs on my own hardware* on the provider card, for a plain Ollama / vLLM / LM Studio server on your LAN that reports nothing. Changing the provider's URL withdraws it.
+
+Nothing is inferred from a URL, a name or a tag, so a model nobody vouched for is never used by accident.
+
 ## Slots and the cost guard
 
 | Slot | Used for | When unset |
 |---|---|---|
 | Chat default | New conversations | first `free` model, else first usable |
-| Helper | Chat titles, daily digest | first `free` model — never a paid one |
+| Helper | Chat titles, daily digest, compaction | first `free` model — never a paid one. For a ghost chat only a *local* helper is used; without one, the chat's own model summarises and the title stays a plain slice |
 | Agents | Default model of `spawn_agent` workers | the helper; if none, the parent's own model |
 | Escalation | The stronger model the assistant reaches for | none (never automatic) |
 

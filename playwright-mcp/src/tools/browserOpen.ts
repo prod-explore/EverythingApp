@@ -3,20 +3,33 @@ import { z } from 'zod';
 import type { PlaywrightConfig } from '../config.js';
 import type { BrowserSessionPool } from '../sessionPool.js';
 import { drainEvents } from '../browserContext.js';
+import { normalizeHost } from '../policy.js';
 import { observePage } from '../observe.js';
 import { observationResult, UNTRUSTED_CONTENT_NOTICE } from './formatObservation.js';
 import { applyCallPolicy, checkTargetUrl, effectivePolicy, hiddenPolicyArgs, withDownloadPermission } from './policyArgs.js';
 import { fail } from './types.js';
 
+/** The normalized host of `url` when it is exactly the host the orchestrator says the user approved. */
+export function approvedHostFor(url: string, approvedHost: string | undefined): string | null {
+  if (!approvedHost) return null;
+  try {
+    const host = normalizeHost(new URL(url).hostname);
+    return host === normalizeHost(approvedHost) ? host : null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerBrowserOpen(server: McpServer, config: PlaywrightConfig, pool: BrowserSessionPool): void {
   server.tool(
     'browser_open',
     'Open (or reuse) this conversation\'s browser session and navigate to a URL. ' +
-      'Unlike browse_url, the session STAYS OPEN across calls — use browser_act to click/type/' +
+      'The session STAYS OPEN across calls — use browser_act to click/type/' +
       'select on the page afterward, and browser_close when you\'re done with it. ' +
       'The browser profile is ephemeral: no saved logins or cookies from earlier sessions; if a site ' +
-      'needs a login, ask the user to log in via the live view. Some domains may be blocked by the ' +
-      'project\'s domain policy — if so, ask the user to add the domain. ' +
+      'needs a login, ask the user to log in via the live view. The user approves each website ' +
+      '(domain) the first time you open it; a link or redirect to a DIFFERENT domain is blocked until you browser_open that URL, ' +
+      'which asks the user. A domain the operator blocked stays blocked — tell the user instead of retrying. ' +
       'Returns a deterministic observation: the interactive element list (refs for browser_act) and ' +
       'the visible page text. ' +
       UNTRUSTED_CONTENT_NOTICE,
@@ -27,12 +40,20 @@ export function registerBrowserOpen(server: McpServer, config: PlaywrightConfig,
         .optional()
         .describe('Internal: conversation ID for session isolation. Set by the orchestrator.'),
       ...hiddenPolicyArgs,
+      _approved_host: z
+        .string()
+        .optional()
+        .describe('Internal: the host the user just approved for this browser session. Set by the orchestrator, never by the model.'),
     },
-    async ({ url, _conversation_id, _policy, _allow_downloads }) => {
+    async ({ url, _conversation_id, _policy, _allow_downloads, _approved_host }) => {
       const convId = _conversation_id ?? 'default';
       const existing = pool.get(convId);
       const override = _policy ?? existing?.state.override;
-      const policy = effectivePolicy(config, override);
+      // The host the user approved on the card counts for this session (not just this call): the pages it links
+      // to on the same host must stay reachable. It must be the host of the URL being opened, nothing wider.
+      const approved = approvedHostFor(url, _approved_host);
+      const preflight = new Set([...(existing?.state.approvedHosts ?? []), ...(approved ? [approved] : [])]);
+      const policy = effectivePolicy(config, override, preflight);
 
       const blocked = await checkTargetUrl(config, policy, url);
       if (blocked) return fail(blocked);
@@ -45,6 +66,7 @@ export function registerBrowserOpen(server: McpServer, config: PlaywrightConfig,
           notes.push(`(JS policy changed to "${policy.js}" — restarted the browser session)`);
         }
         const { session, isNew } = await pool.claim(convId, { policy, override });
+        if (approved) session.state.approvedHosts.add(approved);
         applyCallPolicy(config, session.state, _policy);
         notes.unshift(
           isNew ? '(opened a new browser session for this conversation)' : '(reusing this conversation\'s existing browser session)',

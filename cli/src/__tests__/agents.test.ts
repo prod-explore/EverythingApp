@@ -28,7 +28,7 @@ const LIMITS: AgentLimits = {
 
 type Script = (p: Llm.MessageCreateParamsNonStreaming) => Llm.Message | Promise<Llm.Message>;
 
-async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; autoApprove?: string[] } = {}) {
+async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; autoApprove?: string[]; extra?: Partial<ConstructorParameters<typeof AgentManager>[0]> } = {}) {
   const db = openDb(':memory:');
   runMigrations(db);
   const conv = createConversation(db, { title: 'chat' }).id;
@@ -68,6 +68,7 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
     db, router, registry, approval: gate, sse: new SSEManager(),
     limits: { ...LIMITS, ...opts.limits },
     recordUsage: () => {},
+    ...opts.extra,
   });
   const root = createRun(db, { conversationId: conv, model: 'm', goal: 'orchestrate', label: 'assistant' });
   const controller = new AbortController();
@@ -123,6 +124,28 @@ describe('runTurn inbox', () => {
 });
 
 describe('AgentManager', () => {
+  it('delegates virtual file tools by name, only when the parent has them', async () => {
+    const fake = (name: string): import('../llm-loop.js').VirtualTool => ({ definition: { name, description: name, input_schema: { type: 'object' } }, handler: async () => ({ text: name }) });
+    const files = ['read_file', 'edit_file', 'write_file'];
+    const withFiles = await setup(p => (isWorker(p) ? message([text('done')], 'end_turn') : message([text('?')], 'end_turn')), {
+      extra: {
+        delegableTools: () => files,
+        workerExtraTools: run => files.filter(n => run.tools.includes(n)).map(fake),
+      },
+    });
+    const r = withFiles.agents.spawn(withFiles.root.id, { goal: 'read it', model: 'm', tools: ['read_file'], label: 'reader' });
+    assert.ok('runId' in r, JSON.stringify(r));
+    await withFiles.agents.wait([r.runId], 'all');
+    const names = toolNames(withFiles.requests.find(isWorker)!);
+    assert.ok(names.includes('read_file'));
+    assert.ok(!names.includes('edit_file'), 'not delegated, not available');
+
+    // A chat without a sandbox has no file tools to hand down.
+    const without = await setup(() => message([text('?')], 'end_turn'));
+    const refused = without.agents.spawn(without.root.id, { goal: 'edit it', model: 'm', tools: ['edit_file'] });
+    assert.ok('error' in refused && /not available to the parent/.test(refused.error), JSON.stringify(refused));
+  });
+
   it('spawn returns immediately; wait collects the worker report; worker tools are only what was delegated', async () => {
     const t = await setup(p => (isWorker(p) ? message([text('report: all good')], 'end_turn') : message([text('?')], 'end_turn')));
     const r = t.agents.spawn(t.root.id, { goal: 'check x', model: 'm', tools: ['srv/x'], label: 'checker' });

@@ -24,8 +24,11 @@ export const SANDBOX_UNREACHABLE = 'The sandbox service is not reachable — sta
 
 /** fetch() that turns "connection refused / DNS" into a message a person can act on. */
 async function sfetch(url: string, init?: RequestInit): Promise<Response> {
+  const token = process.env['SUPERVISOR_TOKEN'];
+  const headers = new Headers(init?.headers);
+  if (token) headers.set('Authorization', `Bearer ${token}`);
   try {
-    return await fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(15 * 60_000) });
+    return await fetch(url, { ...init, headers, signal: init?.signal ?? AbortSignal.timeout(15 * 60_000) });
   } catch (err) {
     const e = err as Error & { cause?: { code?: string } };
     if (e.name === 'TimeoutError') throw new Error('The sandbox service did not answer in time.');

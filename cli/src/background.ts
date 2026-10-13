@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import type { LlmClient } from './llm-loop.js';
 import { resolveSlot } from './slots.js';
 import type { ProviderRouter } from './providers/router.js';
-import type { ProviderId } from './providers/registry.js';
+import { isLocalModel, type ProviderId } from './providers/registry.js';
 
 /**
  * Housekeeping LLM calls (chat titles, the daily digest) never touch the chat model: they run on the `helper` slot
@@ -16,8 +16,14 @@ export interface BackgroundModel {
   client: LlmClient;
 }
 
-export function backgroundModel(db: Database.Database, router: ProviderRouter): BackgroundModel | null {
-  const model = resolveSlot(db, 'helper', router.chatCandidates(), id => router.isAvailable(id));
+/**
+ * `localOnly` is for work on the content of a ghost chat: only a local model may be the helper (the explicit slot if it
+ * is local, else the first free local one). When none is, the caller falls back to the chat's own model or skips the job.
+ */
+export function backgroundModel(db: Database.Database, router: ProviderRouter, opts: { localOnly?: boolean } = {}): BackgroundModel | null {
+  const candidates = opts.localOnly ? router.chatCandidates().filter(isLocalModel) : router.chatCandidates();
+  const localOk = (id: string) => !opts.localOnly || candidates.some(c => c.id === id);
+  const model = resolveSlot(db, 'helper', candidates, id => localOk(id) && router.isAvailable(id));
   if (!model) return null;
   const { provider, client } = router.clientFor(model);
   return { model, provider, client: client as LlmClient };

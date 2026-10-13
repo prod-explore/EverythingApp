@@ -75,6 +75,19 @@ export class ToolRegistry {
     return sub;
   }
 
+  /**
+   * A new registry with only the tools of the named connectors, and only those the operator configured (a connector
+   * added by hand in Settings is never included). Ghost mode uses it to keep a private chat on local tools.
+   */
+  restrictToConnectors(names: readonly string[]): ToolRegistry {
+    const sub = new ToolRegistry(this.autoApproveTools);
+    const wanted = new Set(names);
+    for (const [key, tool] of this.tools) {
+      if (wanted.has(tool.connection.name) && tool.connection.trusted !== false) sub.tools.set(key, tool);
+    }
+    return sub;
+  }
+
   /** Drops every tool of one connection (connector disabled/removed at runtime). */
   removeConnection(name: string): void {
     for (const [key, tool] of this.tools) if (tool.connection.name === name) this.tools.delete(key);

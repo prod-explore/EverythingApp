@@ -3,7 +3,6 @@ import type { Page } from 'playwright';
 import type { PlaywrightConfig } from './config.js';
 import { scoreInjection, type InjectionResult } from './injection.js';
 import type { JsPolicy } from './policy.js';
-import { summarizeObservation } from './quarantine.js';
 import { addStats, emptyStats, sanitizeLabel, sanitizeText, type SanitizeStats } from './sanitize.js';
 
 /**
@@ -403,11 +402,6 @@ export interface Observation {
   hiddenTextRatio: number;
   injection: InjectionResult;
   jsPolicy: JsPolicy;
-  /** Optional quarantine-model summary (OBSERVATION_QUARANTINE_ENABLED) — derived from untrusted content. */
-  summary?: string;
-  summaryModel?: string;
-  /** Set when the optional summary was requested but failed validation/the call failed. */
-  summaryError?: string;
 }
 
 export interface BuildOptions {
@@ -458,24 +452,13 @@ export function buildObservation(capture: PageCapture, opts: BuildOptions): Obse
 
 /**
  * The one function every step of the browser-agent loop calls before returning anything to the
- * model. The optional quarantine summary is additive only — it never replaces the deterministic
- * element table or text.
+ * model. No model is involved: what the agent sees is decided by code (see buildObservation).
  */
 export async function observePage(page: Page, config: PlaywrightConfig, jsPolicy: JsPolicy): Promise<Observation> {
   const capture = await capturePage(page, config);
-  const obs = buildObservation(capture, {
+  return buildObservation(capture, {
     maxTextChars: config.observationMaxTextChars,
     labelMax: config.observationLabelMaxChars,
     jsPolicy,
   });
-  if (config.observationQuarantineEnabled) {
-    const s = await summarizeObservation(config, obs.pageText);
-    if (s.ok) {
-      obs.summary = s.summary;
-      obs.summaryModel = s.model;
-    } else {
-      obs.summaryError = s.error;
-    }
-  }
-  return obs;
 }

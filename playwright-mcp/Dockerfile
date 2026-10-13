@@ -1,17 +1,21 @@
-FROM node:20-alpine AS builder
+# The image's bundled Chromium must be the one the locked `playwright` package expects: keep this tag equal to the
+# playwright version in package-lock.json (src/__tests__/dockerfile.test.ts checks it). Global ARG: before the first FROM.
+ARG PLAYWRIGHT_IMAGE_TAG=v1.63.0-noble
+
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY package*.json tsconfig*.json ./
 RUN npm ci
 COPY src/ ./src/
 RUN npm run build
 
-FROM mcr.microsoft.com/playwright:v1.48.0-noble
+FROM mcr.microsoft.com/playwright:${PLAYWRIGHT_IMAGE_TAG}
 
-# Install Node.js 20
+# Install Node.js 22
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 

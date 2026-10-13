@@ -136,7 +136,8 @@ export async function generateDailySummary(
   const systemPrompt = 'You are a concise daily briefing assistant. Summarize the provided items in plain markdown. Be brief.';
 
   const { listGazetaItems } = await import('./db.js');
-  const pending = listGazetaItems(db, 'pending');
+  // Items from ghost chats and projects never leave the machine, not even to the helper model: they stay out of the digest.
+  const pending = listGazetaItems(db, 'pending').filter(i => !i.ghost);
 
   if (pending.length === 0) {
     return createGazetaItem(db, {

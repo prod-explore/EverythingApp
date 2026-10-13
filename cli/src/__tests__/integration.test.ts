@@ -99,7 +99,7 @@ function jsonRequest(
 }
 
 /** Reads the SSE stream at `path` until `targetEvent` appears or `timeoutMs` elapses. */
-function watchSse(port: number, path: string, targetEvent: string, timeoutMs = 5000): { stop: () => void; seen: Promise<string> } {
+function watchSse(port: number, path: string, targetEvent: string, timeoutMs = 5000, headers: http.OutgoingHttpHeaders = {}): { stop: () => void; seen: Promise<string> } {
   let buffer = '';
   // Initialized with no-op placeholders (not left unassigned) purely to satisfy
   // strict definite-assignment analysis — the Promise executor below runs
@@ -111,7 +111,7 @@ function watchSse(port: number, path: string, targetEvent: string, timeoutMs = 5
     rejectSeen = rej;
   });
 
-  const req = http.get({ host: '127.0.0.1', port, path }, res => {
+  const req = http.get({ host: '127.0.0.1', port, path, headers }, res => {
     res.setEncoding('utf8');
     res.on('data', (chunk: string) => {
       buffer += chunk;
@@ -158,6 +158,11 @@ describe('integration: end-to-end turn over HTTP', () => {
     assert.equal(res.status, 401);
   });
 
+  it('does not take the token from the URL (SSE is cookie or header only)', async () => {
+    const res = await jsonRequest(port, 'GET', `/api/conversations/x/stream?token=${AUTH_TOKEN}`);
+    assert.equal(res.status, 401);
+  });
+
   it('drives a full turn: create conversation, send message, stream SSE, persist to SQLite', async () => {
     const authHeader = { authorization: `Bearer ${AUTH_TOKEN}` };
 
@@ -166,7 +171,7 @@ describe('integration: end-to-end turn over HTTP', () => {
     const convId = created.json['id'] as string;
     assert.equal(typeof convId, 'string');
 
-    const sse = watchSse(port, `/api/conversations/${convId}/stream?token=${AUTH_TOKEN}`, 'turn:done');
+    const sse = watchSse(port, `/api/conversations/${convId}/stream`, 'turn:done', 5000, { authorization: `Bearer ${AUTH_TOKEN}` });
 
     const sent = await jsonRequest(port, 'POST', `/api/conversations/${convId}/message`, { text: 'Hi' }, authHeader);
     assert.equal(sent.status, 200);

@@ -1,7 +1,7 @@
 {
   "name": "playwright-mcp",
   "version": "0.1.0",
-  "description": "MCP server providing controlled web browsing with dual-LLM quarantine for EverythingApp",
+  "description": "MCP server providing controlled web browsing for EverythingApp (domain allowlist, deterministic page filtering)",
   "main": "dist/index.js",
   "type": "module",
   "scripts": {

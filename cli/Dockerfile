@@ -1,5 +1,5 @@
 # Stage 1: Build web frontend
-FROM node:20-alpine AS web-builder
+FROM node:22-alpine AS web-builder
 WORKDIR /web
 COPY web/package*.json ./
 RUN npm ci
@@ -7,7 +7,7 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 2: Build cli backend
-FROM node:20-alpine AS cli-builder
+FROM node:22-alpine AS cli-builder
 WORKDIR /cli
 COPY cli/package*.json cli/tsconfig*.json ./
 RUN apk add --no-cache python3 make g++ \
@@ -16,7 +16,7 @@ COPY cli/src/ ./src/
 RUN npm run build
 
 # Stage 3: Runtime image
-FROM node:20-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 

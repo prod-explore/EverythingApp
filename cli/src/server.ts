@@ -13,6 +13,7 @@ import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
 import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
+import { assertStrongSecret } from './secret-check.js';
 import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
@@ -21,7 +22,7 @@ import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { withModelIdentity } from './providers/identity.js';
 import { ProviderRouter } from './providers/router.js';
 import { SLUG_RE, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
-import { findPreset, getModelInfo, isCatalogModel, presetBaseUrl, supportsTools } from './providers/registry.js';
+import { findPreset, getModelInfo, isCatalogModel, isLocalModel, presetBaseUrl, supportsTools } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { classifyError } from './providers/errors.js';
 import { compactConversation, llmHistory } from './compaction.js';
@@ -38,17 +39,27 @@ import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
 import { SupervisorExec, type SandboxExec } from './supervisor-client.js';
 import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
+import { createWebRoutes } from './web-routes.js';
+import { buildWebTools, PageCache, WEB_TOOLS_PROMPT } from './web/tools.js';
+import type { FetchOptions } from './web/http.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
+import {
+  GHOST_IMMUTABLE_CODE, GHOST_MODEL_CODE, GHOST_MOVE_CODE, GHOST_PROMPT,
+  assertLocalModel, gazetaPushPayload, ghostConnectorNames, ghostModelProblem,
+} from './ghost.js';
 import { createAuth, type Auth } from './session.js';
+import { pruneHistory, retentionMonths } from './retention.js';
 import { SLOT_KEYS, allowPaidAgents, getSlots, isFreeModel, isSlotKey, modelsPrompt, resolveSlot, setAllowPaidAgents, setSlots } from './slots.js';
 import { servePolicy, contentDisposition, sanitizeFilename } from './artifact-http.js';
 import {
+  GhostRuleError,
   openDb,
   runMigrations,
   createConversation,
   listConversations,
   getConversation,
+  isGhostConversation,
   updateConversation,
   deleteConversation,
   getMessages,
@@ -64,6 +75,7 @@ import {
   getLastActiveMessage,
   findRegenerationAnchor,
   getSetting,
+  listGrantedWebHosts,
   setSetting,
   getAllSettings,
   listGazetaItems,
@@ -160,6 +172,10 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const authToken = process.env['SERVER_AUTH_TOKEN'];
   if (!authToken) throw new Error('Missing required environment variable: SERVER_AUTH_TOKEN');
+  // Placeholders from .env.example must not start a server: /internal/* and the API are guarded by these alone.
+  assertStrongSecret('SERVER_AUTH_TOKEN', authToken);
+  assertStrongSecret('GIT_PROXY_ADMIN_TOKEN', process.env['GIT_PROXY_ADMIN_TOKEN']);
+  assertStrongSecret('SUPERVISOR_TOKEN', process.env['SUPERVISOR_TOKEN']);
 
   // ─── Database ─────────────────────────────────────────────────────────────
   const db = openDb();
@@ -243,8 +259,12 @@ export interface BuildAppOptions {
   /** Password for the browser login form (SERVER_PASSWORD). Defaults to authToken. */
   password?: string;
   config: Pick<Config, 'model' | 'autoApproveTools'>;
+  /** Connectors a ghost chat may use (default: GHOST_CONNECTORS or sandbox + obsidian). */
+  ghostConnectors?: string[];
   /** Path of policy.json; omitted/null disables the file (tests). main() passes policyFilePath(). */
   policyFile?: string | null;
+  /** Test seams for web_fetch / web_search (fake DNS, a fetch that reaches a local server). */
+  web?: { fetchOptions?: FetchOptions; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv };
 }
 
 export interface BuiltApp {
@@ -270,6 +290,16 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const connectorRoutes = createConnectorRoutes({ db, router, registry, connections: connections as McpConnectionLike[] });
   await connectorRoutes.startSaved();
 
+  // ─── Web access: web_search / web_fetch + Settings → Web ──────────────────
+  const webRoutes = createWebRoutes({ db, vault: router.vault, fetchImpl: opts.web?.fetchImpl, env: opts.web?.env });
+  const webPageCache = new PageCache(Date.now);
+  /** Built per turn: web_search appears only while a search engine is configured. */
+  const webTools = (): VirtualTool[] => buildWebTools({ db, vault: router.vault, cache: webPageCache, ...opts.web });
+  /** web_search / web_fetch for a chat — none in a ghost chat (a query or a URL would leave the machine). */
+  const webToolsFor = (conversationId: string | null | undefined): VirtualTool[] => (isGhostConversation(db, conversationId) ? [] : webTools());
+  const webHostsFor = (conversationId: string | null | undefined, projectId: string | null | undefined, modelId: string) =>
+    () => listGrantedWebHosts(db, { conversationId: conversationId ?? undefined, projectId: projectId ?? undefined, modelId });
+
   // ─── Shared services ──────────────────────────────────────────────────────
   const policyStore = new PolicyStore(opts.policyFile ?? null);
   const approvalGate = new WebApprovalGate(db, policyStore);
@@ -284,6 +314,29 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
    */
   const defaultModelId = (): string =>
     resolveSlot(db, 'chat', router.chatCandidates(), id => router.isAvailable(id)) || config.model;
+
+  /**
+   * The model a chat runs on. A ghost chat never falls back to the global default — the default may be a cloud model —
+   * it has the local model it was created with, or none (and then the turn is refused).
+   */
+  const modelOf = (conv: { model: string | null; ghost: boolean }): string => (conv.ghost ? conv.model ?? '' : conv.model || defaultModelId());
+  const ghostConnectors = opts.ghostConnectors ?? ghostConnectorNames();
+  /** The tools a ghost chat gets: only the operator's own connectors. */
+  const ghostRegistry = (): ToolRegistry => registry.restrictToConnectors(ghostConnectors);
+  /** A local chat model a new ghost chat can start on: the default if it is local, else the first usable local one. */
+  const pickLocalChatModel = (): string | null => {
+    const local = router.chatCandidates().filter(m => isLocalModel(m) && m.available);
+    const def = defaultModelId();
+    return local.find(m => m.id === def)?.id ?? local[0]?.id ?? null;
+  };
+  /** Answers 409 and returns true when a ghost chat cannot take a turn because its model is not (or no longer) local. */
+  const refuseGhostTurn = (conv: { model: string | null; ghost: boolean }, res: express.Response): boolean => {
+    if (!conv.ghost) return false;
+    const problem = ghostModelProblem(conv.model);
+    if (!problem) return false;
+    res.status(409).json({ error: problem, code: GHOST_MODEL_CODE });
+    return true;
+  };
 
   router.onProviderRetry = info => {
     console.warn(`[provider] ${info.provider} busy (${info.status}) — retry #${info.attempt} in ${Math.round(info.delayMs / 1000)}s, giving up in ${Math.round(info.remainingMs / 60_000)} min`);
@@ -311,10 +364,15 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
     recordUsage: ({ conversationId, provider, model, usage }) => {
       ledger.record({ conversationId, provider, model, usage });
     },
+    ghostConnectors,
     workerExtraTools: (run, signal) => [
       humanInputTool({ convId: run.conversationId ?? '', projectId: run.projectId, runId: run.id, agent: run.label }, signal),
       reportTool({ convId: run.conversationId ?? '', projectId: run.projectId, runId: run.id, agent: run.label }),
+      // Narrowing like every other tool: a worker gets the file tools only when its parent delegated them by name.
+      ...[...workspaceFileTools(run.conversationId, run.id), ...webToolsFor(run.conversationId)].filter(t => run.tools.includes(t.definition.name)),
     ],
+    delegableTools: run => [...workspaceFileTools(run.conversationId, run.id), ...webToolsFor(run.conversationId)].map(t => t.definition.name),
+    webGrantedHosts: run => webHostsFor(run.conversationId, run.projectId, run.model)(),
   });
   /** Active root run per conversation — async Gazeta answers are delivered into it while a turn runs. */
   const activeRootRun = new Map<string, string>();
@@ -431,7 +489,7 @@ ${formatHumanResponse(response)}` };
   /** What the UI shows about a conversation beyond its messages. */
   function publicState(convId: string, st: ConversationState = getConversationState(db, convId)) {
     const conv = getConversation(db, convId);
-    const modelId = conv?.model || defaultModelId();
+    const modelId = conv ? modelOf(conv) : defaultModelId();
     const info = modelId ? getModelInfo(modelId) : undefined;
     return {
       mode: st.mode,
@@ -440,6 +498,22 @@ ${formatHumanResponse(response)}` };
       todos: st.todos,
       context: { used: st.lastInputTokens, limit: info?.contextLength ?? null },
     };
+  }
+
+  /**
+   * Text-file tools: no approval (see file-tools.ts). Only chats that have a sandbox have a workspace. The main
+   * assistant and its subagents get the same tools — a worker that has to edit through the shell would need an
+   * approval per command for what the user never wants to approve.
+   */
+  function workspaceFileTools(convId: string | null, runId: string): VirtualTool[] {
+    const conv = convId ? getConversation(db, convId) : null;
+    if (!convId || !conv?.sandboxEnabled) return [];
+    return fileTools({
+      owner: conv.projectId ?? convId,
+      sandbox: sandboxExec,
+      readFile: (o, p) => supervisor.readFile(o, p),
+      onWrite: w => logApprovalAudit(db, { action: 'agent_file_edit', toolLabel: `${w.action} ${w.path}`, toolArgs: JSON.stringify({ bytes: w.bytes }), conversationId: convId, runId }),
+    });
   }
 
   function buildVirtualTools(convId: string, rootRunId: string, signal: AbortSignal): VirtualTool[] {
@@ -452,15 +526,8 @@ ${formatHumanResponse(response)}` };
       todoTool(db, convId, announce),
       ...(getConversationState(db, convId).mode === 'plan' ? [proposePlanTool(db, convId, announce)] : []),
       ...agents.agentTools(rootRunId, signal),
-      // Text-file tools: no approval (see file-tools.ts). Only chats that have a sandbox have a workspace.
-      ...(conv?.sandboxEnabled
-        ? fileTools({
-            owner: conv.projectId ?? convId,
-            sandbox: sandboxExec,
-            readFile: (o, p) => supervisor.readFile(o, p),
-            onWrite: w => logApprovalAudit(db, { action: 'agent_file_edit', toolLabel: `${w.action} ${w.path}`, toolArgs: JSON.stringify({ bytes: w.bytes }), conversationId: convId, runId: rootRunId }),
-          })
-        : []),
+      ...workspaceFileTools(convId, rootRunId),
+      ...webToolsFor(convId),
     ];
   }
 
@@ -499,16 +566,13 @@ ${formatHumanResponse(response)}` };
   });
 
   // ─── Auth middleware ──────────────────────────────────────────────────────
-  // The SSE stream route is registered ABOVE this middleware with its own
-  // auth check (see below) — EventSource, the browser API SSE uses, cannot
-  // set custom headers, so that one route also has to accept the token as a
-  // query param. Every other /api route only ever accepts the header.
+  // The SSE stream route is registered ABOVE this middleware because it is a GET that must also work for a
+  // bearer-token client. EventSource cannot set headers, so the browser authenticates with its session cookie;
+  // the token is never accepted in the URL (it would end up in proxy logs and Referer headers).
   app.get('/api/conversations/:id/stream', (req, res) => {
-    const queryToken = typeof req.query['token'] === 'string' ? req.query['token'] : undefined;
     const authorized =
       auth.isCookieValid(req.headers.cookie) ||
-      isValidAuthHeader(req.headers.authorization, authToken) ||
-      (queryToken !== undefined && isValidAuthHeader(`Bearer ${queryToken}`, authToken));
+      isValidAuthHeader(req.headers.authorization, authToken);
     if (!authorized) {
       res.status(401).json({ error: 'unauthorized' });
       return;
@@ -527,6 +591,7 @@ ${formatHumanResponse(response)}` };
 
   app.use('/api', github.api);
   app.use('/api', connectorRoutes.api);
+  app.use('/api', webRoutes.api);
 
   // ─── Workspace Explorer + checkpoints (N3) ────────────────────────────────
   // `owner` = a project id, or a chat id for chats without a project (same rule as the sandbox tools).
@@ -645,12 +710,12 @@ ${formatHumanResponse(response)}` };
   });
 
   app.post('/api/projects', (req, res) => {
-    const { name, description } = req.body ?? {};
+    const { name, description, ghost } = req.body ?? {};
     if (typeof name !== 'string' || !name.trim()) {
-      res.status(400).json({ error: 'expected { name: string, description?: string }' });
+      res.status(400).json({ error: 'expected { name: string, description?: string, ghost?: boolean }' });
       return;
     }
-    const project = createProject(db, { name: name.trim(), description });
+    const project = createProject(db, { name: name.trim(), description, ghost: ghost === true });
     res.status(201).json(project);
   });
 
@@ -663,7 +728,12 @@ ${formatHumanResponse(response)}` };
   app.patch('/api/projects/:id', (req, res) => {
     const existing = getProject(db, req.params.id);
     if (!existing) { res.status(404).json({ error: 'project not found' }); return; }
-    const { name, description, policy } = req.body ?? {};
+    const { name, description, policy, ghost } = req.body ?? {};
+    // Ghost is decided when the project is created and never changes — in neither direction.
+    if (ghost !== undefined && (ghost === true) !== existing.ghost) {
+      res.status(400).json({ error: 'A project cannot become, or stop being, a ghost project. Create a new one.', code: GHOST_IMMUTABLE_CODE });
+      return;
+    }
     const patch: Parameters<typeof updateProject>[2] = {};
     if (typeof name === 'string' && name.trim()) patch.name = name.trim();
     if (typeof description === 'string') patch.description = description;
@@ -719,16 +789,26 @@ ${formatHumanResponse(response)}` };
   };
 
   app.post('/api/conversations', (req, res) => {
-    const { title, projectId, systemPrompt, model, sandboxEnabled } = req.body ?? {};
+    const { title, projectId, systemPrompt, sandboxEnabled } = req.body ?? {};
+    let { model } = req.body ?? {};
     if (refusesAsChatModel(model)) { res.status(400).json({ error: `"${model}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
+    let project: ReturnType<typeof getProject> = null;
     if (projectId !== undefined && projectId !== null) {
-      if (typeof projectId !== 'string' || !getProject(db, projectId)) {
+      project = typeof projectId === 'string' ? getProject(db, projectId) : null;
+      if (!project) {
         res.status(400).json({ error: 'unknown projectId' });
         return;
       }
     }
-    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, sandboxEnabled });
-    res.status(201).json({ id });
+    // A chat in a ghost project is a ghost chat. It starts on a local model — the one asked for, else a local default.
+    const ghost = req.body?.ghost === true || project?.ghost === true;
+    if (ghost) {
+      model = typeof model === 'string' && model ? model : pickLocalChatModel();
+      const problem = ghostModelProblem(model);
+      if (problem) { res.status(400).json({ error: problem, code: GHOST_MODEL_CODE }); return; }
+    }
+    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, sandboxEnabled, ghost });
+    res.status(201).json({ id, ghost });
   });
 
   app.get('/api/conversations/:id', (req, res) => {
@@ -736,14 +816,31 @@ ${formatHumanResponse(response)}` };
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
     // Same resolution order a turn uses, so the UI's model picker never shows "nothing selected"
     // for a conversation that simply inherits the default.
-    res.json({ ...conv, effectiveModel: conv.model || defaultModelId() });
+    res.json({ ...conv, effectiveModel: modelOf(conv) });
   });
 
   app.patch('/api/conversations/:id', (req, res) => {
     const patch = (req.body ?? {}) as Record<string, unknown>;
     if (refusesAsChatModel(patch['model'])) { res.status(400).json({ error: `"${String(patch['model'])}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
-    const ok = updateConversation(db, req.params.id, patch);
-    if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
+    const existing = getConversation(db, req.params.id);
+    if (existing) {
+      // Ghost is fixed at creation, in both directions; a ghost chat can only change to another local model.
+      if (patch['ghost'] !== undefined && (patch['ghost'] === true) !== existing.ghost) {
+        res.status(400).json({ error: existing.ghost ? 'A ghost chat cannot be turned into a normal chat.' : 'A normal chat cannot become a ghost chat — its history has already been in the cloud. Start a new ghost chat.', code: GHOST_IMMUTABLE_CODE });
+        return;
+      }
+      if (existing.ghost && patch['model'] !== undefined) {
+        const problem = ghostModelProblem(typeof patch['model'] === 'string' ? patch['model'] : null);
+        if (problem) { res.status(400).json({ error: problem, code: GHOST_MODEL_CODE }); return; }
+      }
+    }
+    try {
+      const ok = updateConversation(db, req.params.id, patch);
+      if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
+    } catch (err) {
+      if (err instanceof GhostRuleError) { res.status(409).json({ error: err.message, code: err.code === 'ghost_move' ? GHOST_MOVE_CODE : GHOST_IMMUTABLE_CODE }); return; }
+      throw err;
+    }
     res.json({ ok: true });
   });
 
@@ -758,7 +855,8 @@ ${formatHumanResponse(response)}` };
   // ─── Web Push (urgent Gazeta items) ───────────────────────────────────────
   const push = new PushService(db, router.vault);
   const offPush = onGazetaItemCreated(item => {
-    if (item.urgent) void push.notify({ title: item.title, body: item.description, url: '/' });
+    // What a ghost chat asks stays in the app: the notification says only that something is waiting.
+    if (item.urgent) void push.notify(gazetaPushPayload(item));
   });
   app.get('/api/push/key', (_req, res) => {
     const publicKey = push.publicKey();
@@ -853,10 +951,11 @@ ${formatHumanResponse(response)}` };
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
     if (getTurnState(convId).status === 'running') { res.status(409).json({ error: 'a turn is running in this conversation' }); return; }
-    const modelId = conv.model || defaultModelId();
+    if (refuseGhostTurn(conv, res)) return;
+    const modelId = modelOf(conv);
     if (!modelId) { res.status(400).json({ error: 'No model is set up yet — add a provider in Settings → Models.' }); return; }
     try {
-      const bg = backgroundModel(db, router);
+      const bg = backgroundModel(db, router, { localOnly: conv.ghost });
       const chat = bg ? null : router.clientFor(modelId);
       const via = bg ?? { model: modelId, provider: chat!.provider, client: chat!.client as LlmClient };
       const r = await compactConversation(db, convId, {
@@ -896,7 +995,7 @@ ${formatHumanResponse(response)}` };
     sse.emit(convId, 'turn:start', { turnId });
 
     void (async () => {
-      const effectiveModel = conv.model || defaultModelId();
+      const effectiveModel = modelOf(conv);
       const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
       const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
       const unregisterRoot = agents.registerRoot(rootRun.id, controller);
@@ -934,9 +1033,11 @@ ${formatHumanResponse(response)}` };
         if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
         effectiveSystem += '\n\n' + FILE_TOOLS_PROMPT;
       }
+      effectiveSystem += '\n\n' + (conv.ghost ? GHOST_PROMPT : WEB_TOOLS_PROMPT);
 
       // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
-      const agentModels = router.chatCandidates().filter(m => m.available);
+      // In a ghost chat that is only the local ones.
+      const agentModels = router.chatCandidates().filter(m => m.available && (!conv.ghost || isLocalModel(m)));
       if (agentModels.length > 0) {
         const block = modelsPrompt(agentModels, {
           subagent: resolveSlot(db, 'subagent', agentModels, id => router.isAvailable(id)),
@@ -964,14 +1065,18 @@ ${formatHumanResponse(response)}` };
       try {
         // Inside the try on purpose: a missing/undecryptable key must surface as an
         // ordinary turn:error the UI already knows how to show, not a crash.
+        // Checked again here, at the last moment before any content leaves: the routes already refuse, but a model can
+        // lose its "local" mark between the request and the turn (provider repointed, hub reclassified it).
+        if (conv.ghost) assertLocalModel(effectiveModel);
         if (!effectiveModel) throw new Error('No model is set up yet — add a provider in Settings → Models.');
         const { provider, info, client } = router.clientFor(effectiveModel);
         const state = getConversationState(db, convId);
-        const toolDefs = registry.toLlmTools() as Llm.Tool[];
+        const turnTools = conv.ghost ? ghostRegistry() : registry;
+        const toolDefs = turnTools.toLlmTools() as Llm.Tool[];
 
         // Summarise the older part of the conversation with the helper model (or the chat model itself).
         const compactNow = async (tight: boolean): Promise<boolean> => {
-          const bg = backgroundModel(db, router);
+          const bg = backgroundModel(db, router, { localOnly: conv.ghost });
           const via = bg ?? { model: effectiveModel, provider, client: client as LlmClient };
           try {
             const r = await compactConversation(db, convId, {
@@ -1005,7 +1110,7 @@ ${formatHumanResponse(response)}` };
             llm: client,
             model: effectiveModel,
             maxTokens: Math.max(4096, info.minOutputTokens ?? 0),
-            tools: registry,
+            tools: turnTools,
             systemPrompt: effectiveSystem,
             contextWindow: info.contextLength,
             reasoningEffort: state.effort ?? undefined,
@@ -1022,6 +1127,7 @@ ${m.body}`),
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
             browserPolicy: browserPolicyOf(conv.projectId),
+            webAccess: conv.ghost ? undefined : { grantedHosts: webHostsFor(convId, conv.projectId, effectiveModel) },
             confirm: async (label, args, opts) => {
               const decision = await approvalGate.confirmDetailed(convId, label, args, controller.signal, {
                 projectId: conv.projectId ?? undefined,
@@ -1074,7 +1180,8 @@ ${m.body}`),
           updateConversation(db, convId, { title: titleSource.slice(0, 60) });
           // Upgrade the plain slice to a proper title with a free-tier model; best-effort, never blocks the turn.
           const assistantText = textOfHistory(updatedHistory.slice(history.length + 1));
-          const bg = backgroundModel(db, router);
+          // A ghost chat's title is only ever written by a local model; without one the plain slice stays.
+          const bg = backgroundModel(db, router, { localOnly: conv.ghost });
           if (bg && typeof content === 'string' && assistantText) {
             void generateTitle(bg, content, assistantText, usage => ledger.record({ conversationId: convId, provider: bg.provider, model: bg.model, usage }))
               .then(title => {
@@ -1158,6 +1265,7 @@ ${m.body}`),
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
+    if (refuseGhostTurn(conv, res)) return;
 
     // Live turn — runs detached from the HTTP request. historyBeforeTurn is
     // read BEFORE the optimistic append below, so it never includes the
@@ -1182,6 +1290,7 @@ ${m.body}`),
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
+    if (refuseGhostTurn(conv, res)) return;
     const { parentId, content } = req.body ?? {};
     if (typeof content !== 'string' || !content.trim()) {
       res.status(400).json({ error: 'expected { content: string, parentId: number | null }' });
@@ -1213,6 +1322,7 @@ ${m.body}`),
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
+    if (refuseGhostTurn(conv, res)) return;
     const { parentId } = req.body ?? {};
     const fromId = parentId === null || parentId === undefined ? null : Number(parentId);
     if (fromId !== null && !Number.isInteger(fromId)) {
@@ -1232,6 +1342,7 @@ ${m.body}`),
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
+    if (refuseGhostTurn(conv, res)) return;
     const last = getLastActiveMessage(db, convId);
     if (!last) { res.status(404).json({ error: 'conversation has no messages yet' }); return; }
     const result = regenerateFrom(convId, conv, last.id);
@@ -1596,6 +1707,7 @@ ${formatHumanResponse(response)}`;
       flavor: isFlavor(b['flavor']) ? b['flavor'] : preset?.flavor ?? 'generic',
       concurrency: preset?.concurrency ?? null,
       retryMin: patience(b['retryMin'], 1, 24 * 60) ?? preset?.retryMin ?? null,
+      local: b['local'] === true,
     });
     if (apiKey) router.saveKey(slug, apiKey);
     // Test the connection and load the model list right away; the provider stays saved either way.
@@ -1622,6 +1734,7 @@ ${formatHumanResponse(response)}`;
       enabled: typeof b['enabled'] === 'boolean' ? b['enabled'] : undefined,
       concurrency: c === undefined ? undefined : (c as number | null),
       retryMin: b['retryMin'] as number | null | undefined,
+      local: typeof b['local'] === 'boolean' ? b['local'] : undefined,
     });
     res.json({ ok: true });
   });
@@ -1744,7 +1857,7 @@ ${formatHumanResponse(response)}`;
     if (!force && getSetting(db, 'last_digest_date') === today) return null;
     const bg = backgroundModel(db, router);
     if (!bg) return null;
-    if (listGazetaItems(db, 'pending').length === 0) return null;
+    if (listGazetaItems(db, 'pending').every(i => i.ghost)) return null;
     setSetting(db, 'last_digest_date', today);
     const id = await generateDailySummary(db, bg.client, bg.model, usage => ledger.record({ conversationId: null, provider: bg.provider, model: bg.model, usage }));
     sse.emitAll('gazeta:new', { type: 'daily_summary' });
@@ -1760,8 +1873,22 @@ ${formatHumanResponse(response)}`;
   const digestInterval = setInterval(() => { runDailyDigest().catch(e => console.error('[digest]', (e as Error).message)); }, 60 * 60 * 1000);
   digestInterval.unref();
 
+  // Bookkeeping tables (usage, approval audit, provider replay state) are trimmed to RETENTION_MONTHS (default 12; 0 = keep all).
+  const retention = retentionMonths();
+  const prune = () => {
+    if (retention === 0) return;
+    try {
+      const r = pruneHistory(db, retention);
+      if (r.usage + r.audit + r.toolMeta > 0) console.log(`[retention] removed ${r.usage} usage, ${r.audit} audit, ${r.toolMeta} replay rows older than ${retention} months`);
+    } catch (err) { console.warn(`[retention] ${(err as Error).message}`); }
+  };
+  prune();
+  const pruneInterval = setInterval(prune, 24 * 60 * 60 * 1000);
+  pruneInterval.unref();
+
   function stop(): void {
     clearInterval(digestInterval);
+    clearInterval(pruneInterval);
     offPush();
     clearInterval(keepaliveInterval);
   }

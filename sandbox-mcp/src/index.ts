@@ -4,7 +4,7 @@ import { createApp } from './server.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const supervisor = new SupervisorClient(config.supervisorUrl);
+  const supervisor = new SupervisorClient(config.supervisorUrl, config.supervisorToken);
 
   // Verify supervisor is reachable on startup — fail fast with a clear message
   // rather than discovering the problem on the first tool call.

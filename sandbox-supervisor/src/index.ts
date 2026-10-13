@@ -1,6 +1,7 @@
 import { SandboxManager } from './sandboxes.js';
 import { DockerodeOps, configFromEnv } from './docker.js';
 import { createSupervisorApp } from './api.js';
+import { assertStrongSecret } from './secret-check.js';
 
 const PORT = parseInt(process.env['SUPERVISOR_PORT'] ?? '3001', 10);
 const num = (name: string, fallback: number) => {
@@ -9,6 +10,9 @@ const num = (name: string, fallback: number) => {
 };
 
 async function main(): Promise<void> {
+  const token = process.env['SUPERVISOR_TOKEN'];
+  if (!token) throw new Error('Missing required environment variable: SUPERVISOR_TOKEN (generate with: openssl rand -hex 32)');
+  assertStrongSecret('SUPERVISOR_TOKEN', token);
   const ops = new DockerodeOps(configFromEnv());
   await ops.ensureNetwork();
 
@@ -33,7 +37,7 @@ async function main(): Promise<void> {
   sandboxes.startWatchdog(num('SANDBOX_WATCHDOG_INTERVAL_MS', 120_000));
   sandboxes.startCpuWatchdog(num('SANDBOX_CPU_INTERVAL_MS', 30_000));
 
-  const app = createSupervisorApp(sandboxes, num('SANDBOX_DEFAULT_TIMEOUT_MS', 30_000));
+  const app = createSupervisorApp(sandboxes, num('SANDBOX_DEFAULT_TIMEOUT_MS', 30_000), { token });
   const server = app.listen(PORT, '0.0.0.0', () => console.log(`[supervisor] listening on port ${PORT}`));
 
   // Containers and volumes are deliberately left alone on shutdown; only the shell sessions end.

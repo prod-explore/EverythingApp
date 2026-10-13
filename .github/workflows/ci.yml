@@ -5,6 +5,10 @@ on:
     branches: [main, 'wip/**']
   pull_request:
 
+# CI only reads the repository.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -57,4 +61,51 @@ jobs:
       - name: Validate compose file
         run: |
           cp .env.example .env
-          KEY_VAULT_SECRET=ci SERVER_AUTH_TOKEN=ci MCP_API_KEY=ci PLAYWRIGHT_MCP_API_KEY=ci GITHUB_PAT=ci GIT_PROXY_ADMIN_TOKEN=ci docker compose config -q
+          KEY_VAULT_SECRET=ci SERVER_AUTH_TOKEN=ci MCP_API_KEY=ci PLAYWRIGHT_MCP_API_KEY=ci SUPERVISOR_TOKEN=ci GITHUB_PAT=ci GIT_PROXY_ADMIN_TOKEN=ci docker compose config -q
+
+  audit:
+    name: npm audit (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cli, git-proxy, sandbox-mcp, sandbox-supervisor, playwright-mcp, web]
+    defaults:
+      run:
+        working-directory: ${{ matrix.package }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Runtime dependencies only; high and critical advisories fail the build.
+      - run: npm audit --omit=dev --audit-level=high
+
+  images:
+    name: docker build (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [cli, git-proxy, sandbox-mcp, sandbox-supervisor, playwright-mcp]
+    steps:
+      - uses: actions/checkout@v4
+      # cli is built from the repository root (it bundles web/); the others from their own folder.
+      - name: Build image
+        run: |
+          if [ "${{ matrix.package }}" = "cli" ]; then
+            docker build -f cli/Dockerfile .
+          else
+            docker build ${{ matrix.package }}
+          fi
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

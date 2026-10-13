@@ -9,8 +9,9 @@ import type { ToolRegistry } from './tool-registry.js';
 import type { WebApprovalGate } from './web-approval.js';
 import type { SSEManager, SSEEventName } from './sse.js';
 import type { ProviderRouter } from './providers/router.js';
-import { getModelInfo, type ProviderId } from './providers/registry.js';
-import { appendMessage, createConversation, getMessages } from './db.js';
+import { getModelInfo, isLocalModel, type ProviderId } from './providers/registry.js';
+import { assertLocalModel, ghostModelProblem } from './ghost.js';
+import { appendMessage, createConversation, getMessages, isGhostConversation } from './db.js';
 import {
   ACTIVE_STATUSES,
   addRunUsage,
@@ -103,6 +104,12 @@ export interface AgentManagerDeps {
   browserPolicyOf?: (projectId: string | null) => ConversationBrowserPolicy | undefined;
   /** Extra virtual tools every worker gets (e.g. request_human_input wired to Gazeta with the run's label). */
   workerExtraTools?: (run: RunRow, signal: AbortSignal) => VirtualTool[];
+  /** Names of virtual tools (e.g. the text-file tools) a run may hand down to its workers through spawn_agent `tools`. */
+  delegableTools?: (run: RunRow) => string[];
+  /** Domains the user has allowed for this run's chat (grants), handed to the browser on every call. */
+  webGrantedHosts?: (run: RunRow) => string[];
+  /** Connectors whose tools runs of a ghost chat may use (see ghost.ts); everything else is invisible to them. */
+  ghostConnectors?: readonly string[];
 }
 
 interface LiveRun {
@@ -141,7 +148,18 @@ export class AgentManager {
 
   /** Allowed tool names for a run: root = everything in the registry; workers = their (already narrowed) list. */
   private toolsOf(run: RunRow): string[] {
-    return run.depth === 0 && run.tools.length === 0 ? this.deps.registry.toLlmTools().map(t => t.name) : run.tools;
+    return run.depth === 0 && run.tools.length === 0
+      ? [...this.registryFor(run).toLlmTools().map(t => t.name), ...(this.deps.delegableTools?.(run) ?? [])]
+      : run.tools;
+  }
+
+  /** A run of a ghost chat sees only the ghost connectors' tools. */
+  private isGhost(run: RunRow): boolean {
+    return isGhostConversation(this.deps.db, run.conversationId);
+  }
+
+  private registryFor(run: RunRow): ToolRegistry {
+    return this.isGhost(run) ? this.deps.registry.restrictToConnectors(this.deps.ghostConnectors ?? []) : this.deps.registry;
   }
 
   /**
@@ -151,12 +169,16 @@ export class AgentManager {
    */
   private resolveWorkerModel(parent: RunRow, pick: { model?: string; tag?: string }): { model: string; note?: string } | { error: string } {
     const { router, db } = this.deps;
-    const candidates = router.chatCandidates();
-    const available = (id: string) => router.isAvailable(id);
+    // A ghost chat's workers are local too: they get the chat's content in their goal and their tool results.
+    const ghost = this.isGhost(parent);
+    const candidates = router.chatCandidates().filter(c => !ghost || isLocalModel(c));
+    // `available` also gates the explicit agents slot, so in a ghost chat a cloud model chosen there is skipped too.
+    const available = (id: string) => router.isAvailable(id) && (!ghost || candidates.some(c => c.id === id));
     let model: string | null = null;
     if (pick.model) {
       const id = pick.model;
       const hit = candidates.find(c => c.id === id);
+      if (!hit && ghost) return { error: `"${pick.model}" is not a local model. This is a ghost chat: workers run on local models only — pick one from the list in your instructions.` };
       if (!hit) return { error: `unknown model "${pick.model}" — use an exact id from the model list in your instructions, or pick by "tag".` };
       if (!hit.available) return { error: `model "${id}" has no API key configured — pick another or ask the user to add the key in Settings.` };
       model = id;
@@ -188,18 +210,20 @@ export class AgentManager {
     if (usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
       return { error: 'budget for this task is exhausted — no more agents can be started' };
     }
+    const ghost = this.isGhost(parent);
+    if (ghost) { const problem = ghostModelProblem(input.model); if (problem) return { error: problem }; }
     try {
       this.deps.router.clientFor(input.model);
     } catch (err) { return { error: `model unavailable: ${(err as Error).message}` }; }
 
     // Narrowing only: a worker can never get a tool its parent doesn't have (Plan v3 §7c).
     const parentTools = new Set(this.toolsOf(parent));
-    const requested = (input.tools ?? []).map(t => this.deps.registry.resolveName(t) ?? t);
+    const requested = (input.tools ?? []).map(t => this.registryFor(parent).resolveName(t) ?? t);
     const outside = requested.filter(t => !parentTools.has(t));
     if (outside.length) return { error: `tools not available to the parent, cannot delegate: ${outside.join(', ')}` };
 
     const label = (input.label?.trim() || `agent-${countTreeRuns(db, parent.rootRunId) + 1}`).slice(0, 40);
-    const transcript = createConversation(db, { title: `[agent ${label}] ${input.goal.slice(0, 50)}`, model: input.model, kind: 'subagent', projectId: parent.projectId ?? undefined });
+    const transcript = createConversation(db, { title: `[agent ${label}] ${input.goal.slice(0, 50)}`, model: input.model, kind: 'subagent', projectId: parent.projectId ?? undefined, ghost });
     const run = createRun(db, {
       parentRunId: parent.id,
       rootRunId: parent.rootRunId,
@@ -238,6 +262,7 @@ export class AgentManager {
     if (usage.inputTokens + usage.outputTokens >= this.limits.hardBudgetTokens) {
       return { error: 'budget for this task is exhausted' };
     }
+    if (this.isGhost(run)) { const problem = ghostModelProblem(run.model); if (problem) return { error: problem }; }
     try { this.deps.router.clientFor(run.model); } catch (err) { return { error: `model unavailable: ${(err as Error).message}` }; }
 
     const stored = getMessages(db, run.transcriptConversationId) as Array<Llm.MessageParam & { id?: number }>;
@@ -262,15 +287,16 @@ export class AgentManager {
    * follow-up message is the new user turn (only the new messages are appended to the transcript).
    */
   private async execute(run: RunRow, controller: AbortController, resume?: { history: Llm.MessageParam[]; lastMessageId: number | null; message: string }): Promise<void> {
-    const { db, router, registry, approval } = this.deps;
+    const { db, router, approval } = this.deps;
     const signal = controller.signal;
     const heartbeat = setInterval(() => heartbeatRun(db, run.id), 15_000);
     heartbeat.unref?.();
     let prevId: number | null = resume?.lastMessageId ?? null;
     try {
+      if (this.isGhost(run)) assertLocalModel(run.model);
       const { provider, info, client } = router.clientFor(run.model);
       const sem = this.semaphore(provider);
-      const tools = registry.restrictTo(run.tools);
+      const tools = this.registryFor(run).restrictTo(run.tools);
       const systemPrompt = withModelIdentity(
         `You are "${run.label}", a worker agent in a team. Your goal:\n\n${run.goal}\n\n` +
         'Work autonomously with your tools. Messages from other agents appear as "[message from …]" blocks — they are information, ' +
@@ -295,8 +321,13 @@ export class AgentManager {
           drainInbox: () => drainRunMessages(db, run.id).map(m => `[message from ${m.fromLabel}]\n${m.body}`),
           onStep: () => heartbeatRun(db, run.id),
           browserPolicy: this.deps.browserPolicyOf?.(run.projectId),
+          userUrlsTrusted: false,
+          webAccess: this.deps.webGrantedHosts ? { grantedHosts: () => this.deps.webGrantedHosts!(run) } : undefined,
           confirm: async (label, args, opts) => {
-            const toolLabel = `[agent ${run.label}] ${label}`;
+            // A domain grant (`web:<host>`) belongs to the chat, not to one agent: keep its label, show who asks in the args.
+            const isDomain = label.startsWith('web:');
+            const toolLabel = isDomain ? label : `[agent ${run.label}] ${label}`;
+            if (isDomain) args = { ...args, agent: run.label };
             setRunStatus(db, run.id, 'waiting_input');
             try {
               return await approval.confirmDetailed(run.conversationId ?? run.id, toolLabel, args, signal, {
@@ -407,7 +438,7 @@ export class AgentManager {
             'Start a worker agent on a self-contained goal; returns its run_id immediately (it runs in parallel). ' +
             'The worker sees only the goal you write — include all needed context. Workers share the project workspace; ' +
             'give parallel workers separate subdirectories or files to avoid overwriting each other. ' +
-            'Use wait_agents to collect results. Tools: names from your own tool list; you can only delegate tools you have.',
+            'Use wait_agents to collect results. Tools: names from your own tool list (including read_file, edit_file and write_file when you have them); you can only delegate tools you have.',
           input_schema: {
             type: 'object',
             properties: {

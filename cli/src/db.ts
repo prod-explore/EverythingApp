@@ -3,7 +3,7 @@ import { migrateRuns } from './runs.js';
 import { migrateSearch } from './search.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 
 const DEFAULT_DB_PATH = join(homedir(), '.everythingapp', 'everythingapp.db');
 
@@ -19,7 +19,7 @@ export function openDb(path: string = dbPath()): Database.Database {
   return db;
 }
 
-function columnExists(db: Database.Database, table: string, column: string): boolean {
+export function columnExists(db: Database.Database, table: string, column: string): boolean {
   const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
   return cols.some(c => c.name === column);
 }
@@ -272,6 +272,82 @@ export function runMigrations(db: Database.Database): void {
   // Empty = automatic (a usable free model, else any chat model); the `chat` model slot in Settings sets it.
   seedSetting.run('default_model', '');
   seedSetting.run('custom_instructions', '');
+
+  applyVersionedMigrations(db);
+}
+
+// ─── Versioned migrations ────────────────────────────────────────────────────
+// Everything above is the baseline: idempotent "create if missing" statements that predate versioning and run on
+// every start. From here on a schema change is a numbered entry in MIGRATIONS, applied exactly once, in order, each in
+// its own transaction, and recorded in `PRAGMA user_version`. Never edit or reorder an entry that has shipped — add a
+// new one. A database stamped by a NEWER build than this one is refused instead of being silently misread.
+
+export interface Migration {
+  id: number;
+  name: string;
+  up: (db: Database.Database) => void;
+}
+
+export const MIGRATIONS: readonly Migration[] = [
+  {
+    id: 1,
+    name: 'ghost mode: immutable flag on chats and projects, ghost-aware inbox',
+    up: db => {
+      for (const table of ['conversations', 'projects', 'gazeta_items'] as const) {
+        if (!columnExists(db, table, 'ghost')) db.exec(`ALTER TABLE ${table} ADD COLUMN ghost INTEGER NOT NULL DEFAULT 0`);
+      }
+      // The flag is the privacy boundary of a chat, so it is enforced by the database itself, not only by the API:
+      // no UPDATE statement from anywhere in the code base can flip it in either direction.
+      db.exec(`
+        CREATE TRIGGER IF NOT EXISTS conversations_ghost_immutable BEFORE UPDATE OF ghost ON conversations
+        WHEN OLD.ghost IS NOT NEW.ghost
+        BEGIN SELECT RAISE(ABORT, 'ghost_immutable'); END;
+        CREATE TRIGGER IF NOT EXISTS projects_ghost_immutable BEFORE UPDATE OF ghost ON projects
+        WHEN OLD.ghost IS NOT NEW.ghost
+        BEGIN SELECT RAISE(ABORT, 'ghost_immutable'); END;
+      `);
+    },
+  },
+];
+
+export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1]!.id;
+
+export function schemaVersion(db: Database.Database): number {
+  return db.pragma('user_version', { simple: true }) as number;
+}
+
+function applyVersionedMigrations(db: Database.Database): void {
+  const current = schemaVersion(db);
+  if (current > LATEST_SCHEMA_VERSION) {
+    throw new Error(`The database is at schema version ${current}, newer than this build understands (${LATEST_SCHEMA_VERSION}). Update EverythingApp, or restore a backup made before the upgrade.`);
+  }
+  const pending = MIGRATIONS.filter(m => m.id > current);
+  if (pending.length === 0) return;
+  // A file-backed database that already holds data gets a safety copy before its first pending migration runs.
+  const file = db.name;
+  if (current > 0 || hasUserData(db)) snapshotBeforeMigration(db, file, current);
+  for (const m of pending) {
+    db.transaction(() => {
+      m.up(db);
+      db.pragma(`user_version = ${m.id}`);
+    })();
+  }
+}
+
+function hasUserData(db: Database.Database): boolean {
+  return (db.prepare(`SELECT EXISTS(SELECT 1 FROM conversations) OR EXISTS(SELECT 1 FROM projects) AS n`).get() as { n: number }).n === 1;
+}
+
+/** `<db>.pre-v<version>.bak` via VACUUM INTO (a consistent copy even in WAL mode). Best effort: never blocks startup. */
+function snapshotBeforeMigration(db: Database.Database, file: string, version: number): void {
+  if (!file || file === ':memory:' || !existsSync(file)) return;
+  const target = `${file}.pre-v${version}.bak`;
+  if (existsSync(target)) return; // one safety copy per version step is enough
+  try {
+    db.prepare('VACUUM INTO ?').run(target);
+  } catch (err) {
+    console.warn(`[db] could not write the pre-migration backup ${target}: ${(err as Error).message}`);
+  }
 }
 
 // ─── Conversations ───────────────────────────────────────────────────────────
@@ -283,6 +359,8 @@ export interface ConversationRow {
   systemPrompt: string | null;
   model: string | null;
   sandboxEnabled: boolean;
+  /** Ghost chat: its own flag or its project's. Immutable (see MIGRATIONS[0] and ghost.ts). */
+  ghost: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -293,15 +371,23 @@ export interface ConversationListItem {
   title: string;
   updatedAt: string;
   messageCount: number;
+  ghost: boolean;
+}
+
+/** Raised for a change the Ghost-mode rules forbid; `code` is what the API returns to the client. */
+export class GhostRuleError extends Error {
+  constructor(readonly code: 'ghost_immutable' | 'ghost_move', message: string) { super(message); this.name = 'GhostRuleError'; }
 }
 
 export function createConversation(
   db: Database.Database,
-  opts: { title?: string; projectId?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent' } = {},
+  opts: { title?: string; projectId?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent'; ghost?: boolean } = {},
 ): { id: string } {
+  // A chat inside a ghost project is a ghost chat — the flag is stored on the row too, so it never depends on a join.
+  const ghost = opts.ghost === true || (opts.projectId ? isGhostProject(db, opts.projectId) : false);
   const stmt = db.prepare(`
-    INSERT INTO conversations (title, project_id, system_prompt, model, sandbox_enabled, kind)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO conversations (title, project_id, system_prompt, model, sandbox_enabled, kind, ghost)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
     RETURNING id
   `);
   const row = stmt.get(
@@ -311,6 +397,7 @@ export function createConversation(
     opts.model ?? null,
     opts.sandboxEnabled ? 1 : 0,
     opts.kind ?? 'chat',
+    ghost ? 1 : 0,
   ) as { id: string };
   return { id: row.id };
 }
@@ -319,24 +406,25 @@ export function listConversations(db: Database.Database): ConversationListItem[]
   return (
     db
       .prepare(
-        `SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt,
+        `SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt, c.ghost as ghost,
           (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as messageCount
          FROM conversations c
          WHERE c.kind = 'chat'
          ORDER BY c.updated_at DESC`,
       )
-      .all() as ConversationListItem[]
-  );
+      .all() as Array<Omit<ConversationListItem, 'ghost'> & { ghost: number }>
+  ).map(r => ({ ...r, ghost: r.ghost === 1 }));
 }
 
 export function getConversation(db: Database.Database, id: string): ConversationRow | null {
   const row = db
     .prepare(
-      `SELECT id, project_id as projectId, title, system_prompt as systemPrompt, model,
-              sandbox_enabled as sandboxEnabled, created_at as createdAt, updated_at as updatedAt
-       FROM conversations WHERE id = ?`,
+      `SELECT c.id, c.project_id as projectId, c.title, c.system_prompt as systemPrompt, c.model,
+              c.sandbox_enabled as sandboxEnabled, c.created_at as createdAt, c.updated_at as updatedAt,
+              (c.ghost = 1 OR COALESCE((SELECT p.ghost FROM projects p WHERE p.id = c.project_id), 0) = 1) as ghost
+       FROM conversations c WHERE c.id = ?`,
     )
-    .get(id) as ({ id: string; projectId: string | null; title: string; systemPrompt: string | null; model: string | null; sandboxEnabled: number; createdAt: string; updatedAt: string }) | undefined;
+    .get(id) as ({ id: string; projectId: string | null; title: string; systemPrompt: string | null; model: string | null; sandboxEnabled: number; ghost: number; createdAt: string; updatedAt: string }) | undefined;
   if (!row) return null;
   return {
     id: row.id,
@@ -345,9 +433,21 @@ export function getConversation(db: Database.Database, id: string): Conversation
     systemPrompt: row.systemPrompt,
     model: row.model,
     sandboxEnabled: Boolean(row.sandboxEnabled),
+    ghost: row.ghost === 1,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
+}
+
+/** True for a ghost chat (own flag or ghost project); also for the agent transcripts that belong to one. */
+export function isGhostConversation(db: Database.Database, id: string | null | undefined): boolean {
+  if (!id) return false;
+  return getConversation(db, id)?.ghost === true;
+}
+
+export function isGhostProject(db: Database.Database, id: string | null | undefined): boolean {
+  if (!id) return false;
+  return (db.prepare(`SELECT ghost FROM projects WHERE id = ?`).get(id) as { ghost: number } | undefined)?.ghost === 1;
 }
 
 export function updateConversation(
@@ -358,7 +458,16 @@ export function updateConversation(
   const sets: string[] = ["updated_at = datetime('now')"];
   const values: unknown[] = [];
   if (patch.title !== undefined) { sets.push('title = ?'); values.push(patch.title); }
-  if (patch.projectId !== undefined) { sets.push('project_id = ?'); values.push(patch.projectId); }
+  if (patch.projectId !== undefined) {
+    // Ghost chats never change project; no chat moves INTO a ghost project (it would inherit the flag from its project
+    // while its history was written under looser rules).
+    const cur = db.prepare(`SELECT project_id as projectId, ghost FROM conversations WHERE id = ?`).get(id) as { projectId: string | null; ghost: number } | undefined;
+    if (cur && cur.projectId !== patch.projectId) {
+      if (cur.ghost === 1 || isGhostProject(db, cur.projectId)) throw new GhostRuleError('ghost_move', 'A ghost chat cannot be moved out of its place.');
+      if (isGhostProject(db, patch.projectId)) throw new GhostRuleError('ghost_move', 'A chat cannot be moved into a ghost project — start a new chat there.');
+    }
+    sets.push('project_id = ?'); values.push(patch.projectId);
+  }
   if (patch.systemPrompt !== undefined) { sets.push('system_prompt = ?'); values.push(patch.systemPrompt); }
   if (patch.model !== undefined) { sets.push('model = ?'); values.push(patch.model); }
   if (patch.sandboxEnabled !== undefined) { sets.push('sandbox_enabled = ?'); values.push(patch.sandboxEnabled ? 1 : 0); }
@@ -616,6 +725,8 @@ export interface GazetaItem {
   urgent: boolean;
   /** Report pins: [{ path, sha256, artifactId? }] snapshots. */
   attachments: unknown[] | null;
+  /** Came from a ghost chat or project: never summarised by a model, never shown in a notification. */
+  ghost: boolean;
   title: string;
   description: string | null;
   inputSchema: unknown | null;
@@ -625,7 +736,7 @@ export interface GazetaItem {
   respondedAt: string | null;
 }
 
-type GazetaCreatedListener = (item: { id: string; type: string; title: string; description?: string; urgent: boolean; conversationId?: string }) => void;
+type GazetaCreatedListener = (item: { id: string; type: string; title: string; description?: string; urgent: boolean; conversationId?: string; ghost: boolean }) => void;
 const gazetaCreatedListeners = new Set<GazetaCreatedListener>();
 /** Lets side channels (Web Push) react to new inbox items without every call site knowing about them. */
 export function onGazetaItemCreated(fn: GazetaCreatedListener): () => void {
@@ -640,10 +751,11 @@ export function createGazetaItem(
     projectId?: string | null; runId?: string | null; agent?: string | null; urgent?: boolean; attachments?: unknown[];
   },
 ): string {
+  const ghost = isGhostConversation(db, item.conversationId) || isGhostProject(db, item.projectId);
   const row = db
     .prepare(
-      `INSERT INTO gazeta_items (type, conversation_id, title, description, input_schema, project_id, run_id, agent, urgent, attachments)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      `INSERT INTO gazeta_items (type, conversation_id, title, description, input_schema, project_id, run_id, agent, urgent, attachments, ghost)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
     )
     .get(
       item.type,
@@ -656,9 +768,10 @@ export function createGazetaItem(
       item.agent ?? null,
       item.urgent ? 1 : 0,
       item.attachments ? JSON.stringify(item.attachments) : null,
+      ghost ? 1 : 0,
     ) as { id: string };
   for (const fn of gazetaCreatedListeners) {
-    try { fn({ id: row.id, type: item.type, title: item.title, description: item.description, urgent: Boolean(item.urgent), conversationId: item.conversationId }); } catch { /* listeners must never break inserts */ }
+    try { fn({ id: row.id, type: item.type, title: item.title, description: item.description, urgent: Boolean(item.urgent), conversationId: item.conversationId, ghost }); } catch { /* listeners must never break inserts */ }
   }
   return row.id;
 }
@@ -689,6 +802,7 @@ export function listGazetaItems(
     agent: (r['agent'] as string | null) ?? null,
     urgent: r['urgent'] === 1,
     attachments: r['attachments'] ? JSON.parse(r['attachments'] as string) : null,
+    ghost: r['ghost'] === 1,
     title: r['title'] as string,
     description: r['description'] as string | null,
     inputSchema: r['input_schema'] ? JSON.parse(r['input_schema'] as string) : null,
@@ -832,6 +946,8 @@ export interface ProjectRow {
   description: string | null;
   workspaceVolume: string | null;
   policy: Record<string, unknown>;
+  /** Ghost project: every chat in it is a ghost chat. Fixed at creation. */
+  ghost: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -840,6 +956,7 @@ export interface ProjectListItem {
   id: string;
   name: string;
   description: string | null;
+  ghost: boolean;
   conversationCount: number;
   createdAt: string;
   updatedAt: string;
@@ -847,46 +964,42 @@ export interface ProjectListItem {
 
 export function createProject(
   db: Database.Database,
-  opts: { name: string; description?: string },
+  opts: { name: string; description?: string; ghost?: boolean },
 ): ProjectRow {
   const row = db.prepare(`
-    INSERT INTO projects (name, description)
-    VALUES (?, ?)
+    INSERT INTO projects (name, description, ghost)
+    VALUES (?, ?, ?)
     RETURNING *
-  `).get(opts.name, opts.description ?? null) as Record<string, unknown>;
+  `).get(opts.name, opts.description ?? null, opts.ghost ? 1 : 0) as Record<string, unknown>;
+  return rowToProject(row);
+}
+
+function rowToProject(row: Record<string, unknown>): ProjectRow {
   return {
-    id: row.id as string,
-    name: row.name as string,
-    description: row.description as string | null,
-    workspaceVolume: row.workspace_volume as string | null,
-    policy: JSON.parse(row.policy as string),
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
+    id: row['id'] as string,
+    name: row['name'] as string,
+    description: row['description'] as string | null,
+    workspaceVolume: row['workspace_volume'] as string | null,
+    policy: JSON.parse(row['policy'] as string),
+    ghost: row['ghost'] === 1,
+    createdAt: row['created_at'] as string,
+    updatedAt: row['updated_at'] as string,
   };
 }
 
 export function listProjects(db: Database.Database): ProjectListItem[] {
   const rows = db.prepare(`
-    SELECT p.id, p.name, p.description, p.created_at as createdAt, p.updated_at as updatedAt,
+    SELECT p.id, p.name, p.description, p.created_at as createdAt, p.updated_at as updatedAt, p.ghost as ghost,
            (SELECT COUNT(*) FROM conversations c WHERE c.project_id = p.id) as conversationCount
     FROM projects p
     ORDER BY p.updated_at DESC
-  `).all() as Array<{ id: string; name: string; description: string | null; createdAt: string; updatedAt: string; conversationCount: number }>;
-  return rows;
+  `).all() as Array<{ id: string; name: string; description: string | null; createdAt: string; updatedAt: string; ghost: number; conversationCount: number }>;
+  return rows.map(r => ({ ...r, ghost: r.ghost === 1 }));
 }
 
 export function getProject(db: Database.Database, id: string): ProjectRow | null {
   const row = db.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
-  if (!row) return null;
-  return {
-    id: row.id as string,
-    name: row.name as string,
-    description: row.description as string | null,
-    workspaceVolume: row.workspace_volume as string | null,
-    policy: JSON.parse(row.policy as string),
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
+  return row ? rowToProject(row) : null;
 }
 
 export function updateProject(
@@ -928,12 +1041,12 @@ export function listProjectConversationIds(db: Database.Database, projectId: str
 
 export function listProjectConversations(db: Database.Database, projectId: string): ConversationListItem[] {
   return db.prepare(`
-    SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt,
+    SELECT c.id, c.project_id as projectId, c.title, c.updated_at as updatedAt, c.ghost as ghost,
       (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id) as messageCount
     FROM conversations c
     WHERE c.project_id = ? AND c.kind = 'chat'
     ORDER BY c.updated_at DESC
-  `).all(projectId) as ConversationListItem[];
+  `).all(projectId).map(r => ({ ...(r as Omit<ConversationListItem, 'ghost'> & { ghost: number }), ghost: (r as { ghost: number }).ghost === 1 }));
 }
 
 // ─── Approval Grants ──────────────────────────────────────────────────────────
@@ -1029,6 +1142,37 @@ export function findMatchingGrant(
     if (matches) return grant;
   }
   return null;
+}
+
+/** Prefix of the grant label for "this chat/project/everywhere may open this domain" (web_fetch and the browser). */
+export const WEB_GRANT_PREFIX = 'web:';
+
+/**
+ * Domains the user has allowed for this conversation (scopes chat / project / always, same matching as findMatchingGrant).
+ * Handed to the browser as its allowlist on every call, so revoking a grant takes effect on the next action.
+ */
+export function listGrantedWebHosts(
+  db: Database.Database,
+  opts: { conversationId?: string; projectId?: string; modelId?: string; skillId?: string },
+): string[] {
+  const rows = db.prepare(`SELECT * FROM approval_grants WHERE tool_label LIKE 'web:%'`).all() as Record<string, unknown>[];
+  const hosts = new Set<string>();
+  const nowMs = Date.now();
+  for (const row of rows) {
+    const expires = row.expires_at as string | null;
+    if (expires && new Date(expires).getTime() < nowMs) continue;
+    const scope = row.scope as string;
+    const matches =
+      scope === 'always' ||
+      (scope === 'project' && opts.projectId !== undefined && row.project_id === opts.projectId) ||
+      (scope === 'chat' && opts.conversationId !== undefined && row.conversation_id === opts.conversationId);
+    if (!matches) continue;
+    if (row.subject_type === 'model' && row.subject_id !== opts.modelId) continue;
+    if (row.subject_type === 'skill' && row.subject_id !== opts.skillId) continue;
+    const host = (row.tool_label as string).slice(WEB_GRANT_PREFIX.length).trim().toLowerCase();
+    if (host) hosts.add(host);
+  }
+  return [...hosts].sort();
 }
 
 /** Tokens and passwords that end up in a command line must not be copied into the audit trail. */

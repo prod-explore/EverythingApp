@@ -50,19 +50,13 @@ function loadAutoApproveTools(): string[] {
   if (fromEnv) {
     return fromEnv.split(',').map(t => t.trim()).filter(Boolean);
   }
-  // Read-only tools only. Anything not in this list requires a manual y/n in
-  // the terminal — default-deny on purpose, see Master Brief §7 point 5
-  // ("whitelist, never a bare shell"). Override via AUTO_APPROVE_TOOLS if a
-  // newly-added connector has more read-only tools worth whitelisting.
-  // browse_url and browser_observe are here because both already go through
-  // the quarantine layer and have no side effects on the target site — they
-  // read, they never click/type/submit. browser_open also has no side effect
-  // on the target site itself, but IS excluded here on purpose: it's the
-  // first call of a browser task and the natural point for a human to notice
-  // "the agent is about to go to this URL" before a chain of browser_act
-  // calls follows it — see roadmap §6b. (Was previously missing browse_url
-  // despite .env.example documenting it as auto-approved — fixed here.)
-  return ['read_log', 'get_path', 'search_notes', 'browse_url', 'browser_observe'];
+  // Default-deny on purpose, see Master Brief §7 point 5 ("whitelist, never a bare shell"): a tool that is not in this
+  // list asks for a manual approval. Override via AUTO_APPROVE_TOOLS (the variable REPLACES this list).
+  // Browser: opening a page is approved per DOMAIN in the orchestrator (llm-loop: Allow once / this chat / always), so
+  // browser_open needs no second prompt; browser_act runs unprompted inside the approved domain, except actions that
+  // look irreversible (payment, deletion…), which always ask; after a page looked like a prompt injection every
+  // effectful call asks again.
+  return ['read_log', 'get_path', 'search_notes', 'browser_open', 'browser_observe', 'browser_act', 'browser_close'];
 }
 
 export function loadConfig(): Config {

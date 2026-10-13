@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '../shared/Button';
 
-export function NewProjectModal({ onSubmit, onClose }: { onSubmit: (name: string) => Promise<void> | void; onClose: () => void }) {
+export function NewProjectModal({ onSubmit, onClose }: { onSubmit: (name: string, ghost: boolean) => Promise<void> | void; onClose: () => void }) {
   const [name, setName] = useState('');
+  const [ghost, setGhost] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -15,7 +16,7 @@ export function NewProjectModal({ onSubmit, onClose }: { onSubmit: (name: string
     setBusy(true);
     setFailed(false);
     try {
-      await onSubmit(trimmed);
+      await onSubmit(trimmed, ghost);
     } catch {
       setFailed(true);
     } finally {
@@ -42,6 +43,12 @@ export function NewProjectModal({ onSubmit, onClose }: { onSubmit: (name: string
           maxLength={80}
           className="w-full rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none focus:border-border-hover"
         />
+        <label className="mt-3 flex items-start gap-2 text-xs text-fg-secondary">
+          <input type="checkbox" checked={ghost} onChange={e => setGhost(e.target.checked)} className="mt-0.5" />
+          <span>
+            <span className="font-medium text-fg">Ghost project</span> — every chat in it uses local models only, with no internet access. Decided now; it can't be changed later.
+          </span>
+        </label>
         {failed && <p className="mt-2 text-xs text-danger">Couldn't create the project. Try again.</p>}
         <div className="mt-3 flex justify-end gap-2">
           <Button variant="ghost" onClick={onClose}>

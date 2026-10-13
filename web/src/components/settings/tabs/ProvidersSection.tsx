@@ -15,7 +15,7 @@ import {
   updateProvider,
 } from '../../../api';
 import { MODEL_KINDS } from '../../../types';
-import type { CatalogModelRow, CompatFlavor, ModelKind, ProviderInfo, ProviderPreset, ProvidersResponse } from '../../../types';
+import type { CatalogModelRow, CompatFlavor, ModelKind, ModelLocality, ProviderInfo, ProviderPreset, ProvidersResponse } from '../../../types';
 import { Button } from '../../shared/Button';
 
 const inputCls =
@@ -91,6 +91,17 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
           className={`${smallInput} w-16`}
           aria-label={`Context window of ${m.id}`}
         />
+        <select
+          value={m.locality ?? ''}
+          onChange={e => void patch({ locality: e.target.value === '' ? null : (e.target.value as ModelLocality) })}
+          className={smallInput}
+          title="Where this model runs. Ghost chats only use models marked local. Empty = unknown (treated as not local); a hub like MindGate reports it by itself."
+          aria-label={`Where ${m.id} runs`}
+        >
+          <option value="">where? (unknown)</option>
+          <option value="local">local</option>
+          <option value="cloud">cloud</option>
+        </select>
         <label className="flex shrink-0 items-center gap-1 text-[11px] text-fg-tertiary" title="The model accepts a reasoning effort (low / medium / high). Shows an Effort control in chats that use it.">
           <input type="checkbox" checked={m.supportsEffort === true} onChange={e => void patch({ supportsEffort: e.target.checked })} aria-label={`Reasoning effort for ${m.id}`} />
           effort
@@ -257,6 +268,13 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
       )}
 
       <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-fg-secondary">
+        <label
+          className="flex items-center gap-2"
+          title="Tick this only for a server that runs on your own hardware (Ollama or vLLM on your LAN). Ghost chats may then use all of its models, except those it reports as cloud. Changing the URL clears it."
+        >
+          <input type="checkbox" checked={p.local} onChange={e => void run(async () => { await updateProvider(p.id, { local: e.target.checked }); onChanged(); })} aria-label={`${p.label} runs on my own hardware`} />
+          Runs on my own hardware
+        </label>
         <label className="flex items-center gap-2" title="Keep retrying overloaded / rate-limited answers for this long (peak hours). Empty = two quick retries.">
           Retry busy errors for
           <input inputMode="numeric" value={retry} onChange={e => setRetry(e.target.value)} onBlur={() => void saveRetry(retry, 1, 1440)} placeholder="off" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Minutes to retry busy errors from ${p.label}`} />
@@ -293,8 +311,8 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
 
 // ─── add provider ───────────────────────────────────────────────────────────
 
-interface Form { slug: string; label: string; baseUrl: string; flavor: CompatFlavor; apiKey: string; keyOptional: boolean }
-const EMPTY: Form = { slug: '', label: '', baseUrl: '', flavor: 'generic', apiKey: '', keyOptional: false };
+interface Form { slug: string; label: string; baseUrl: string; flavor: CompatFlavor; apiKey: string; keyOptional: boolean; local: boolean }
+const EMPTY: Form = { slug: '', label: '', baseUrl: '', flavor: 'generic', apiKey: '', keyOptional: false, local: false };
 
 function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPreset[]; vaultEnabled: boolean; onAdded: (note: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -305,7 +323,7 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
 
   function pick(p: ProviderPreset | null) {
     setPreset(p?.slug ?? null);
-    setForm(p ? { slug: p.slug, label: p.label, baseUrl: p.baseUrl, flavor: p.flavor, apiKey: '', keyOptional: p.keyOptional } : EMPTY);
+    setForm(p ? { slug: p.slug, label: p.label, baseUrl: p.baseUrl, flavor: p.flavor, apiKey: '', keyOptional: p.keyOptional, local: false } : EMPTY);
     setOpen(true);
   }
 
@@ -321,6 +339,7 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
         flavor: form.flavor,
         apiKey: form.apiKey.trim() || undefined,
         keyOptional: form.keyOptional,
+        local: form.local || undefined,
       });
       setOpen(false);
       setForm(EMPTY);
@@ -368,6 +387,9 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
       />
       <label className="flex items-center gap-2 text-xs text-fg-secondary">
         <input type="checkbox" checked={form.keyOptional} onChange={e => set('keyOptional', e.target.checked)} /> No key needed (local server)
+      </label>
+      <label className="flex items-center gap-2 text-xs text-fg-secondary" title="Only for a server on your own hardware. A hub with mixed models (MindGate) reports it per model instead.">
+        <input type="checkbox" checked={form.local} onChange={e => set('local', e.target.checked)} /> Runs on my own hardware (ghost chats may use its models)
       </label>
       {error && <p className="text-xs text-danger">{error}</p>}
       <div className="flex justify-end gap-2">

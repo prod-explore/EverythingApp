@@ -62,7 +62,6 @@ export function toolLabel(toolName: string, args: Args, running: boolean): ToolL
       return { icon: FilePen, label: r('Wrote a file', 'Writing a file'), detail: clip(str(args, 'path', 'file')) };
     case 'edit_file':
       return { icon: FilePen, label: r('Edited a file', 'Editing a file'), detail: clip(str(args, 'path', 'file')) };
-    case 'browse_url':
     case 'browser_open':
       return { icon: Globe, label: r('Browsed a page', 'Browsing a page'), detail: host(str(args, 'url')) };
     case 'browser_observe':
@@ -74,6 +73,8 @@ export function toolLabel(toolName: string, args: Args, running: boolean): ToolL
       return { icon: Camera, label: r('Took a screenshot', 'Taking a screenshot') };
     case 'browser_close':
       return { icon: Globe, label: r('Closed the browser', 'Closing the browser') };
+    case 'web_fetch':
+      return { icon: Globe, label: r('Read a web page', 'Reading a web page'), detail: host(str(args, 'url')) };
     case 'web_search':
       return { icon: Search, label: r('Searched the web', 'Searching the web'), detail: clip(str(args, 'query', 'q')) };
     case 'spawn_agent':

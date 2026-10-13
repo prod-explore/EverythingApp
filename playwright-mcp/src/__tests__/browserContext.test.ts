@@ -142,3 +142,48 @@ describe('per-call policy (_policy)', () => {
     assert.equal(effectivePolicy(config, { js: 'allowed' }).js, 'disabled');
   });
 });
+
+describe('user-approved domains (domainGrant)', () => {
+  const granted = () => newSessionState(mergePolicy({}, { domainGrant: ['docs.example'] }));
+
+  it('without a grant list nothing is enforced (operator-only setups keep working)', async () => {
+    const state = newSessionState(mergePolicy({}));
+    assert.equal((await decideRequest(state, okGuard, 'https://anything.example/', true)).allow, true);
+  });
+
+  it('limits top-level navigation to granted hosts and says how to get the others approved', async () => {
+    const state = granted();
+    assert.equal((await decideRequest(state, okGuard, 'https://docs.example/a', true)).allow, true);
+    const d = await decideRequest(state, okGuard, 'https://other.example/', true);
+    assert.equal(d.allow, false);
+    assert.match(d.reason!, /domain not approved yet: other\.example — call browser_open/);
+  });
+
+  it('an empty grant list blocks every top-level navigation but not sub-resources', async () => {
+    const state = newSessionState(mergePolicy({}, { domainGrant: [] }));
+    assert.equal((await decideRequest(state, okGuard, 'https://a.example/', true)).allow, false);
+    assert.equal((await decideRequest(state, okGuard, 'https://cdn.a.example/x.js', false)).allow, true);
+  });
+
+  it('a host approved for the session stays reachable until the session ends, and only that exact host', async () => {
+    const state = granted();
+    state.approvedHosts.add('shop.example');
+    assert.equal((await decideRequest(state, okGuard, 'https://shop.example/cart', true)).allow, true);
+    assert.equal((await decideRequest(state, okGuard, 'https://evil.shop.example/', true)).allow, false);
+  });
+
+  it('applyCallPolicy keeps the session approvals when the next call sends a fresh grant list', async () => {
+    const { applyCallPolicy } = await import('../tools/policyArgs.js');
+    const { testConfig } = await import('./testConfig.js');
+    const state = granted();
+    state.approvedHosts.add('shop.example');
+    applyCallPolicy(testConfig(), state, { domainGrant: [] });
+    assert.equal((await decideRequest(state, okGuard, 'https://shop.example/', true)).allow, true);
+    assert.equal((await decideRequest(state, okGuard, 'https://docs.example/', true)).allow, false, 'revoked grant takes effect at once');
+  });
+
+  it('the operator denylist still wins over an approval', async () => {
+    const state = newSessionState(mergePolicy({ domainDeny: ['bad.example'] }, { domainGrant: ['bad.example'] }));
+    assert.equal((await decideRequest(state, okGuard, 'https://bad.example/', true)).allow, false);
+  });
+});

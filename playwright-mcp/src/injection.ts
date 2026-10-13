@@ -69,7 +69,7 @@ const RULES: Rule[] = [
   {
     id: 'names agent tools / internal parameters',
     weight: 2,
-    re: /\b(browser_act|browser_open|browser_observe|browser_close|browse_url|run_bash|git_op|read_log|terminal_list|_conversation_id|_project_id|_policy|_allow_downloads|tool_use|function_call)\b/i,
+    re: /\b(browser_act|browser_open|browser_observe|browser_close|web_fetch|web_search|run_bash|git_op|read_log|terminal_list|_conversation_id|_project_id|_policy|_allow_downloads|tool_use|function_call)\b/i,
   },
   {
     id: 'asks to hide actions from the user',

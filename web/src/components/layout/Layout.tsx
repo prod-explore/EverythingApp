@@ -41,7 +41,7 @@ export function Layout({
   onCloseSidebar: () => void;
   onOpenProjects: () => void;
   onSelect: (id: string) => void;
-  onCreate: (projectId?: string) => void;
+  onCreate: (projectId?: string, ghost?: boolean) => void;
   onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   onOpenGazeta: () => void;

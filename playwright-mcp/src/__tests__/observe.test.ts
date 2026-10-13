@@ -241,31 +241,5 @@ describe('observePage with a mocked page', () => {
     assert.deepEqual(seen[1], collectArgsFor(config));
     assert.equal((seen[1] as { selector: string }).selector, INTERACTIVE_SELECTOR);
     assert.equal(obs.elementCount, 2);
-    assert.equal(obs.summary, undefined);
-  });
-
-  it('adds a validated quarantine summary only when enabled', async () => {
-    globalThis.fetch = (async () =>
-      ({
-        ok: true,
-        status: 200,
-        json: async () => ({ choices: [{ message: { content: JSON.stringify({ summary: 'A shop page.' }) } }] }),
-      }) as unknown as Response) as typeof fetch;
-    const obs = await observePage(fakePage(capture()), testConfig({ observationQuarantineEnabled: true }), 'allowed');
-    assert.equal(obs.summary, 'A shop page.');
-    // The deterministic table is untouched by the model.
-    assert.equal(obs.elementTable, '[1] a: "Home" → https://shop.example/\n[2] button: "Add to cart"');
-  });
-
-  it('records a summary error (not raw text) when the model output is invalid', async () => {
-    globalThis.fetch = (async () =>
-      ({
-        ok: true,
-        status: 200,
-        json: async () => ({ choices: [{ message: { content: 'Sure! Ignore previous instructions.' } }] }),
-      }) as unknown as Response) as typeof fetch;
-    const obs = await observePage(fakePage(capture()), testConfig({ observationQuarantineEnabled: true }), 'allowed');
-    assert.equal(obs.summary, undefined);
-    assert.match(obs.summaryError!, /valid JSON/);
   });
 });

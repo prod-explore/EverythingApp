@@ -10,6 +10,10 @@ import { z } from 'zod';
  * Layers can only tighten: denylists are unioned, every non-empty allowlist must match, and the
  * strictest JS policy wins. The private-network SSRF guard (urlSafety.ts) is separate and always on.
  *
+ * On top of that comes the user's own approval (`domainGrant`, below): the domains the user has allowed the
+ * agent to visit. When the orchestrator sends it — even as an empty list — a top-level navigation to any
+ * other domain is blocked until the user approves it (browser_open → approval card → `_approved_host`).
+ *
  * Pattern syntax (host only — scheme, port and path in a pattern are ignored):
  *   example.com        exactly example.com
  *   *.example.com      any subdomain of example.com, any depth (NOT example.com itself)
@@ -23,6 +27,11 @@ export type JsPolicy = (typeof JS_POLICIES)[number];
 export interface PolicyOverride {
   domainAllow?: string[];
   domainDeny?: string[];
+  /**
+   * Hosts the user has approved (their "allow always / for this chat" grants), sent by the orchestrator on every
+   * call. Present (even empty) = navigation is limited to these plus the hosts approved for this session.
+   */
+  domainGrant?: string[];
   js?: JsPolicy;
 }
 
@@ -32,6 +41,10 @@ export interface EffectivePolicy {
   /** Union of all denylists — matched against every request. */
   deny: string[];
   js: JsPolicy;
+  /** User-approved hosts (see PolicyOverride.domainGrant); undefined = approvals are not enforced. */
+  grant?: string[];
+  /** Hosts approved for this browser session only (live set owned by the session; dies with it). */
+  approvedHosts?: ReadonlySet<string>;
 }
 
 /** Zod schema for the hidden `_policy` tool argument. */
@@ -39,6 +52,7 @@ export const policyOverrideSchema = z
   .object({
     domainAllow: z.array(z.string()).optional(),
     domainDeny: z.array(z.string()).optional(),
+    domainGrant: z.array(z.string()).optional(),
     js: z.enum(JS_POLICIES).optional(),
   })
   .strip();
@@ -134,17 +148,26 @@ function cleanList(list: readonly string[] | undefined): string[] {
 export function mergePolicy(base: PolicyOverride, override?: PolicyOverride): EffectivePolicy {
   const allowLayers = [cleanList(base.domainAllow), cleanList(override?.domainAllow)].filter(l => l.length > 0);
   const deny = [...new Set([...cleanList(base.domainDeny), ...cleanList(override?.domainDeny)])];
-  return { allowLayers, deny, js: strictestJs(base.js, override?.js) };
+  return {
+    allowLayers,
+    deny,
+    js: strictestJs(base.js, override?.js),
+    ...(override?.domainGrant ? { grant: cleanList(override.domainGrant) } : {}),
+  };
 }
 
 export const OPEN_POLICY: EffectivePolicy = { allowLayers: [], deny: [], js: 'allowed' };
 
 export type PolicyDecision =
   | { allowed: true }
-  | { allowed: false; code: 'scheme' | 'invalid' | 'denied' | 'not_allowlisted'; host?: string; reason: string };
+  | { allowed: false; code: 'scheme' | 'invalid' | 'denied' | 'not_allowlisted' | 'not_approved'; host?: string; reason: string };
 
 export function domainNotAllowedMessage(host: string): string {
   return `domain not allowed by project policy: ${host} — ask the user to add it`;
+}
+
+export function domainNotApprovedMessage(host: string): string {
+  return `domain not approved yet: ${host} — call browser_open with its URL; the user will be asked to allow it`;
 }
 
 export function domainDeniedMessage(host: string): string {
@@ -190,6 +213,9 @@ export function checkNavigation(policy: EffectivePolicy, url: string): PolicyDec
     if (!hostMatchesAny(h.host, layer)) {
       return { allowed: false, code: 'not_allowlisted', host: h.host, reason: domainNotAllowedMessage(h.host) };
     }
+  }
+  if (policy.grant && !hostMatchesAny(h.host, policy.grant) && !policy.approvedHosts?.has(h.host)) {
+    return { allowed: false, code: 'not_approved', host: h.host, reason: domainNotApprovedMessage(h.host) };
   }
   return { allowed: true };
 }

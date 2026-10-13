@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, ClipboardList, Shield } from 'lucide-react';
+import { AlertTriangle, ClipboardList, Globe, Shield } from 'lucide-react';
 import type { ApprovalScope, PendingApproval } from '../../types';
 import { Button } from '../shared/Button';
 import { toolLabel } from '../../lib/toolLabels';
@@ -13,9 +13,60 @@ function splitLabel(label: string): { agent: string | null; tool: string } {
   return { agent: m ? (m[2] ?? 'subagent') : null, tool: m ? label.slice(m[0].length) : label };
 }
 
+/**
+ * "Allow web access to <site>?" — the approval for a DOMAIN (grant label `web:<host>`), shown for web_fetch and for the
+ * browser alike. Allow once / for this chat / always, like the browser agent in Antigravity.
+ */
+function DomainCard({ approval, agent, respond }: { approval: PendingApproval; agent: string | null; respond: Respond }) {
+  const [busy, setBusy] = useState(false);
+  const host = approval.toolLabel.replace(/^\[[^\]]+\]\s*/, '').slice('web:'.length);
+  const viaBrowser = approval.args['tool'] === 'browser_open';
+  const url = typeof approval.args['url'] === 'string' ? approval.args['url'] : null;
+  const who = agent ?? (typeof approval.args['agent'] === 'string' ? approval.args['agent'] : null);
+  // After a suspected prompt injection only a one-time approval is offered (the server ignores wider scopes anyway).
+  const once = approval.dangerous;
+
+  async function answer(approved: boolean, scope: ApprovalScope) {
+    setBusy(true);
+    try { await respond(approval.id, approved, scope); } finally { setBusy(false); }
+  }
+
+  return (
+    <div role="group" aria-label={`Allow web access to ${host}`} className={`rounded-container border-2 p-3 text-sm ${once ? 'border-danger bg-danger/5' : 'border-border bg-bg-secondary'}`}>
+      <div className="mb-2 flex items-center gap-2 text-fg">
+        <Globe size={16} className="shrink-0" />
+        <span className="font-medium">Allow web access to <span className="font-mono">{host}</span>?</span>
+        {who && <span className="rounded bg-accent/15 px-1.5 py-0.5 text-xs text-accent">{who}</span>}
+      </div>
+      {approval.warning && (
+        <p className="mb-2 rounded-button border border-danger/40 bg-danger/5 px-2 py-1.5 text-xs text-danger">{approval.warning}</p>
+      )}
+      <p className="mb-1 text-xs text-fg-secondary">
+        {viaBrowser ? 'The assistant wants to open this site in the browser and click around on it.' : 'The assistant wants to read a page from this site.'}
+      </p>
+      {approval.args['outsideContext'] === true && (
+        <p className="mb-1 text-xs text-fg-secondary">This address is not in your message or in the search results, so it needs your OK.</p>
+      )}
+      {url && <p className="mb-3 break-all font-mono text-xs text-fg-tertiary">{url}</p>}
+      <div className="flex flex-wrap gap-2">
+        <Button variant="ghost" disabled={busy} onClick={() => void answer(false, 'once')}>Deny</Button>
+        <Button variant="primary" disabled={busy} onClick={() => void answer(true, 'once')}>Allow once</Button>
+        {!once && (
+          <>
+            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'chat')}>For this chat</Button>
+            <Button variant="ghost" disabled={busy} onClick={() => void answer(true, 'always')}>Always</Button>
+          </>
+        )}
+      </div>
+      {viaBrowser && <p className="mt-2 text-xs text-fg-tertiary">“Allow once” lasts until this browser session is closed.</p>}
+    </div>
+  );
+}
+
 function ApprovalCard({ approval, respond }: { approval: PendingApproval; respond: Respond }) {
   const [busy, setBusy] = useState(false);
   const { agent, tool } = splitLabel(approval.toolLabel);
+  if (tool.startsWith('web:')) return <DomainCard approval={approval} agent={agent} respond={respond} />;
   const friendly = toolLabel(tool.split('/').pop() ?? tool, approval.args, false);
   // A plan proposal is asked every time (so it can never be pre-approved), but it is not a dangerous action.
   const isPlan = tool.split('/').pop() === 'propose_plan' || tool === 'propose_plan';

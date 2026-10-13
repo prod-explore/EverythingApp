@@ -7,13 +7,15 @@ import { GitHubTab } from './tabs/GitHubTab';
 import { ModelsTab } from './tabs/ModelsTab';
 import { SkillsTab } from './tabs/SkillsTab';
 import { UsageTab } from './tabs/UsageTab';
+import { WebTab } from './tabs/WebTab';
 
-export type SettingsTab = 'models' | 'usage' | 'connectors' | 'github' | 'skills' | 'notifications' | 'account';
+export type SettingsTab = 'models' | 'usage' | 'connectors' | 'web' | 'github' | 'skills' | 'notifications' | 'account';
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'models', label: 'Models' },
   { id: 'usage', label: 'Usage' },
   { id: 'connectors', label: 'Connectors' },
+  { id: 'web', label: 'Web' },
   { id: 'github', label: 'GitHub' },
   { id: 'skills', label: 'Skills' },
   { id: 'notifications', label: 'Notifications' },
@@ -60,6 +62,7 @@ export function SettingsModal({
         {activeTab === 'models' && <ModelsTab />}
         {activeTab === 'usage' && <UsageTab />}
         {activeTab === 'connectors' && <ConnectorsTab />}
+        {activeTab === 'web' && <WebTab />}
         {activeTab === 'github' && <GitHubTab />}
         {activeTab === 'skills' && <SkillsTab conversationId={conversationId} />}
         {activeTab === 'notifications' && <NotificationsTab />}
