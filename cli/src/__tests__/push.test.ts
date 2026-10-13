@@ -4,7 +4,7 @@ import { PushService } from '../push.js';
 import { KeyVault } from '../providers/key-vault.js';
 import { openDb, runMigrations, createGazetaItem, onGazetaItemCreated } from '../db.js';
 
-const SECRET = '0123456789abcdef0123456789abcdef';
+const SECRET = '0123456789abcdef0123456789abcdef'; // gitleaks:allow — made-up fixture
 const sub = (n: number) => ({ endpoint: `https://push.example/${n}`, keys: { p256dh: 'p', auth: 'a' } });
 
 describe('web push', () => {

@@ -7,7 +7,7 @@ import { createSupervisorApp } from '../api.js';
 import { assertStrongSecret, weakSecretReason } from '../secret-check.js';
 import { fakeOps } from './helpers.js';
 
-const TOKEN = 'a3f1c9d27b6e4058a3f1c9d27b6e4058';
+const TOKEN = 'a3f1c9d27b6e4058a3f1c9d27b6e4058'; // gitleaks:allow — made-up fixture
 
 describe('supervisor bearer auth', () => {
   let server: Server;

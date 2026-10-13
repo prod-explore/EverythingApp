@@ -304,7 +304,7 @@ describe('command policy: parsing the audit could get around', () => {
 
 describe('secrets stay out of the audit trail', () => {
   it('redacts tokens, passwords and keys in logged arguments', () => {
-    const raw = JSON.stringify({ command: 'curl -H "Authorization: Bearer abcdef1234567890XYZ" https://u:hunter2@host/x?api_key=sekret123 && export GH=ghp_abcdefghijklmnopqrstuvwxyz0123456789 password=topsecret sk-abcdefghijklmnopqrstu' });
+    const raw = JSON.stringify({ command: 'curl -H "Authorization: Bearer abcdef1234567890XYZ" https://u:hunter2@host/x?api_key=sekret123 && export GH=ghp_abcdefghijklmnopqrstuvwxyz0123456789 password=topsecret sk-abcdefghijklmnopqrstu' }); // gitleaks:allow — made-up fixture
     const out = redactSecrets(raw);
     for (const leak of ['abcdef1234567890XYZ', 'hunter2', 'sekret123', 'ghp_abcdefghij', 'topsecret', 'sk-abcdefghijk']) assert.equal(out.includes(leak), false, leak);
     assert.match(out, /curl -H/);

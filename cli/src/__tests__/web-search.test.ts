@@ -197,7 +197,7 @@ describe('Settings → Web API', () => {
       assert.equal(saved.status, 200);
       assert.equal(saved.json.searxngUrl, 'http://searxng:8080');
       assert.equal(saved.json.active, true);
-      const brave = await api.call('PUT', '/api/web-search', { backend: 'brave', braveKey: 'BSA-secret-1234' });
+      const brave = await api.call('PUT', '/api/web-search', { backend: 'brave', braveKey: 'BSA-secret-1234' }); // gitleaks:allow — made-up fixture
       assert.equal(brave.status, 200);
       assert.deepEqual(brave.json.braveKey, { present: true, last4: '1234', fromEnv: false });
       assert.equal(JSON.stringify(brave.json).includes('BSA-secret'), false);

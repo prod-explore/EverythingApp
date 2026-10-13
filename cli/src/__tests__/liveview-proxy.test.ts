@@ -35,7 +35,7 @@ after(() => {
 });
 
 const AUTH = { Authorization: `Bearer ${APP_TOKEN}` };
-const wsHeaders = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' };
+const wsHeaders = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' }; // gitleaks:allow — made-up fixture
 
 function connect(path: string, extra: http.OutgoingHttpHeaders = {}): Promise<{ status: number; socket?: import('node:net').Socket }> {
   return new Promise((resolve, reject) => {
