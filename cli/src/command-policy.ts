@@ -36,16 +36,19 @@ export const SAFE_PREFIXES = [
 
 /** Always blocked, regardless of mode or grants. */
 const DENY_PATTERNS: RegExp[] = [
-  /^rm\s+(-\w+\s+)*(\/|\/\*|~|~\/|\$HOME)(\s|$)/,
+  /^rm\s+(-[\w-]+\s+)*(\/|\/\*|~|~\/|\$HOME)(\s|$)/,
   /^(mkfs|mkfs\.\w+|fdisk|parted|wipefs)\b/,
   /^dd\b.*\bof=\/dev\//,
   /^(shutdown|reboot|halt|poweroff)\b/,
   /^:\(\)\s*\{/, // fork bomb
-  /^chmod\s+(-\w+\s+)*[0-7]*777\s+\/(\s|$)/,
+  /^chmod\s+(-[\w-]+\s+)*[0-7]*777\s+\/(\s|$)/,
 ];
 
 /** Commands with a meaningful sub-command: grant prefixes use two words (`git commit`, `npm install`). */
 const TWO_WORD = new Set(['git', 'npm', 'npx', 'pnpm', 'yarn', 'docker', 'cargo', 'go', 'pip', 'pip3', 'apt', 'apt-get', 'kubectl', 'gh', 'make', 'python', 'python3', 'node', 'uv', 'poetry']);
+
+/** Stands in for text that is nested too deeply to analyse — never classified as safe, always asks. */
+const TOO_DEEP = '__TOO_DEEP__';
 
 const NETWORK_TOOLS = new Set(['curl', 'wget', 'ssh', 'scp', 'sftp', 'rsync', 'nc', 'ncat', 'telnet', 'ftp']);
 
@@ -70,13 +73,16 @@ export function splitShellCommand(command: string, depth = 0): string[] {
   return out.map(normalize).filter(s => s !== '').flatMap(sub => {
     // `bash -c "…"`, `sh -c '…'`, `eval "…"`: the quoted string is itself a command line.
     const m = /^(?:(?:ba|z|da|k)?sh(?:\s+-\w+)*\s+-\w*c|eval)\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|(.+))/.exec(sub);
-    if (!m || depth > 4) return [sub];
-    return [sub.split(' ')[0]!, ...splitShellCommand(m[1] ?? m[2] ?? m[3] ?? '', depth + 1)];
+    if (!m) return [sub];
+    if (depth > 4) return [`${TOO_DEEP} ${sub}`];
+    // Inside double quotes the shell removes backslashes before " \ $ ` — do the same so a nested `bash -c \"…\"` is read as the command it is.
+    const inner = m[1] !== undefined ? m[1].replace(/\\(["\\$`])/g, '$1') : (m[2] ?? m[3] ?? '');
+    return [sub.split(' ')[0]!, ...splitShellCommand(inner, depth + 1)];
   });
 }
 
 function splitInto(src: string, out: string[], depth: number): void {
-  if (depth > 8) { out.push(src); return; }
+  if (depth > 8) { out.push(`${TOO_DEEP} ${src}`); return; }
   let cur = '';
   let i = 0;
   const flush = () => { out.push(cur); cur = ''; };
@@ -84,6 +90,13 @@ function splitInto(src: string, out: string[], depth: number): void {
     const c = src[i]!;
     const next = src[i + 1];
     if (c === '\\' && next !== undefined) { cur += c + next; i += 2; continue; }
+    if (c === '$' && next === "'") {
+      // ANSI-C quoting: unlike '…', a backslash escapes here (`$'\''` is one apostrophe), so the closing quote is the first unescaped one.
+      let j = i + 2;
+      while (j < src.length && src[j] !== "'") j += src[j] === '\\' ? 2 : 1;
+      const stop = Math.min(j + 1, src.length);
+      cur += src.slice(i, stop); i = stop; continue;
+    }
     if (c === "'") {
       const end = src.indexOf("'", i + 1);
       const stop = end === -1 ? src.length : end + 1;
@@ -149,6 +162,11 @@ function matchParen(src: string, open: number): number {
   for (let i = open; i < src.length; i++) {
     const c = src[i];
     if (c === '\\') { i++; continue; }
+    if (c === '$' && src[i + 1] === "'") {
+      let j = i + 2;
+      while (j < src.length && src[j] !== "'") j += src[j] === '\\' ? 2 : 1;
+      i = j; continue;
+    }
     if (c === "'") { const e = src.indexOf("'", i + 1); i = e === -1 ? src.length : e; continue; }
     if (c === '(') depth++;
     else if (c === ')') { depth--; if (depth === 0) return i; }
@@ -238,8 +256,13 @@ export function evaluateCommand(command: string, policy: CommandPolicy, granted:
 
   const subcommands = subs.map((sub): SubcommandVerdict => {
     const prefix = grantPrefix(sub);
-    if (DENY_PATTERNS.some(re => re.test(sub)) || policy.deny.some(d => matchesPrefix(sub, d))) {
+    // Also look at the command as the shell will run it: quotes and backslashes removed, binary path stripped (`'rm' -rf "/"`, `/bin/rm -rf /`).
+    const plain = sub.replace(/["'\\]/g, '').replace(/^\S*\//, '');
+    if (DENY_PATTERNS.some(re => re.test(sub) || re.test(plain)) || policy.deny.some(d => matchesPrefix(sub, d) || matchesPrefix(plain, d))) {
       return { command: sub, prefix, decision: 'deny', reason: 'blocked by policy' };
+    }
+    if (sub.startsWith(TOO_DEEP)) {
+      return { command: sub, prefix, decision: 'ask', reason: 'nested too deeply to analyse' };
     }
     if (sub.includes('__SUBST__') && prefix === '__SUBST__') {
       return { command: sub, prefix, decision: 'ask', reason: 'command name comes from a substitution' };

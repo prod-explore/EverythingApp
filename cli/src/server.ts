@@ -12,6 +12,7 @@ import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
 import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
+import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
 import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
@@ -36,7 +37,7 @@ import { createHash } from 'node:crypto';
 import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
 import { SupervisorExec, type SandboxExec } from './supervisor-client.js';
-import { createN5Routes, migrateN5 } from './n5-routes.js';
+import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
 import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import { createAuth, type Auth } from './session.js';
@@ -260,13 +261,14 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const router = opts.router ?? new ProviderRouter({ db, llmOverride: opts.llm });
 
   const registry = new ToolRegistry(config.autoApproveTools);
-  await registry.loadFrom(connections);
+  // A connector that is down at startup is skipped, not fatal: it shows as disconnected in Settings → Connectors and can be reconnected there.
+  for (const f of await registry.loadFrom(connections)) console.warn(`[tools] '${f.name}' unavailable: ${f.error}`);
   console.log(`[tools] loaded ${registry.toLlmTools().length} tools from MCP`);
 
-  // ─── N5: custom providers + UI connectors ──────────────────────────────────
-  migrateN5(db);
-  const n5 = createN5Routes({ db, router, registry, connections: connections as McpConnectionLike[] });
-  await n5.startSaved();
+  // ─── Connectors added in Settings (remote MCP by URL) ─────────────────────
+  migrateConnectors(db);
+  const connectorRoutes = createConnectorRoutes({ db, router, registry, connections: connections as McpConnectionLike[] });
+  await connectorRoutes.startSaved();
 
   // ─── Shared services ──────────────────────────────────────────────────────
   const policyStore = new PolicyStore(opts.policyFile ?? null);
@@ -450,6 +452,15 @@ ${formatHumanResponse(response)}` };
       todoTool(db, convId, announce),
       ...(getConversationState(db, convId).mode === 'plan' ? [proposePlanTool(db, convId, announce)] : []),
       ...agents.agentTools(rootRunId, signal),
+      // Text-file tools: no approval (see file-tools.ts). Only chats that have a sandbox have a workspace.
+      ...(conv?.sandboxEnabled
+        ? fileTools({
+            owner: conv.projectId ?? convId,
+            sandbox: sandboxExec,
+            readFile: (o, p) => supervisor.readFile(o, p),
+            onWrite: w => logApprovalAudit(db, { action: 'agent_file_edit', toolLabel: `${w.action} ${w.path}`, toolArgs: JSON.stringify({ bytes: w.bytes }), conversationId: convId, runId: rootRunId }),
+          })
+        : []),
     ];
   }
 
@@ -483,7 +494,7 @@ ${formatHumanResponse(response)}` };
 
   // ─── Health (no auth) ─────────────────────────────────────────────────────
   app.get('/health', (_req, res) => {
-    const connectorStatus = connections.map(c => ({ name: c.name }));
+    const connectorStatus = connections.map(c => ({ name: c.name, connected: c.connected !== false }));
     res.json({ status: 'ok', connectors: connectorStatus });
   });
 
@@ -515,7 +526,7 @@ ${formatHumanResponse(response)}` };
   app.use('/api', auth.middleware);
 
   app.use('/api', github.api);
-  app.use('/api', n5.api);
+  app.use('/api', connectorRoutes.api);
 
   // ─── Workspace Explorer + checkpoints (N3) ────────────────────────────────
   // `owner` = a project id, or a chat id for chats without a project (same rule as the sandbox tools).
@@ -626,20 +637,6 @@ ${formatHumanResponse(response)}` };
     }
     setSlots(db, patch);
     res.json(slotsPayload());
-  });
-
-  // ─── Connectors ───────────────────────────────────────────────────────────
-  app.get('/api/connectors', (_req, res) => {
-    const data = connections.map(conn => {
-      const tools = registry.toLlmTools().filter(t => t.name.startsWith(`${conn.name}__`));
-      return {
-        name: conn.name,
-        connected: true, // if it's in the list, it connected at startup
-        toolCount: tools.length,
-        tools: tools.map(t => ({ name: t.name, description: t.description })),
-      };
-    });
-    res.json({ connectors: data });
   });
 
   // ─── Projects ─────────────────────────────────────────────────────────────
@@ -935,6 +932,7 @@ ${formatHumanResponse(response)}` };
           new Promise<string>(r => setTimeout(() => r(''), 4_000)),
         ]);
         if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
+        effectiveSystem += '\n\n' + FILE_TOOLS_PROMPT;
       }
 
       // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.

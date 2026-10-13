@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, File, FileText, Folder, FolderTree, History, Image, Link2, RotateCcw } from 'lucide-react';
+import { ArrowLeft, File, FileText, Folder, FolderTree, History, Image, Link2, Pencil, RotateCcw } from 'lucide-react';
 import { fetchWorkspaceFile, listCheckpoints, listWorkspaceFiles, rollbackWorkspace, saveWorkspaceFile } from '../../api-workspace';
 import type { Checkpoint, WorkspaceEntry, WorkspaceListing } from '../../types-workspace';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
 const ROOT = '/workspace';
+/** Same cap as the server (workspace-write.ts). */
+const MAX_EDIT_BYTES = 512 * 1024;
 
 function formatSize(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -22,7 +24,8 @@ function EntryIcon({ e }: { e: WorkspaceEntry }) {
 
 /**
  * Workspace Explorer (Plan v3 §4): the project's sandbox files, read byte-wise by the supervisor even
- * while the sandbox is stopped. Preview: text/markdown/images only, everything else downloads.
+ * while the sandbox is stopped. Preview: text/markdown/images only, everything else downloads. A text file opens read-only;
+ * the pencil switches to the editor (saving needs no approval — a checkpoint is taken first).
  * Checkpoints: one per agent turn; rollback restores the workspace to that point.
  */
 export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () => void }) {
@@ -106,7 +109,15 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
             <span className="text-fg-tertiary">{formatSize(preview.size)}</span>
             {saveState === 'saved' && draft === null && <span className="text-fg-tertiary">Saved</span>}
             {preview.text !== undefined && draft === null && (
-              <button onClick={() => { setDraft(preview.text ?? ''); setSaveState('idle'); }} className="text-fg-secondary underline hover:text-fg">Edit</button>
+              <button
+                onClick={() => { setDraft(preview.text ?? ''); setSaveState('idle'); }}
+                disabled={preview.size > MAX_EDIT_BYTES}
+                className="rounded p-1 text-fg-secondary hover:bg-bg-secondary hover:text-fg disabled:opacity-40"
+                aria-label="Edit file"
+                title={preview.size > MAX_EDIT_BYTES ? 'Too large to edit here (over 512 KB)' : 'Edit file'}
+              >
+                <Pencil size={14} />
+              </button>
             )}
             {draft !== null && (
               <>

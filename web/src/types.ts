@@ -143,9 +143,23 @@ export interface CommandPolicy {
 
 export interface ConnectorInfo {
   name: string;
+  url: string;
+  /** `env`: configured by the operator (read-only here); `custom`: added in Settings. */
+  source: 'env' | 'custom';
+  enabled: boolean;
   connected: boolean;
+  error: string | null;
+  /** Only for `custom` connectors. */
+  hasToken?: boolean;
   toolCount: number;
   tools: Array<{ name: string; description?: string }>;
+}
+
+export interface ConnectorTestResult {
+  ok: boolean;
+  error?: string;
+  serverName?: string | null;
+  tools?: Array<{ name: string; description?: string }>;
 }
 
 export type TurnStatus = 'idle' | 'running' | 'done' | 'error' | 'aborted';

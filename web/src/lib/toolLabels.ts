@@ -59,8 +59,9 @@ export function toolLabel(toolName: string, args: Args, running: boolean): ToolL
     case 'read_file':
       return { icon: FileText, label: r('Read a file', 'Reading a file'), detail: clip(str(args, 'path', 'file')) };
     case 'write_file':
-    case 'edit_file':
       return { icon: FilePen, label: r('Wrote a file', 'Writing a file'), detail: clip(str(args, 'path', 'file')) };
+    case 'edit_file':
+      return { icon: FilePen, label: r('Edited a file', 'Editing a file'), detail: clip(str(args, 'path', 'file')) };
     case 'browse_url':
     case 'browser_open':
       return { icon: Globe, label: r('Browsed a page', 'Browsing a page'), detail: host(str(args, 'url')) };

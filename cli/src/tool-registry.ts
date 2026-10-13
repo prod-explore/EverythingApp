@@ -27,20 +27,35 @@ export class ToolRegistry {
 
   constructor(private readonly autoApproveTools: readonly string[]) {}
 
-  async loadFrom(connections: McpConnectionLike[]): Promise<void> {
+  /**
+   * Registers the tools of every connection. One server being down must not take the others with it: a failing
+   * connection is skipped and reported, and can be loaded again later (e.g. after a reconnect).
+   */
+  async loadFrom(connections: McpConnectionLike[]): Promise<Array<{ name: string; error: string }>> {
+    const failures: Array<{ name: string; error: string }> = [];
     for (const connection of connections) {
-      const list = await connection.listTools();
-      for (const tool of list) {
-        const exposedName = `${connection.name}__${tool.name}`;
-        this.tools.set(exposedName, {
-          exposedName,
-          realName: tool.name,
-          connection,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        });
+      if (connection.connected === false) {
+        failures.push({ name: connection.name, error: 'not connected' });
+        continue;
+      }
+      try {
+        const list = await connection.listTools();
+        this.removeConnection(connection.name);
+        for (const tool of list) {
+          const exposedName = `${connection.name}__${tool.name}`;
+          this.tools.set(exposedName, {
+            exposedName,
+            realName: tool.name,
+            connection,
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          });
+        }
+      } catch (err) {
+        failures.push({ name: connection.name, error: (err as Error).message.slice(0, 300) });
       }
     }
+    return failures;
   }
 
   /**
@@ -85,11 +100,21 @@ export class ToolRegistry {
     return this.tools.has(exposedName);
   }
 
-  /** Default-deny: a tool is auto-approved only if explicitly whitelisted by its real (unprefixed) name. */
+  /**
+   * Default-deny: a tool is auto-approved only if whitelisted by its real (unprefixed) name AND it belongs to a connector the
+   * operator configured. A connector added by hand in Settings is not trusted that far — its tools ask (and can be granted
+   * "always" from the approval card), so a server cannot get a free pass by naming a tool like a whitelisted one.
+   */
   requiresApproval(exposedName: string): boolean {
     const tool = this.tools.get(exposedName);
+    if (tool && tool.connection.trusted === false) return true;
     const realName = tool?.realName ?? exposedName;
     return !this.autoApproveTools.includes(realName);
+  }
+
+  /** Exposed names of the tools of one connection. */
+  toolsOf(connectionName: string): Array<{ name: string; description: string }> {
+    return [...this.tools.values()].filter(t => t.connection.name === connectionName).map(t => ({ name: t.realName, description: t.description }));
   }
 
   describe(exposedName: string): string {

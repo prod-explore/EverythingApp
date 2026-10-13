@@ -2,6 +2,7 @@ import type {
   ApprovalGrantRow,
   ApprovalScope,
   ConnectorInfo,
+  ConnectorTestResult,
   Conversation,
   ConversationStateInfo,
   ConversationSummary,
@@ -231,6 +232,25 @@ export function putSetting(key: string, value: string): Promise<{ ok: true }> {
 export function getConnectors(): Promise<{ connectors: ConnectorInfo[] }> {
   return request('/api/connectors');
 }
+
+type ConnectorResult = { ok: boolean; error: string | null; connector: ConnectorInfo };
+
+export const connectorsApi = {
+  /** Connects without saving anything and lists the tools. */
+  test: (url: string, token?: string): Promise<ConnectorTestResult> =>
+    request('/api/connectors/test', { method: 'POST', body: JSON.stringify({ url, token }) }),
+  add: (input: { url: string; token?: string; name?: string }): Promise<ConnectorResult & { name: string }> =>
+    request('/api/connectors', { method: 'POST', body: JSON.stringify(input) }),
+  /** token: a string sets it, null removes it, undefined keeps it. */
+  update: (name: string, patch: { url?: string; token?: string | null }): Promise<ConnectorResult> =>
+    request(`/api/connectors/${encodeURIComponent(name)}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+  reconnect: (name: string): Promise<ConnectorResult> =>
+    request(`/api/connectors/${encodeURIComponent(name)}/reconnect`, { method: 'POST' }),
+  disable: (name: string): Promise<{ ok: boolean }> =>
+    request(`/api/connectors/${encodeURIComponent(name)}/disable`, { method: 'POST' }),
+  remove: (name: string): Promise<{ ok: boolean }> =>
+    request(`/api/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+};
 
 // ─── Skills ───────────────────────────────────────────────────────────────
 

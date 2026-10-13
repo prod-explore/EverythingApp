@@ -1031,6 +1031,16 @@ export function findMatchingGrant(
   return null;
 }
 
+/** Tokens and passwords that end up in a command line must not be copied into the audit trail. */
+export function redactSecrets(text: string): string {
+  return text
+    .replace(/(authorization["']?\s*[:=]\s*["']?(?:bearer|basic)\s+)[^\s"'\\]+/gi, '$1[redacted]')
+    .replace(/\b(bearer)\s+[A-Za-z0-9._~+/=-]{12,}/gi, '$1 [redacted]')
+    .replace(/\b(gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{16,}|AIza[0-9A-Za-z_-]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,})\b/g, '[redacted]')
+    .replace(/((?:pass(?:word|wd)?|secret|token|api[_-]?key)["']?\s*[:=]\s*["']?)[^\s"'&\\]{3,}/gi, '$1[redacted]')
+    .replace(/(:\/\/[^\s:@/]+:)[^\s@/]+(@)/g, '$1[redacted]$2');
+}
+
 export function logApprovalAudit(
   db: Database.Database,
   entry: { grantId?: string; action: string; toolLabel: string; toolArgs?: string; conversationId?: string; runId?: string },
@@ -1042,7 +1052,7 @@ export function logApprovalAudit(
     grantId: entry.grantId ?? null,
     action: entry.action,
     toolLabel: entry.toolLabel,
-    toolArgs: entry.toolArgs ?? null,
+    toolArgs: entry.toolArgs === undefined ? null : redactSecrets(entry.toolArgs).slice(0, 8000),
     conversationId: entry.conversationId ?? null,
     runId: entry.runId ?? null,
   });

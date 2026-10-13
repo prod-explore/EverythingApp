@@ -406,10 +406,11 @@ describe('reasoning_effort on the wire', () => {
     return body;
   };
 
-  it('is sent only to a model that supports it, and never to DeepSeek', async () => {
+  it('is sent only to a model that supports it — the same rule for every provider', async () => {
     assert.equal((await run(true))['reasoning_effort'], 'high');
     assert.equal('reasoning_effort' in (await run(false)), false);
-    assert.equal('reasoning_effort' in (await run(true, 'deepseek')), false);
+    assert.equal((await run(true, 'deepseek'))['reasoning_effort'], 'high');
+    assert.equal('reasoning_effort' in (await run(false, 'deepseek')), false);
   });
 
   it('names the provider by its label in errors and retry notices', async () => {

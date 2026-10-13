@@ -49,7 +49,10 @@ export function attachLiveViewProxy(server: http.Server, opts: LiveViewProxyOpti
   const upstream = opts.upstreamUrl ? new URL(opts.upstreamUrl) : null;
 
   server.on('upgrade', (req, clientSocket, head) => {
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    // A client that resets the connection before the handshake finishes must not become an uncaught 'error' event.
+    clientSocket.on('error', () => clientSocket.destroy());
+    let url: URL;
+    try { url = new URL(req.url ?? '/', 'http://localhost'); } catch { clientSocket.destroy(); return; }
     if (url.pathname !== LIVEVIEW_PATH) {
       // This server has no other WebSocket endpoints.
       clientSocket.destroy();

@@ -31,6 +31,8 @@ export type VaultReadResult =
  */
 export class KeyVault {
   private readonly secret: string | null;
+  /** scrypt is deliberately slow and runs on the event loop: derive once per stored key (salt), not once per request. */
+  private readonly derivedBySalt = new Map<string, Buffer>();
 
   constructor(
     private readonly db: Database.Database,
@@ -75,7 +77,12 @@ export class KeyVault {
     if (!row) return { status: 'empty' };
     if (!this.secret) return { status: 'undecryptable', last4: row.last4 };
     try {
-      const derived = scryptSync(this.secret, Buffer.from(row.salt, 'base64'), 32);
+      let derived = this.derivedBySalt.get(row.salt);
+      if (!derived) {
+        derived = scryptSync(this.secret, Buffer.from(row.salt, 'base64'), 32);
+        if (this.derivedBySalt.size >= 256) this.derivedBySalt.clear();
+        this.derivedBySalt.set(row.salt, derived);
+      }
       const decipher = createDecipheriv('aes-256-gcm', derived, Buffer.from(row.iv, 'base64'));
       decipher.setAAD(Buffer.from(AAD_PREFIX + provider));
       decipher.setAuthTag(Buffer.from(row.tag, 'base64'));
