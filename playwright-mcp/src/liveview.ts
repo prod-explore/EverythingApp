@@ -75,11 +75,9 @@ export function attachLiveView(
       return;
     }
 
-    // Token can be in the Authorization header or ?token= query param
+    // The token is only accepted in the Authorization header, never in the URL (access logs, Referer).
     const authHeader = req.headers['authorization'];
-    const tokenFromHeader = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
-    const tokenFromQuery = url.searchParams.get('token') ?? undefined;
-    const token = tokenFromHeader ?? tokenFromQuery;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : undefined;
 
     if (!token || !safeEqual(token, getToken())) {
       socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');

@@ -13,7 +13,7 @@ async function main(): Promise<void> {
 
   server.listen(config.mcpPort, '0.0.0.0', () => {
     console.log(`[playwright-mcp] listening on port ${config.mcpPort}`);
-    console.log(`[playwright-mcp] live-view WS available at ws://...:${config.mcpPort}/mcp/liveview?conversationId=<id>&token=<token>`);
+    console.log(`[playwright-mcp] live-view WS available at ws://...:${config.mcpPort}/mcp/liveview?conversationId=<id> (Authorization: Bearer <key>)`);
   });
 }
 

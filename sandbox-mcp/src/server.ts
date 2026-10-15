@@ -16,12 +16,10 @@ function safeEqual(a: string, b: string): boolean {
   return x.length === y.length && timingSafeEqual(x, y);
 }
 
-function extractToken(req: express.Request): string | undefined {
+/** The API key comes only from `Authorization: Bearer <key>`; a key in the URL would end up in access logs and Referer headers. */
+export function extractToken(req: Pick<express.Request, 'headers'>): string | undefined {
   const auth = req.headers.authorization;
-  if (auth?.startsWith('Bearer ')) return auth.split(' ')[1];
-  const q = req.query['token'];
-  if (typeof q === 'string') return q;
-  return undefined;
+  return auth?.startsWith('Bearer ') ? auth.split(' ')[1] : undefined;
 }
 
 function requireAuth(
