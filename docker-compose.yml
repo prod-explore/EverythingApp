@@ -62,7 +62,6 @@ services:
       SUPERVISOR_TOKEN: ${SUPERVISOR_TOKEN:?SUPERVISOR_TOKEN is required (openssl rand -hex 32)}
       MCP_PORT: ${MCP_PORT:-3002}
       SANDBOX_TIMEOUT_MS: ${SANDBOX_TIMEOUT_MS:-30000}
-      AUTO_APPROVE_TOOLS: ${AUTO_APPROVE_TOOLS:-}
       MCP_API_KEY: ${MCP_API_KEY:?MCP_API_KEY is required}
     ports:
       - "127.0.0.1:3002:3002"

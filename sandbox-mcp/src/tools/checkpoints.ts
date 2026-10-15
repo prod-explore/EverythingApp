@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ok, fail, ownerIds, ownerOf, ToolContext } from './types.js';
-import { checkApprovalGate } from '../approval.js';
 import type { CheckpointInfo } from '../supervisor-client.js';
 
 /** Pure formatter for checkpoint_list, testable without a server. */
@@ -43,8 +42,6 @@ export function registerCheckpointTools(server: McpServer, { config, supervisor 
       ...ownerIds,
     },
     async args => {
-      const gate = checkApprovalGate('rollback', config.autoApproveTools);
-      if (gate.decision === 'deny') return fail(gate.reason);
       try {
         const r = await supervisor.rollback(ownerOf(args), args.checkpoint_id);
         return ok(`Workspace restored to checkpoint ${r.checkpointId} (commit ${r.commit.slice(0, 12)}).`);

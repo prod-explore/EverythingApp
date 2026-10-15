@@ -18,15 +18,13 @@
     "express": "^5.2.1",
     "helmet": "^8.3.0",
     "linkedom": "^0.18.13",
-    "turndown": "^7.2.4",
-    "web-push": "^3.6.7"
+    "turndown": "^7.2.4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^9.6.0",
     "@types/express": "^5.0.6",
     "@types/node": "^20.12.7",
     "@types/turndown": "^5.0.6",
-    "@types/web-push": "^3.6.4",
     "typescript": "^5.4.5",
     "zod": "^4.6.2"
   }

@@ -14,7 +14,6 @@ import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from
 import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
 import { assertStrongSecret } from './secret-check.js';
-import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
 import { generateDailySummary } from './gazeta.js';
@@ -44,7 +43,7 @@ import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import {
   GHOST_IMMUTABLE_CODE, GHOST_MODEL_CODE, GHOST_MOVE_CODE, GHOST_PROMPT,
-  assertLocalModel, gazetaPushPayload, ghostConnectorNames, ghostModelProblem,
+  assertLocalModel, ghostConnectorNames, ghostModelProblem,
 } from './ghost.js';
 import { createAuth, type Auth } from './session.js';
 import { pruneHistory, retentionMonths } from './retention.js';
@@ -83,7 +82,6 @@ import {
   logApprovalAudit,
   expireGazetaItem,
   createGazetaItem,
-  onGazetaItemCreated,
   listSkills,
   getSkill,
   createSkill,
@@ -675,7 +673,7 @@ ${formatHumanResponse(response)}` };
   // ─── Settings ─────────────────────────────────────────────────────────────
   // The free-form settings the UI edits. Everything else in the settings table (web search config, push keys, model
   // slots, bookkeeping) has its own route with its own validation, or is not the client's to write.
-  const GENERAL_SETTINGS: readonly string[] = ['global_system_prompt', 'custom_instructions'];
+  const GENERAL_SETTINGS: readonly string[] = ['custom_instructions'];
   app.get('/api/settings', (_req, res) => {
     const all = getAllSettings(db);
     res.json({ settings: Object.fromEntries(GENERAL_SETTINGS.filter(k => k in all).map(k => [k, all[k]])) });
@@ -874,29 +872,6 @@ ${formatHumanResponse(response)}` };
     res.json({ ok: true });
   });
 
-  // ─── Web Push (urgent Gazeta items) ───────────────────────────────────────
-  const push = new PushService(db, router.vault);
-  const offPush = onGazetaItemCreated(item => {
-    // What a ghost chat asks stays in the app: the notification says only that something is waiting.
-    if (item.urgent) void push.notify(gazetaPushPayload(item));
-  });
-  app.get('/api/push/key', (_req, res) => {
-    const publicKey = push.publicKey();
-    if (!publicKey) { res.status(503).json({ error: 'Push needs KEY_VAULT_SECRET to be set on the server.' }); return; }
-    res.json({ publicKey, subscriptions: push.count() });
-  });
-  app.post('/api/push/subscribe', (req, res) => {
-    try { push.subscribe(req.body?.subscription); res.json({ ok: true }); }
-    catch (err) { res.status(400).json({ error: (err as Error).message }); }
-  });
-  app.post('/api/push/unsubscribe', (req, res) => {
-    if (typeof req.body?.endpoint === 'string') push.unsubscribe(req.body.endpoint);
-    res.json({ ok: true });
-  });
-  app.post('/api/push/test', async (_req, res) => {
-    res.json({ ok: true, sent: await push.notify({ title: 'EverythingApp', body: 'Push notifications work.' }) });
-  });
-
   app.get('/api/search', (req, res) => {
     const q = typeof req.query['q'] === 'string' ? req.query['q'] : '';
     res.json({ hits: searchMessages(db, q) });
@@ -1044,10 +1019,8 @@ ${formatHumanResponse(response)}` };
             new Promise(r => setTimeout(r, 15_000)),
           ]);
         }
-        // `||` not `??`: an empty-string setting (e.g. global_system_prompt
-        // saved as "" from the Settings UI) must fall through to the default
-        // too — `??` only catches null/undefined.
-        let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
+        // `||` not `??`: an empty per-chat prompt falls through to the default too.
+        let effectiveSystem = withModelIdentity(conv.systemPrompt || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
         // Settings → "custom instructions" (how the user wants answers), the working-style note, and the
         // project's own instruction file.
@@ -1939,7 +1912,6 @@ ${formatHumanResponse(response)}`;
     auth.dispose();
     clearInterval(digestInterval);
     clearInterval(pruneInterval);
-    offPush();
     clearInterval(keepaliveInterval);
   }
 

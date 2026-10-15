@@ -10,7 +10,6 @@ Local models are only useful for private material if the app keeps its promise t
 - switching the model in the middle of a chat sends the whole history to whatever was picked;
 - `spawn_agent` workers could be started on any model and receive the task plus tool results;
 - `web_search` sends the model's query to an engine, `web_fetch` / the browser can carry data in a URL;
-- a push notification carried the title and text of an inbox item through a push service.
 
 A per-chat "local only" toggle would not close these, and a toggle that can be switched off is not a guarantee: the moment it is off, the history is exposed.
 
@@ -24,7 +23,6 @@ A chat or a project can be a **ghost**. The flag is chosen when it is created an
 - **Helper work.** Titles and compaction use a local helper, else the chat's own model (compaction) or nothing (the title stays the first 60 characters). Inbox items from ghost chats are left out of the daily digest.
 - **Agents.** Workers of a ghost chat run on local models only (explicit id, tag, the agents slot — a cloud slot is skipped — and on resume). Their transcripts are ghost conversations.
 - **Tools.** No `web_search`, `web_fetch`, browser or any other outbound tool. A ghost chat sees only the tools of the connectors in `GHOST_CONNECTORS` (default `sandbox,obsidian`; connectors added in Settings are never included) and the built-in local ones (tasks, questions, reports, files in its own workspace). The system prompt says so.
-- **Notifications.** A push for an item from a ghost chat says only that something needs attention.
 - **UI.** *New ghost chat* button, *Ghost project* checkbox (with the warning that it cannot be changed), ghost marks in the lists and a *Ghost* badge in the header, the model picker lists local models only.
 
 ## Consequences

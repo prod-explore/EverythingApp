@@ -40,16 +40,16 @@ describe('HTTP surface (audit N3, N4, N5, N7, N10)', () => {
   after(() => { built.stop(); server.close(); db.close(); fs.rmSync(artifactsDir, { recursive: true, force: true }); });
 
   it('N3: only the settings the UI edits can be written or read through /api/settings', async () => {
-    setSetting(db, 'vapid_public', 'SHOULD-NOT-LEAK');
+    setSetting(db, 'vault_marker', 'SHOULD-NOT-LEAK');
     assert.equal((await raw(port, 'PUT', '/api/settings', JSON.stringify({ key: 'custom_instructions', value: 'be brief' }), { 'content-type': 'application/json' })).status, 200);
-    for (const key of ['web_search', 'vapid_public', 'last_digest_date', 'anything']) {
+    for (const key of ['web_search', 'vault_marker', 'last_digest_date', 'anything']) {
       const r = await raw(port, 'PUT', '/api/settings', JSON.stringify({ key, value: 'x' }), { 'content-type': 'application/json' });
       assert.equal(r.status, 400, key);
     }
     const got = JSON.parse((await raw(port, 'GET', '/api/settings')).body).settings;
     assert.equal(got.custom_instructions, 'be brief');
-    assert.ok(Object.keys(got).every(k => ['global_system_prompt', 'custom_instructions'].includes(k)), `only the editable keys: ${Object.keys(got)}`);
-    assert.ok(!('vapid_public' in got));
+    assert.ok(Object.keys(got).every(k => ['custom_instructions'].includes(k)), `only the editable keys: ${Object.keys(got)}`);
+    assert.ok(!('vault_marker' in got));
   });
 
   it('N4: a JSON file uploaded to /api/artifacts keeps its bytes', async () => {

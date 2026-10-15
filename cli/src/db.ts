@@ -269,7 +269,6 @@ export function runMigrations(db: Database.Database): void {
   const seedSetting = db.prepare(
     `INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`,
   );
-  seedSetting.run('global_system_prompt', '');
   // Empty = automatic (a usable free model, else any chat model); the `chat` model slot in Settings sets it.
   seedSetting.run('default_model', '');
   seedSetting.run('custom_instructions', '');
@@ -739,14 +738,6 @@ export interface GazetaItem {
   respondedAt: string | null;
 }
 
-type GazetaCreatedListener = (item: { id: string; type: string; title: string; description?: string; urgent: boolean; conversationId?: string; ghost: boolean }) => void;
-const gazetaCreatedListeners = new Set<GazetaCreatedListener>();
-/** Lets side channels (Web Push) react to new inbox items without every call site knowing about them. */
-export function onGazetaItemCreated(fn: GazetaCreatedListener): () => void {
-  gazetaCreatedListeners.add(fn);
-  return () => { gazetaCreatedListeners.delete(fn); };
-}
-
 export function createGazetaItem(
   db: Database.Database,
   item: {
@@ -773,9 +764,6 @@ export function createGazetaItem(
       item.attachments ? JSON.stringify(item.attachments) : null,
       ghost ? 1 : 0,
     ) as { id: string };
-  for (const fn of gazetaCreatedListeners) {
-    try { fn({ id: row.id, type: item.type, title: item.title, description: item.description, urgent: Boolean(item.urgent), conversationId: item.conversationId, ghost }); } catch { /* listeners must never break inserts */ }
-  }
   return row.id;
 }
 

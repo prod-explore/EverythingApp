@@ -114,14 +114,15 @@ export function Header({
         </button>
       )}
 
-      {model !== null && (
+      {conversationId && (
         <select
-          value={model}
+          value={model ?? ''}
           onChange={e => onModelChange(e.target.value)}
           title="Model for this conversation"
           aria-label="Model for this conversation"
           className="max-w-[8rem] shrink-0 truncate rounded-full border border-border bg-bg-secondary px-3 py-1 text-xs text-fg-secondary outline-none hover:border-border-hover md:max-w-[11rem]"
         >
+          {!model && <option value="" disabled>Choose a model…</option>}
           <ModelOptions models={models} current={model} onlyLocal={ghost} />
         </select>
       )}

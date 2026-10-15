@@ -6,7 +6,7 @@ import type * as Llm from '../llm-types.js';
 import { buildApp, type BuiltApp } from '../server.js';
 import {
   GhostRuleError, LATEST_SCHEMA_VERSION, MIGRATIONS, createConversation, createGazetaItem, createProject, getConversation, getProject,
-  isGhostConversation, listConversations, onGazetaItemCreated, openDb, runMigrations, schemaVersion, updateConversation,
+  isGhostConversation, listConversations, openDb, runMigrations, schemaVersion, updateConversation,
 } from '../db.js';
 import { ModelCatalog, parseDiscoveredModel } from '../providers/catalog.js';
 import { ProviderRouter } from '../providers/router.js';
@@ -18,7 +18,7 @@ import { SSEManager } from '../sse.js';
 import { createRun } from '../runs.js';
 import { setSlots } from '../slots.js';
 import { generateDailySummary } from '../gazeta.js';
-import { ghostConnectorNames, ghostModelProblem, gazetaPushPayload } from '../ghost.js';
+import { ghostConnectorNames, ghostModelProblem } from '../ghost.js';
 import type { McpConnectionLike } from '../mcp-client.js';
 
 const TOKEN = 't';
@@ -159,17 +159,13 @@ describe('ghost flag in the database', () => {
     assert.equal(getProject(db, gp.id)!.ghost, true);
   });
 
-  it('marks inbox items from ghost chats, keeps them out of the digest and reports them to listeners', async () => {
+  it('marks inbox items from ghost chats, keeps them out of the digest', async () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const ghost = createConversation(db, { ghost: true }).id;
     const plain = createConversation(db, {}).id;
-    const seen: boolean[] = [];
-    const off = onGazetaItemCreated(i => seen.push(i.ghost));
     createGazetaItem(db, { type: 'report', conversationId: ghost, title: 'secret plan', description: 'launch codes', urgent: true });
     createGazetaItem(db, { type: 'report', conversationId: plain, title: 'groceries', description: 'milk' });
-    off();
-    assert.deepEqual(seen, [true, false]);
 
     const prompts: string[] = [];
     const llm = { messages: { async create(p: Llm.MessageCreateParamsNonStreaming) { prompts.push(JSON.stringify(p.messages)); return answer('digest'); } } };
@@ -177,11 +173,6 @@ describe('ghost flag in the database', () => {
     assert.equal(prompts.length, 1);
     assert.match(prompts[0]!, /groceries/);
     assert.doesNotMatch(prompts[0]!, /secret plan|launch codes/);
-  });
-
-  it('push notifications for ghost items say nothing about the content', () => {
-    assert.deepEqual(gazetaPushPayload({ title: 'Q3 layoffs list', description: 'names…', ghost: true }), { title: 'EverythingApp', body: 'A private chat needs your attention.', url: '/' });
-    assert.deepEqual(gazetaPushPayload({ title: 'Deploy?', description: 'yes/no', ghost: false }), { title: 'Deploy?', body: 'yes/no', url: '/' });
   });
 });
 

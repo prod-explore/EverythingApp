@@ -1,41 +1,11 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { requiresApproval, checkApprovalGate } from '../approval.js';
 import { ownerOf } from '../tools/types.js';
 import { formatRunResult } from '../tools/runBash.js';
 import { formatCheckpoints } from '../tools/checkpoints.js';
 import { SupervisorClient } from '../supervisor-client.js';
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-
-describe('Approval Gate', () => {
-  it('denies run_bash when not in autoApproveTools', () => {
-    const result = checkApprovalGate('run_bash', []);
-    assert.equal(result.decision, 'deny');
-  });
-
-  it('allows run_bash when listed in autoApproveTools', () => {
-    const result = checkApprovalGate('run_bash', ['run_bash']);
-    assert.equal(result.decision, 'allow');
-  });
-
-  it('allows read_log without autoApproveTools (no approval needed)', () => {
-    const result = checkApprovalGate('read_log', []);
-    assert.equal(result.decision, 'allow');
-  });
-
-  it('requiresApproval returns true for run_bash', () => {
-    assert.equal(requiresApproval('run_bash'), true);
-  });
-
-  it('requiresApproval returns true for git_op', () => {
-    assert.equal(requiresApproval('git_op'), true);
-  });
-
-  it('requiresApproval returns false for read_log', () => {
-    assert.equal(requiresApproval('read_log'), false);
-  });
-});
 
 describe('git_op subcommand whitelist invariants', () => {
   const ALLOWED = new Set([
@@ -97,13 +67,6 @@ describe('run_bash result formatting', () => {
 });
 
 describe('checkpoint tools', () => {
-  it('rollback requires approval; checkpoint_list does not', () => {
-    assert.equal(requiresApproval('rollback'), true);
-    assert.equal(checkApprovalGate('rollback', []).decision, 'deny');
-    assert.equal(checkApprovalGate('rollback', ['rollback']).decision, 'allow');
-    assert.equal(checkApprovalGate('checkpoint_list', []).decision, 'allow');
-  });
-
   it('formats the checkpoint list', () => {
     assert.match(formatCheckpoints([]), /No checkpoints yet/);
     const text = formatCheckpoints([
