@@ -34,7 +34,7 @@ import { AgentManager } from './agents.js';
 import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
 import { OrchestratorSupervisorClient, SupervisorExec, guessMime, type SandboxExec } from './supervisor-client.js';
 import { GitHubCredentials } from './github.js';
-import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
+import { createGithubRoutes, latestOwnerConversation } from './github-routes.js';
 import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
 import { createWebRoutes } from './web-routes.js';
 import { buildWebTools, PageCache, WEB_TOOLS_PROMPT } from './web/tools.js';
@@ -352,7 +352,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const lastConvForProject = new Map<string, string>();
   const github = createGithubRoutes({
     db, approvalGate, credentials: new GitHubCredentials(router.vault), sandbox: sandboxExec,
-    activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestProjectConversation(db, projectId),
+    activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestOwnerConversation(db, projectId),
   });
 
   // request_human_input / spawn_agent are orchestrator-executed virtual tools (see VirtualTool in
@@ -504,13 +504,13 @@ ${formatHumanResponse(response)}` };
   }
 
   /**
-   * Text-file tools: no approval (see file-tools.ts). Only chats that have a sandbox have a workspace. The main
+   * Text-file tools: no approval (see file-tools.ts). Every chat has a workspace. The main
    * assistant and its subagents get the same tools — a worker that has to edit through the shell would need an
    * approval per command for what the user never wants to approve.
    */
   function workspaceFileTools(convId: string | null, runId: string): VirtualTool[] {
     const conv = convId ? getConversation(db, convId) : null;
-    if (!convId || !conv?.sandboxEnabled) return [];
+    if (!convId || !conv) return [];
     return fileTools({
       owner: conv.projectId ?? convId,
       sandbox: sandboxExec,
@@ -809,7 +809,7 @@ ${formatHumanResponse(response)}` };
   };
 
   app.post('/api/conversations', (req, res) => {
-    const { title, projectId, systemPrompt, sandboxEnabled } = req.body ?? {};
+    const { title, projectId, systemPrompt } = req.body ?? {};
     let { model } = req.body ?? {};
     if (refusesAsChatModel(model)) { res.status(400).json({ error: `"${model}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
     let project: ReturnType<typeof getProject> = null;
@@ -827,7 +827,7 @@ ${formatHumanResponse(response)}` };
       const problem = ghostModelProblem(model);
       if (problem) { res.status(400).json({ error: problem, code: GHOST_MODEL_CODE }); return; }
     }
-    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, sandboxEnabled, ghost });
+    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, ghost });
     res.status(201).json({ id, ghost });
   });
 
@@ -1006,15 +1006,15 @@ ${formatHumanResponse(response)}` };
         const unregisterRoot = agents.registerRoot(rootRun.id, controller);
         releaseRoot = unregisterRoot;
         activeRootRun.set(convId, rootRun.id);
-        if (conv.projectId) lastConvForProject.set(conv.projectId, convId);
-        if (conv.sandboxEnabled) {
+        lastConvForProject.set(conv.projectId ?? convId, convId);
+        {
           // Checkpoint the workspace before the turn (rollback point), and refresh sandbox git wiring.
           // Best-effort and bounded: a supervisor hiccup must not block the chat.
           const owner = conv.projectId ?? convId;
           await Promise.race([
             Promise.allSettled([
               supervisor.checkpoint(owner, `before: ${goalText.slice(0, 60)}`),
-              conv.projectId ? github.ensureSandboxGit(conv.projectId) : Promise.resolve(),
+              github.ensureSandboxGit(owner),
             ]),
             new Promise(r => setTimeout(r, 15_000)),
           ]);
@@ -1027,7 +1027,7 @@ ${formatHumanResponse(response)}` };
         const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
         if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
         effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
-        if (conv.sandboxEnabled) {
+        {
           // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
           const agentsFile = await Promise.race([
             supervisor.readFile(conv.projectId ?? convId, `/workspace/${AGENTS_FILE}`).then(b => b.toString('utf8')).catch(() => ''),

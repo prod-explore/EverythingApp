@@ -208,7 +208,7 @@ const msg = (content: unknown[], stop: Llm.StopReason): Llm.Message =>
   ({ id: 'm', content, model: '@t/m', role: 'assistant', stop_reason: stop, stop_sequence: null, type: 'message', usage }) as unknown as Llm.Message;
 
 describe('server: the agent edits files without being asked', () => {
-  it('edit_file and write_file run straight away in a sandbox chat, are audit-logged, and are missing from chats without a sandbox', async () => {
+  it('edit_file and write_file run straight away in every chat and are audit-logged', async () => {
     const ws = tempSandbox();
     writeFileSync(join(ws.dir, 'hello.txt'), 'hello world\n');
     // The orchestrator reads files through the supervisor's HTTP API.
@@ -222,6 +222,7 @@ describe('server: the agent edits files without being asked', () => {
       rs.end('{}');
     });
     await new Promise<void>(r => supervisor.listen(0, r));
+    const prevSupervisorUrl = process.env['SUPERVISOR_URL'];
     process.env['SUPERVISOR_URL'] = `http://127.0.0.1:${(supervisor.address() as AddressInfo).port}`;
 
     const seenTools: string[][] = [];
@@ -246,7 +247,7 @@ describe('server: the agent edits files without being asked', () => {
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;
     try {
-      const conv = (await req(port, 'POST', '/api/conversations', { model: '@t/m', sandboxEnabled: true })).json.id as string;
+      const conv = (await req(port, 'POST', '/api/conversations', { model: '@t/m' })).json.id as string;
       await req(port, 'POST', `/api/conversations/${conv}/message`, { text: 'change it' });
       await poll(() => getMessages(db, conv).some(m => JSON.stringify(m.content).includes('done')));
 
@@ -256,15 +257,15 @@ describe('server: the agent edits files without being asked', () => {
       const audit = db.prepare(`SELECT action, tool_label FROM approval_audit WHERE action = 'agent_file_edit' ORDER BY tool_label`).all();
       assert.deepEqual(audit, [{ action: 'agent_file_edit', tool_label: 'edit_file /workspace/hello.txt' }, { action: 'agent_file_edit', tool_label: 'write_file /workspace/new/dir/x.md' }]);
 
-      // a chat without a sandbox has no workspace, so no file tools
+      // every chat has a workspace: a second chat, in no project, gets the file tools too
       step = 1;
-      const plain = (await req(port, 'POST', '/api/conversations', { model: '@t/m' })).json.id as string;
-      await req(port, 'POST', `/api/conversations/${plain}/message`, { text: 'hi' });
+      const second = (await req(port, 'POST', '/api/conversations', { model: '@t/m' })).json.id as string;
+      await req(port, 'POST', `/api/conversations/${second}/message`, { text: 'hi' });
       await poll(() => seenTools.length >= 3);
-      assert.equal(seenTools[seenTools.length - 1]!.includes('edit_file'), false);
+      assert.ok(seenTools[seenTools.length - 1]!.includes('edit_file'));
     } finally {
       built.stop(); server.close(); db.close(); supervisor.close(); ws.cleanup();
-      delete process.env['SUPERVISOR_URL'];
+      if (prevSupervisorUrl === undefined) delete process.env['SUPERVISOR_URL']; else process.env['SUPERVISOR_URL'] = prevSupervisorUrl;
     }
   });
 });

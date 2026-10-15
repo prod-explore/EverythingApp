@@ -7,7 +7,7 @@ import { openDb, runMigrations, createProject, createConversation } from '../db.
 import { WebApprovalGate } from '../web-approval.js';
 import { KeyVault } from '../providers/key-vault.js';
 import { GitHubCredentials, classifyGithubPath } from '../github.js';
-import { createGithubRoutes, parseGithubRepo, parseStatus } from '../github-routes.js';
+import { createGithubRoutes, latestOwnerConversation, parseGithubRepo, parseStatus } from '../github-routes.js';
 import type { SandboxExec } from '../supervisor-client.js';
 
 const ADMIN = 'admin-secret';
@@ -182,6 +182,22 @@ describe('N4 routes', () => {
       assert.equal((await call(t.port, 'POST', `/api/projects/${t.project.id}/scm/stage`, { dir: 'site', paths: ['../etc/passwd'] })).status, 502);
       assert.equal((await call(t.port, 'GET', `/api/projects/${t.project.id}/scm/status?dir=../x`)).status, 400);
       assert.equal((await call(t.port, 'POST', `/api/projects/${t.project.id}/scm/checkout`, { dir: 'site', branch: '--orphan' })).status, 502);
+    } finally { t.close(); }
+  });
+
+  it('a chat that is not in a project is a valid owner of a workspace: Source Control works there, an unknown id does not', async () => {
+    const owners: string[] = [];
+    const t = await setup({ exec: async (o) => { owners.push(o); return { stdout: '## main\0', stderr: '', exitCode: 0 }; } });
+    try {
+      const plain = createConversation(t.db, {}).id;
+      const st = await call(t.port, 'GET', `/api/projects/${plain}/scm/status?dir=`);
+      assert.equal(st.status, 200);
+      assert.deepEqual(owners, [plain], 'the chat id is the workspace owner');
+      assert.equal((await call(t.port, 'GET', `/api/projects/nope/scm/status?dir=`)).status, 404);
+      assert.equal((await call(t.port, 'GET', `/internal/github-token?projectId=${plain}`)).status, 200, 'git-proxy gets the credential for a chat workspace too');
+      assert.equal((await call(t.port, 'GET', `/internal/github-token?projectId=nope`)).status, 404);
+      assert.equal(latestOwnerConversation(t.db, plain), plain);
+      assert.equal(latestOwnerConversation(t.db, t.project.id), t.conv);
     } finally { t.close(); }
   });
 

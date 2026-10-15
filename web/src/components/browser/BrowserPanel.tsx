@@ -18,7 +18,7 @@ import { Monitor, Hand, X, Loader, Globe } from 'lucide-react';
  * start one without asking the agent to call browser_open.
  *
  * Layout: the frame is scaled to fit (object-contain) whatever size the panel has. When the browser
- * is the only panel in the dock it fills the full height; otherwise it has a drag-resizable height.
+ * is the only panel in the dock it takes the frame's own 16:9 shape at full width (no black bars); otherwise it has a drag-resizable height.
  */
 
 function liveViewUrl(conversationId: string): string {
@@ -227,7 +227,7 @@ export function BrowserPanel({
 
   return (
     <div
-      className={`flex w-full flex-col overflow-hidden border-b border-border bg-bg ${fill ? 'min-h-0 flex-1' : 'shrink-0'}`}
+      className="flex w-full shrink-0 flex-col overflow-hidden border-b border-border bg-bg"
       style={fill ? undefined : { height }}
     >
       {/* Toolbar */}
@@ -261,7 +261,7 @@ export function BrowserPanel({
       </div>
 
       {/* Live view */}
-      <div className="relative min-h-0 flex-1 bg-black">
+      <div className={`relative bg-black ${fill ? 'aspect-video w-full' : 'min-h-0 flex-1'}`}>
         {unavailable && (
           <div className="flex h-full min-h-24 items-center justify-center px-4 text-center text-xs text-fg-tertiary">
             Live view is unavailable — the browser service is not reachable or not configured.

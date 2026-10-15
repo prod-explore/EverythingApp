@@ -214,12 +214,6 @@ function MainApp() {
     });
   }
 
-  function handleSandboxToggle(enabled: boolean) {
-    if (!selectedId) return;
-    setFullConv(prev => (prev ? { ...prev, sandboxEnabled: enabled } : prev));
-    void updateConversation(selectedId, { sandboxEnabled: enabled }).catch(() => {});
-  }
-
   // Slash commands from the composer (see chat/SlashMenu.tsx).
   useEffect(() => {
     const onCommand = (e: Event) => {
@@ -228,10 +222,7 @@ function MainApp() {
       else if (name === 'search') setSearchOpen(true);
       else if (name === 'agents') setDockTool('agents');
       else if (name === 'files') setDockTool('files');
-      else if (name === 'sandbox') { if (fullConv) handleSandboxToggle(!fullConv.sandboxEnabled); }
       else if (name === 'init' && selectedId) {
-        // Writing AGENTS.md needs the workspace, so the sandbox is switched on for this chat first.
-        if (fullConv && !fullConv.sandboxEnabled) handleSandboxToggle(true);
         void sendMessage(selectedId, INIT_PROMPT).catch(() => {});
       }
       else if (name === 'compact') window.dispatchEvent(new CustomEvent('chat:command', { detail: { name } }));
@@ -379,9 +370,7 @@ function MainApp() {
         usage={usage}
         model={fullConv ? fullConv.model || fullConv.effectiveModel || null : null}
         models={models}
-        sandboxEnabled={fullConv?.sandboxEnabled}
         onModelChange={handleModelChange}
-        onSandboxToggle={handleSandboxToggle}
         onToggleSidebar={() => (window.matchMedia('(min-width: 768px)').matches ? toggleSidebarCollapsed() : setSidebarOpen(o => !o))}
         onOpenBrowser={() => setBrowserPanelOpen(o => !o)}
         onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
@@ -448,11 +437,9 @@ function MainApp() {
               {dockTool === 'files' && selectedId && (
                 <ExplorerPanel key={workspaceOwner ?? ''} owner={workspaceOwner ?? selectedId} onClose={() => setDockTool(null)} />
               )}
-              {dockTool === 'git' && (projectOfChat ? (
-                <GitPanel key={projectOfChat} projectId={projectOfChat} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
-              ) : (
-                <NeedsProject title="Git" onClose={() => setDockTool(null)} />
-              ))}
+              {dockTool === 'git' && workspaceOwner && (
+                <GitPanel key={workspaceOwner} projectId={workspaceOwner} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
+              )}
               {artifactsPanelOpen && (
                 <ArtifactsPanel
                   conversationId={selectedId}
@@ -496,18 +483,5 @@ function MainApp() {
       )}
     </Layout>
     </GazetaContext.Provider>
-  );
-}
-
-
-function NeedsProject({ title, onClose }: { title: string; onClose: () => void }) {
-  return (
-    <section className="flex flex-col border-b border-border">
-      <header className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <h2 className="flex-1 text-sm font-medium text-fg">{title}</h2>
-        <button onClick={onClose} className="text-xs text-fg-tertiary hover:text-fg">Close</button>
-      </header>
-      <p className="px-3 py-4 text-center text-xs text-fg-tertiary">This chat isn't in a project. Move it into a project (or start a chat inside one) to use {title}.</p>
-    </section>
   );
 }

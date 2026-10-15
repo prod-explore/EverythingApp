@@ -57,7 +57,6 @@ describe('db.ts integration', () => {
     assert.ok(conv);
     assert.equal(conv!.title, 'New conversation');
     assert.equal(conv!.systemPrompt, null);
-    assert.equal(conv!.sandboxEnabled, false);
   });
 
   it('lists conversations most-recently-updated first, with a live message count', () => {

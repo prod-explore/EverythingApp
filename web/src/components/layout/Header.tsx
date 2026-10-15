@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Download, FolderOpen, FolderTree, GitBranch, Ghost, Globe, LogOut, Menu, MoreHorizontal, Terminal } from 'lucide-react';
+import { Bot, Download, FolderOpen, FolderTree, GitBranch, Ghost, Globe, LogOut, Menu, MoreHorizontal } from 'lucide-react';
 import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
@@ -20,9 +20,7 @@ export function Header({
   usage,
   model,
   models,
-  sandboxEnabled,
   onModelChange,
-  onSandboxToggle,
   onToggleSidebar,
   onOpenBrowser,
   onOpenArtifacts,
@@ -42,10 +40,7 @@ export function Header({
   /** null until the full conversation loads, or when there's no conversation selected yet. */
   model: string | null;
   models: ModelOption[];
-  /** undefined = loading/no conversation; otherwise reflects conversation.sandboxEnabled */
-  sandboxEnabled: boolean | undefined;
   onModelChange: (model: string) => void;
-  onSandboxToggle: (enabled: boolean) => void;
   onToggleSidebar: () => void;
   onOpenBrowser: () => void;
   onOpenArtifacts: () => void;
@@ -97,23 +92,6 @@ export function Header({
         </span>
       )}
 
-      {/* Desktop: everything inline. */}
-      {sandboxEnabled !== undefined && (
-        <button
-          onClick={() => onSandboxToggle(!sandboxEnabled)}
-          title={sandboxEnabled ? 'Sandbox enabled — click to disable' : 'Sandbox disabled — click to enable'}
-          aria-label={sandboxEnabled ? 'Disable sandbox' : 'Enable sandbox'}
-          className={`hidden shrink-0 items-center gap-1 rounded-button px-2 py-1 text-xs font-medium transition-colors md:flex ${
-            sandboxEnabled
-              ? 'border border-fg/30 text-fg hover:border-fg/60'
-              : 'border border-border text-fg-tertiary hover:text-fg-secondary'
-          }`}
-        >
-          <Terminal size={12} />
-          {sandboxEnabled ? 'Sandbox on' : 'Sandbox off'}
-        </button>
-      )}
-
       {conversationId && (
         <select
           value={model ?? ''}
@@ -153,11 +131,6 @@ export function Header({
         {menuOpen && (
           <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-56 rounded-container border border-border bg-bg-secondary p-1 shadow-lg">
             <div className="px-3 py-1 text-xs text-fg-tertiary">{usage}</div>
-            {sandboxEnabled !== undefined && (
-              <button role="menuitem" className={itemClass(sandboxEnabled)} onClick={pick(() => onSandboxToggle(!sandboxEnabled))}>
-                <Terminal size={15} /> {sandboxEnabled ? 'Sandbox on' : 'Sandbox off'}
-              </button>
-            )}
             <button role="menuitem" className={itemClass(browserPanelOpen)} onClick={pick(onOpenBrowser)}>
               <Globe size={15} /> {browserPanelOpen ? 'Hide browser' : 'Browser'}
             </button>

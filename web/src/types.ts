@@ -18,7 +18,6 @@ export interface Conversation {
   model: string | null;
   /** What the next turn will actually use: the conversation's own model, else the default. Set by the server. */
   effectiveModel?: string;
-  sandboxEnabled: boolean;
   /** Ghost chat (own flag or its project's). Never changes. */
   ghost?: boolean;
   createdAt: string;

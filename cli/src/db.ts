@@ -358,7 +358,6 @@ export interface ConversationRow {
   title: string;
   systemPrompt: string | null;
   model: string | null;
-  sandboxEnabled: boolean;
   /** Ghost chat: its own flag or its project's. Immutable (see MIGRATIONS[0] and ghost.ts). */
   ghost: boolean;
   createdAt: string;
@@ -381,13 +380,13 @@ export class GhostRuleError extends Error {
 
 export function createConversation(
   db: Database.Database,
-  opts: { title?: string; projectId?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean; kind?: 'chat' | 'subagent'; ghost?: boolean } = {},
+  opts: { title?: string; projectId?: string; systemPrompt?: string; model?: string; kind?: 'chat' | 'subagent'; ghost?: boolean } = {},
 ): { id: string } {
   // A chat inside a ghost project is a ghost chat — the flag is stored on the row too, so it never depends on a join.
   const ghost = opts.ghost === true || (opts.projectId ? isGhostProject(db, opts.projectId) : false);
   const stmt = db.prepare(`
-    INSERT INTO conversations (title, project_id, system_prompt, model, sandbox_enabled, kind, ghost)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO conversations (title, project_id, system_prompt, model, kind, ghost)
+    VALUES (?, ?, ?, ?, ?, ?)
     RETURNING id
   `);
   const row = stmt.get(
@@ -395,7 +394,6 @@ export function createConversation(
     opts.projectId ?? null,
     opts.systemPrompt ?? null,
     opts.model ?? null,
-    opts.sandboxEnabled ? 1 : 0,
     opts.kind ?? 'chat',
     ghost ? 1 : 0,
   ) as { id: string };
@@ -420,11 +418,11 @@ export function getConversation(db: Database.Database, id: string): Conversation
   const row = db
     .prepare(
       `SELECT c.id, c.project_id as projectId, c.title, c.system_prompt as systemPrompt, c.model,
-              c.sandbox_enabled as sandboxEnabled, c.created_at as createdAt, c.updated_at as updatedAt,
+              c.created_at as createdAt, c.updated_at as updatedAt,
               (c.ghost = 1 OR COALESCE((SELECT p.ghost FROM projects p WHERE p.id = c.project_id), 0) = 1) as ghost
        FROM conversations c WHERE c.id = ?`,
     )
-    .get(id) as ({ id: string; projectId: string | null; title: string; systemPrompt: string | null; model: string | null; sandboxEnabled: number; ghost: number; createdAt: string; updatedAt: string }) | undefined;
+    .get(id) as ({ id: string; projectId: string | null; title: string; systemPrompt: string | null; model: string | null; ghost: number; createdAt: string; updatedAt: string }) | undefined;
   if (!row) return null;
   return {
     id: row.id,
@@ -432,7 +430,6 @@ export function getConversation(db: Database.Database, id: string): Conversation
     title: row.title,
     systemPrompt: row.systemPrompt,
     model: row.model,
-    sandboxEnabled: Boolean(row.sandboxEnabled),
     ghost: row.ghost === 1,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -453,7 +450,7 @@ export function isGhostProject(db: Database.Database, id: string | null | undefi
 export function updateConversation(
   db: Database.Database,
   id: string,
-  patch: { title?: string; projectId?: string | null; systemPrompt?: string | null; model?: string | null; sandboxEnabled?: boolean },
+  patch: { title?: string; projectId?: string | null; systemPrompt?: string | null; model?: string | null },
 ): boolean {
   const sets: string[] = ["updated_at = datetime('now')"];
   const values: unknown[] = [];
@@ -470,7 +467,6 @@ export function updateConversation(
   }
   if (patch.systemPrompt !== undefined) { sets.push('system_prompt = ?'); values.push(patch.systemPrompt); }
   if (patch.model !== undefined) { sets.push('model = ?'); values.push(patch.model); }
-  if (patch.sandboxEnabled !== undefined) { sets.push('sandbox_enabled = ?'); values.push(patch.sandboxEnabled ? 1 : 0); }
   if (sets.length === 1) return false;
   values.push(id);
   const result = db.prepare(`UPDATE conversations SET ${sets.join(', ')} WHERE id = ?`).run(...values);
