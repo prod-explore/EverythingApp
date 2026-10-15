@@ -23,9 +23,9 @@ export default defineConfig({
       output: {
         codeSplitting: {
           groups: [
-            { name: 'markdown', test: /node_modules[\/](react-markdown|remark|rehype|unified|micromark|mdast|hast|highlight\.js|lowlight|vfile|unist|property-information|space-separated|comma-separated|decode-named|character-|trim-lines|bail|trough|devlop|is-plain)/ },
-            { name: 'assistant-ui', test: /node_modules[\/]@assistant-ui/ },
-            { name: 'react', test: /node_modules[\/](react|react-dom|scheduler)[\/]/ },
+            { name: 'markdown', test: /node_modules[/](react-markdown|remark|rehype|unified|micromark|mdast|hast|highlight\.js|lowlight|vfile|unist|property-information|space-separated|comma-separated|decode-named|character-|trim-lines|bail|trough|devlop|is-plain)/ },
+            { name: 'assistant-ui', test: /node_modules[/]@assistant-ui/ },
+            { name: 'react', test: /node_modules[/](react|react-dom|scheduler)[/]/ },
           ],
         },
       },

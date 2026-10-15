@@ -1,27 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAui, useAuiState } from '@assistant-ui/react';
+import { SLASH_COMMANDS } from './slashCommands';
 
-export interface SlashCommand { name: string; hint: string }
-
-/** Commands the composer understands. Chat-level ones are handled in App.tsx via the `app:command` event. */
-export const SLASH_COMMANDS: SlashCommand[] = [
-  { name: 'new', hint: 'Start a new conversation' },
-  { name: 'export', hint: 'Download this chat as Markdown' },
-  { name: 'init', hint: 'Have the assistant write AGENTS.md for this project' },
-  { name: 'compact', hint: 'Summarise older messages to free context' },
-  { name: 'agents', hint: 'Open the Agents panel' },
-  { name: 'files', hint: 'Open the Files panel' },
-  { name: 'search', hint: 'Search all conversations' },
-];
-
-/** Lists commands while the composer text is a bare "/word"; Enter/Tab runs the highlighted one. */
 export function SlashMenu({ onCommand }: { onCommand: (name: string) => void }) {
   const aui = useAui();
   const text = useAuiState(s => s.composer.text);
   const [active, setActive] = useState(0);
   const query = /^\/(\w*)$/.exec(text)?.[1];
   const matches = useMemo(() => (query === undefined ? [] : SLASH_COMMANDS.filter(c => c.name.startsWith(query.toLowerCase()))), [query]);
-  useEffect(() => setActive(0), [query]);
+  // Back to the first entry whenever the typed command changes (adjusting state during render, not in an effect).
+  const [shownQuery, setShownQuery] = useState(query);
+  if (shownQuery !== query) {
+    setShownQuery(query);
+    setActive(0);
+  }
 
   useEffect(() => {
     if (!matches.length) return;

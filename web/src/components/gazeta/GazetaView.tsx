@@ -6,7 +6,8 @@ import type { GazetaItem, ProjectListItem } from '../../types';
 import { Button } from '../shared/Button';
 import { EmptyState } from '../shared/EmptyState';
 import { Modal } from '../shared/Modal';
-import { GazetaCard, TYPE_LABEL } from './GazetaCard';
+import { GazetaCard } from './GazetaCard';
+import { TYPE_LABEL } from './gazetaFormat';
 
 const PAGE = 30;
 const TYPES = ['agent_question', 'report', 'daily_summary'] as const;
@@ -96,7 +97,7 @@ export function GazetaView({
 
   // Fresh first page whenever the filters change.
   const loadPageRef = useRef(loadPage);
-  loadPageRef.current = loadPage;
+  useEffect(() => { loadPageRef.current = loadPage; });
   useEffect(() => {
     setSelected(new Set());
     setPageIds([]);

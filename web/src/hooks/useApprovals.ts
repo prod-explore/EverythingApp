@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { approve as apiApprove, getPendingApprovals } from '../api';
 import type { ApprovalScope, PendingApproval } from '../types';
 
@@ -17,19 +17,18 @@ export function useApprovals(conversationId: string | null): {
   pending: PendingApproval[];
   respond: (id: string, approved: boolean, scope?: ApprovalScope) => Promise<void>;
 } {
-  const [pending, setPending] = useState<PendingApproval[]>([]);
+  // Everything the gate reports; the list for THIS conversation is derived below, so switching conversations
+  // never shows (even for one frame) an approval that belongs to the previous one.
+  const [all, setAll] = useState<PendingApproval[]>([]);
 
   useEffect(() => {
-    if (!conversationId) {
-      setPending([]);
-      return;
-    }
+    if (!conversationId) return;
     let cancelled = false;
 
     async function poll() {
       try {
-        const { pending: all } = await getPendingApprovals();
-        if (!cancelled) setPending(all.filter(p => p.conversationId === conversationId));
+        const { pending: everything } = await getPendingApprovals();
+        if (!cancelled) setAll(everything);
       } catch {
         // Transient — next poll retries.
       }
@@ -43,12 +42,14 @@ export function useApprovals(conversationId: string | null): {
     };
   }, [conversationId]);
 
+  const pending = useMemo(() => (conversationId ? all.filter(p => p.conversationId === conversationId) : []), [all, conversationId]);
+
   const respond = async (id: string, approved: boolean, scope?: ApprovalScope) => {
     // Optimistic removal — resolving is fire-and-forget from the UI's
     // perspective; the SSE `approval:resolved` event (if listened to) or the
     // next poll would confirm it either way, so there's nothing to gain by
     // waiting on this request before updating the list.
-    setPending(prev => prev.filter(p => p.id !== id));
+    setAll(prev => prev.filter(p => p.id !== id));
     await apiApprove(id, approved, scope);
   };
 

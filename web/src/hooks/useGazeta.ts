@@ -58,7 +58,7 @@ export function useGazetaStore(): GazetaStore {
     }
   });
   const mutedRef = useRef(muted);
-  mutedRef.current = muted;
+  useEffect(() => { mutedRef.current = muted; });
 
   const setMuted = useCallback((next: boolean) => {
     setMutedState(next);

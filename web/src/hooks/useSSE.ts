@@ -157,10 +157,8 @@ export type SideEvent = (typeof SIDE_EVENTS)[number];
  */
 export function useSSE(conversationId: string | null, onSideEvent?: (event: SideEvent, data: unknown) => void): LiveTurnState {
   const [state, dispatch] = useReducer(liveTurnReducer, INITIAL_STATE);
-  const conversationIdRef = useRef(conversationId);
-  conversationIdRef.current = conversationId;
   const onSideEventRef = useRef(onSideEvent);
-  onSideEventRef.current = onSideEvent;
+  useEffect(() => { onSideEventRef.current = onSideEvent; });
 
   useEffect(() => {
     if (!conversationId) return;
