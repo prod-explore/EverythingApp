@@ -13,6 +13,7 @@ import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
 import { resolveWorkspacePath, writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
+import { previewHostFor, previewTool, PREVIEW_PROMPT } from './preview.js';
 import { assertStrongSecret } from './secret-check.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
@@ -534,6 +535,8 @@ ${formatHumanResponse(response)}` };
       ...agents.agentTools(rootRunId, signal),
       ...workspaceFileTools(convId, rootRunId),
       ...webToolsFor(convId),
+      // The one browser can look at the chat's own dev server (not in a ghost chat: it has no browser).
+      ...(conv && !conv.ghost ? [previewTool({ owner: conv.projectId ?? convId, link: o => supervisor.preview(o) })] : []),
     ];
   }
 
@@ -1039,7 +1042,7 @@ ${formatHumanResponse(response)}` };
           if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
           effectiveSystem += '\n\n' + FILE_TOOLS_PROMPT;
         }
-        effectiveSystem += '\n\n' + (conv.ghost ? GHOST_PROMPT : WEB_TOOLS_PROMPT);
+        effectiveSystem += '\n\n' + (conv.ghost ? GHOST_PROMPT : WEB_TOOLS_PROMPT + ' ' + PREVIEW_PROMPT);
 
         // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
         // In a ghost chat that is only the local ones.
@@ -1142,7 +1145,7 @@ ${m.body}`),
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
             browserPolicy: browserPolicyOf(conv.projectId),
-            webAccess: conv.ghost ? undefined : { grantedHosts: webHostsFor(convId, conv.projectId, effectiveModel) },
+            webAccess: conv.ghost ? undefined : { grantedHosts: webHostsFor(convId, conv.projectId, effectiveModel), ownHost: previewHostFor(conv.projectId ?? convId) },
             confirm: async (label, args, opts) => {
               const decision = await approvalGate.confirmDetailed(convId, label, args, controller.signal, {
                 projectId: conv.projectId ?? undefined,

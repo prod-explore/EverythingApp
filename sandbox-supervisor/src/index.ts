@@ -24,6 +24,8 @@ async function main(): Promise<void> {
     maxTerminals: num('MAX_TERMINALS_PER_SANDBOX', 4),
     maxOutputChars: num('TERMINAL_MAX_OUTPUT_CHARS', 200_000),
     maxFileBytes: num('SANDBOX_EXPLORER_MAX_FILE_BYTES', 2 * 1024 * 1024),
+    // The browser the agent shares with the user; sandboxes are linked to it on demand (preview_sandbox). Empty = off.
+    browserContainer: process.env['PREVIEW_BROWSER_CONTAINER'] ?? 'everythingapp-playwright-mcp',
     checkpointTimeoutMs: num('SANDBOX_CHECKPOINT_TIMEOUT_MS', 120_000),
     cpu: {
       thresholdPercent: num('SANDBOX_CPU_THRESHOLD_PCT', 90),

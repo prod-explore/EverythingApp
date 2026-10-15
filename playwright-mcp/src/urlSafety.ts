@@ -132,6 +132,12 @@ export class UrlBlockedError extends Error {
 export interface UrlGuardOptions {
   /** Hostnames / IP literals reachable even though private — an explicit operator opt-in (BROWSER_ALLOW_PRIVATE_HOSTS). */
   allowHosts?: readonly string[];
+  /**
+   * Hostnames reachable although private, by pattern: the per-chat names the supervisor gives sandboxes on the private
+   * preview network (`sandbox-<10 hex>`). Single-label names only; such a name resolves only on a network the browser was
+   * attached to for exactly that sandbox.
+   */
+  allowPattern?: RegExp;
   /** DNS seam for tests. Must return every A/AAAA record. */
   resolve?: (hostname: string) => Promise<string[]>;
   /** How long a hostname's resolution is cached (per-request checks would otherwise hammer DNS). */
@@ -144,6 +150,7 @@ const defaultResolve = async (hostname: string): Promise<string[]> =>
 
 export class UrlGuard {
   private readonly allow: Set<string>;
+  private readonly allowPattern: RegExp | undefined;
   private readonly resolve: (hostname: string) => Promise<string[]>;
   private readonly ttl: number;
   private readonly now: () => number;
@@ -151,6 +158,7 @@ export class UrlGuard {
 
   constructor(opts: UrlGuardOptions = {}) {
     this.allow = new Set((opts.allowHosts ?? []).map(h => h.trim().toLowerCase()).filter(Boolean));
+    this.allowPattern = opts.allowPattern;
     this.resolve = opts.resolve ?? defaultResolve;
     this.ttl = opts.cacheTtlMs ?? 30_000;
     this.now = opts.now ?? Date.now;
@@ -170,7 +178,7 @@ export class UrlGuard {
     // WHATWG parsing already normalises 2130706433 / 0x7f.1 / 017700000001 to dotted-decimal.
     let host = parsed.hostname.toLowerCase().replace(/\.$/, '');
     if (host.startsWith('[') && host.endsWith(']')) host = host.slice(1, -1);
-    if (this.allow.has(host)) return;
+    if (this.allow.has(host) || (this.allowPattern && !host.includes('.') && !isIP(host) && this.allowPattern.test(host))) return;
 
     const privateMsg = `"${host}" is on a private/internal network — the browser may only reach the public internet`;
     if (host === 'localhost' || INTERNAL_SUFFIXES.some(s => host.endsWith(s))) throw new UrlBlockedError(rawUrl, privateMsg);

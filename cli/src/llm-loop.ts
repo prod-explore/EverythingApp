@@ -116,7 +116,14 @@ export interface ConversationDeps {
    * evaluated on every call so a revoked grant stops working at once) or the one approved in this very call.
    * Without it the browser keeps the project policy alone (tests, headless callers).
    */
-  webAccess?: { grantedHosts(): string[] };
+  webAccess?: {
+    grantedHosts(): string[];
+    /**
+     * The hostname of this chat's own sandbox (see preview.ts). Opening it in the browser is not "web access" — it is the
+     * user's own workspace — so it needs no approval and is added to the browser's allowed hosts.
+     */
+    ownHost?: string;
+  };
   /**
    * web_fetch opens, without asking, only URLs that are already in the conversation: typed by the user (this flag
    * on) or returned by web_search / web_fetch. Subagents get false: their "user message" is a goal written by a model.
@@ -417,6 +424,7 @@ async function runLoop(
           toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: text, is_error: true });
         };
         if (!host) { refuse(`${use.name} needs "url" to be a full http(s) URL, e.g. https://example.com/page.`); continue; }
+        const ownSandbox = !virtual && deps.webAccess?.ownHost !== undefined && host === deps.webAccess.ownHost;
         if (virtual) {
           // The server would refuse a private address anyway; do not ask a human to approve what can never run.
           try { assertPublicUrl(String(args['url']).trim()); } catch (err) {
@@ -429,7 +437,7 @@ async function runLoop(
         // approval — as in Claude / Gemini. After a suspected injection even those ask. A URL the model composed
         // itself is the exfiltration channel and is approved per domain.
         const inContext = virtual && !injectionWarning && urlIsInContext(String(args['url']), collectContextUrls(messages, { trustUserText: deps.userUrlsTrusted !== false }));
-        const domainDecision = inContext
+        const domainDecision = inContext || ownSandbox
           ? true
           : await deps.confirm(`web:${host}`, { url: String(args['url']), host, tool: real, ...(virtual ? { outsideContext: true } : {}) }, injectionWarning ? { forcePrompt: injectionWarning } : undefined);
         if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
@@ -496,7 +504,7 @@ async function runLoop(
           const { _policy: _p, _allow_downloads: _d, _approved_host: _a, ...rest } = enrichedArgs;
           enrichedArgs = rest;
           if (deps.browserPolicy || deps.webAccess) {
-            enrichedArgs._policy = { ...deps.browserPolicy, ...(deps.webAccess ? { domainGrant: deps.webAccess.grantedHosts() } : {}) };
+            enrichedArgs._policy = { ...deps.browserPolicy, ...(deps.webAccess ? { domainGrant: [...deps.webAccess.grantedHosts(), ...(deps.webAccess.ownHost ? [deps.webAccess.ownHost] : [])] } : {}) };
           }
           if (real === 'browser_open' && approvedHost) enrichedArgs._approved_host = approvedHost;
         }

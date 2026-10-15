@@ -69,6 +69,31 @@ export function createSupervisorApp(sandboxes: SandboxManager, defaultTimeoutMs 
     res.json({ ok: true, stopped: await sandboxes.stop(ownerId) });
   });
 
+  // POST /preview { ownerId } — link the owner's sandbox with the shared browser over a private network.
+  app.post('/preview', async (req, res) => {
+    const ownerId = ownerOf(req.body ?? {});
+    if (!ownerId) {
+      res.status(400).json({ error: 'ownerId is required' });
+      return;
+    }
+    try {
+      res.json(await sandboxes.preview(ownerId));
+    } catch (err) {
+      res.status(statusOf(err, 503)).json({ error: messageOf(err) });
+    }
+  });
+
+  // POST /unpreview { ownerId } — cut that link.
+  app.post('/unpreview', async (req, res) => {
+    const ownerId = ownerOf(req.body ?? {});
+    if (!ownerId) {
+      res.status(400).json({ error: 'ownerId is required' });
+      return;
+    }
+    await sandboxes.unpreview(ownerId);
+    res.json({ ok: true });
+  });
+
   // POST /terminal/run { ownerId, terminal?, command, timeoutMs? }
   app.post('/terminal/run', async (req, res) => {
     const { terminal, command, timeoutMs } = (req.body ?? {}) as { terminal?: unknown; command?: unknown; timeoutMs?: unknown };

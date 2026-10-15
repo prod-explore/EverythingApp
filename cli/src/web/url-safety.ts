@@ -132,6 +132,7 @@ export function assertPublicUrl(raw: string): URL {
   if (parsed.username || parsed.password) throw new UrlBlockedError(raw, 'URLs with credentials are not allowed');
   const host = hostOfUrl(raw)!;
   const privateMsg = `"${host}" is on a private/internal network — web_fetch may only reach the public internet`;
+  if (/^sandbox-[0-9a-f]{10}$/.test(host)) throw new UrlBlockedError(raw, `"${host}" is a sandbox preview address — only the browser can reach it: use preview_sandbox, then browser_open`);
   if (host === 'localhost' || INTERNAL_SUFFIXES.some(s => host.endsWith(s))) throw new UrlBlockedError(raw, privateMsg);
   if (isIP(host) && isPrivateAddress(host)) throw new UrlBlockedError(raw, privateMsg);
   return parsed;

@@ -40,6 +40,9 @@ services:
       # deploy/egress-guard.sh (EGRESS_BRIDGES must include br-ea-sandbox).
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-ea-sandbox-egress}
       SANDBOX_BRIDGE_NAME: ${SANDBOX_BRIDGE_NAME:-br-ea-sandbox}
+      # preview_sandbox: the shared browser container is attached, on demand, to a private no-route-out network together
+      # with ONE sandbox, so the agent can look at the dev server it is building. Empty = off.
+      PREVIEW_BROWSER_CONTAINER: ${PREVIEW_BROWSER_CONTAINER:-everythingapp-playwright-mcp}
       # SANDBOX_RUNTIME: runsc   # optional gVisor
     ports:
       - "127.0.0.1:3001:3001"

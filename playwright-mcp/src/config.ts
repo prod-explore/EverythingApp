@@ -17,6 +17,8 @@ export interface PlaywrightConfig {
   watchdogIntervalMs: number;
   /** Private hostnames/IPs the browser MAY reach (explicit opt-in; default none). Comma-separated in BROWSER_ALLOW_PRIVATE_HOSTS. */
   allowPrivateHosts: string[];
+  /** Sandbox preview hostnames (`sandbox-<10 hex>`, see urlSafety.ts) — the one private name pattern the browser may reach. */
+  previewHostPattern?: RegExp;
   /** Max chars of sanitised page text included in an observation (OBSERVATION_MAX_TEXT_CHARS, default 12000). */
   observationMaxTextChars: number;
   /** Max chars of one element label (OBSERVATION_LABEL_MAX_CHARS, default 100). */
@@ -53,6 +55,7 @@ export function loadConfig(): PlaywrightConfig {
     sessionIdleTimeoutMs: parseInt(process.env['PLAYWRIGHT_SESSION_IDLE_TIMEOUT_MS'] ?? '1800000', 10),
     watchdogIntervalMs: parseInt(process.env['PLAYWRIGHT_WATCHDOG_INTERVAL_MS'] ?? '120000', 10),
     allowPrivateHosts: (process.env['BROWSER_ALLOW_PRIVATE_HOSTS'] ?? '').split(',').map(h => h.trim()).filter(Boolean),
+    previewHostPattern: /^sandbox-[0-9a-f]{10}$/,
     observationMaxTextChars: parseInt(process.env['OBSERVATION_MAX_TEXT_CHARS'] ?? '12000', 10),
     observationLabelMaxChars: parseInt(process.env['OBSERVATION_LABEL_MAX_CHARS'] ?? '100', 10),
     observationMaxElements: parseInt(process.env['OBSERVATION_MAX_ELEMENTS'] ?? '300', 10),

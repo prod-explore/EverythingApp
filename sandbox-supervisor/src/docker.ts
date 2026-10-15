@@ -7,6 +7,7 @@ import { WORKSPACE, type PathStat } from './explorer.js';
 
 export const LABEL = 'everythingapp.sandbox';
 const OWNER_LABEL = 'everythingapp.owner';
+const PREVIEW_LABEL = 'everythingapp.preview';
 
 export interface DockerConfig {
   image: string;
@@ -208,6 +209,56 @@ export class DockerodeOps implements DockerOps {
         return { id: c.Id, ownerId: c.Labels[OWNER_LABEL] ?? '', running, stoppedAt };
       }),
     );
+  }
+
+  /** Internal: no gateway, no outbound traffic. Sandbox ↔ browser only; ICC stays on because they have to talk. */
+  async ensurePreviewNetwork(name: string, ownerId: string): Promise<void> {
+    try {
+      await this.docker.getNetwork(name).inspect();
+      return;
+    } catch {
+      /* not there yet */
+    }
+    await this.docker.createNetwork({
+      Name: name,
+      Driver: 'bridge',
+      Internal: true,
+      Labels: { [PREVIEW_LABEL]: '1', [OWNER_LABEL]: ownerId },
+    });
+  }
+
+  async connectNetwork(network: string, container: string, aliases: string[] = []): Promise<void> {
+    try {
+      await this.docker.getNetwork(network).connect({ Container: container, EndpointConfig: aliases.length ? { Aliases: aliases } : {} });
+    } catch (err) {
+      // Docker answers 403 "endpoint with name … already exists in network …" when it is already attached.
+      if (statusOf(err) === 403 && /already exists|already connected/i.test((err as Error).message)) return;
+      throw err;
+    }
+  }
+
+  async removePreviewNetwork(name: string): Promise<void> {
+    const net = this.docker.getNetwork(name);
+    let info: Docker.NetworkInspectInfo;
+    try {
+      info = await net.inspect();
+    } catch (err) {
+      if (statusOf(err) === 404) return;
+      throw err;
+    }
+    for (const id of Object.keys(info.Containers ?? {})) {
+      await net.disconnect({ Container: id, Force: true }).catch(() => undefined);
+    }
+    try {
+      await net.remove();
+    } catch (err) {
+      if (statusOf(err) !== 404) throw err;
+    }
+  }
+
+  async listPreviewNetworks(): Promise<Array<{ name: string; ownerId: string }>> {
+    const list = await this.docker.listNetworks({ filters: { label: [`${PREVIEW_LABEL}=1`] } });
+    return list.map(n => ({ name: n.Name, ownerId: n.Labels?.[OWNER_LABEL] ?? '' }));
   }
 
   async cpuPercent(id: string): Promise<number> {

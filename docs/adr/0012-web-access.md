@@ -33,6 +33,14 @@ Two tools, each the standard shape users know from Claude, Gemini and Antigravit
 - `browser_open`, `browser_act` and `browser_close` are in the default auto-approve list, because the domain is the approval. `browser_act` still asks when its label looks irreversible (payment, deletion, subscription…) and, like every effectful tool, after a page looked like a prompt injection.
 - The operator layers stay above the user: `BROWSER_DOMAIN_DENY` always wins, `BROWSER_DOMAIN_ALLOW` restricts everything to its list, the SSRF guard (browser) and the connect-time address check (`web_fetch`) cannot be approved away.
 
+## Looking at what the agent builds (one browser)
+
+The browser is a single shared session per chat: the user watches it and the agent drives it. To let it open the dev server the agent runs in the chat's sandbox without a second browser, `preview_sandbox {port}` asks the supervisor to create a private network (`internal`: no gateway, nothing routes out) and attach exactly two containers to it — that chat's sandbox, under the alias `sandbox-<10 hex of sha1(owner)>`, and the browser container. The sandbox's own network is untouched (ICC stays off there), and the link is removed when the sandbox stops, is destroyed, or the supervisor restarts.
+
+- The browser's SSRF guard allows exactly that name pattern (`^sandbox-[0-9a-f]{10}$`, single label) and nothing else private; the name resolves only while the browser is attached to that sandbox's network. The browser container is shared, so it can resolve several chats' hosts at once; what keeps them apart is the grant list (a chat's session may open only its own host without asking) and that the name is a hash of the owner id that other chats never see.
+- Opening the chat's own host is not "web access": no approval card, and it is added to `_policy.domainGrant`. Another chat's host is an ordinary domain and asks. `web_fetch` refuses the name with a hint (it runs on the server and cannot see the sandbox).
+- The dev server must listen on `0.0.0.0`; the tool result says so. Not offered in ghost chats (no browser there) or to subagents.
+
 ## Consequences
 
 - The F-05 chain is closed without taint tracking: reading a file and then sending it to an address the model composed needs a click on that domain, and after a flagged page every effectful call asks again.

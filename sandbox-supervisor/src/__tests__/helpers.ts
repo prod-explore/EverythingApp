@@ -115,6 +115,8 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
   const logLines: string[] = [];
   const execCommands: string[] = [];
   const cpu = new Map<string, number>();
+  /** network name → attached containers (name → aliases) */
+  const networks = new Map<string, { ownerId: string; attached: Map<string, string[]> }>();
   let n = 0;
   const fsOf = (id: string) => {
     const c = containers.get(id);
@@ -162,6 +164,24 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
     async cpuPercent(id) {
       return cpu.get(id) ?? 0;
     },
+    async ensurePreviewNetwork(name, ownerId) {
+      calls.push(`net:${name}`);
+      if (!networks.has(name)) networks.set(name, { ownerId, attached: new Map() });
+    },
+    async connectNetwork(network, container, aliases = []) {
+      const net = networks.get(network);
+      if (!net) throw new Error(`No such network ${network}`);
+      if (container === 'missing-browser') throw new Error('No such container: missing-browser');
+      net.attached.set(container, aliases);
+      calls.push(`connect:${network}:${container}`);
+    },
+    async removePreviewNetwork(name) {
+      calls.push(`unnet:${name}`);
+      networks.delete(name);
+    },
+    async listPreviewNetworks() {
+      return [...networks].map(([name, v]) => ({ name, ownerId: v.ownerId }));
+    },
     async statPath(id, p) {
       calls.push(`stat:${p}`);
       return fsOf(id)?.stat(p) ?? null;
@@ -182,5 +202,5 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
     shellFactory: () => localBashFactory,
     ...over,
   };
-  return { ops, calls, containers, volumes, logLines, execCommands, cpu };
+  return { ops, calls, containers, volumes, logLines, execCommands, cpu, networks };
 }

@@ -53,6 +53,13 @@ export class OrchestratorSupervisorClient {
     return (await res.json()) as T;
   }
 
+  /** Links the owner's sandbox with the shared browser over a private network; returns the sandbox's hostname there. */
+  async preview(owner: string): Promise<{ host: string }> {
+    return this.json(await sfetch(`${this.baseUrl.replace(/\/$/, '')}/preview`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ownerId: owner }),
+    }));
+  }
+
   async listFiles(owner: string, path: string): Promise<{ path: string; entries: WorkspaceEntry[] }> {
     return this.json(await sfetch(this.url(owner, `/files?path=${encodeURIComponent(path)}`)));
   }

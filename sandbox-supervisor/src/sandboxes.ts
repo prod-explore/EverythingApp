@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { TerminalManager, DEFAULT_TERMINAL, type RunResult, type ShellFactory, type TerminalInfo } from './terminals.js';
 import {
   ExplorerError as HttpError,
@@ -74,6 +75,14 @@ export interface DockerOps extends ArchiveOps {
   listManaged(): Promise<ManagedContainer[]>;
   /** CPU usage as a percentage of the container's CPU limit (one sample). */
   cpuPercent(id: string): Promise<number>;
+  /** A private, internal-only network (no route out) used to let the shared browser reach one sandbox. Idempotent. */
+  ensurePreviewNetwork(name: string, ownerId: string): Promise<void>;
+  /** Attaches a container (id or name) to a network, optionally under DNS aliases. Idempotent. */
+  connectNetwork(network: string, container: string, aliases?: string[]): Promise<void>;
+  /** Detaches everything from the network and removes it. No-op when it does not exist. */
+  removePreviewNetwork(name: string): Promise<void>;
+  /** Preview networks that exist right now (left over after a supervisor restart). */
+  listPreviewNetworks(): Promise<Array<{ name: string; ownerId: string }>>;
   exec(id: string, command: string, timeoutMs: number): Promise<ExecResult>;
   shellFactory(id: string): ShellFactory;
 }
@@ -102,6 +111,8 @@ export interface SandboxManagerOptions {
   maxFileBytes?: number;
   checkpointTimeoutMs?: number;
   cpu?: CpuWatchdogOptions;
+  /** Name of the browser container that previews attach to. Empty = previews are not configured (501). */
+  browserContainer?: string;
   now?: () => number;
 }
 
@@ -134,6 +145,20 @@ export function volumeName(ownerId: string): string {
   return `everything-workspace-${ownerId.toLowerCase()}`;
 }
 
+const digest = (ownerId: string) => createHash('sha1').update(ownerId).digest('hex');
+
+/**
+ * The hostname under which the browser reaches an owner's sandbox: `sandbox-<10 hex>`. Derived from the owner id, so the
+ * orchestrator can compute it too (cli/src/preview.ts, same test vector) and know which host is "this chat's own sandbox".
+ */
+export function previewHost(ownerId: string): string {
+  return `sandbox-${digest(ownerId).slice(0, 10)}`;
+}
+
+export function previewNetworkName(ownerId: string): string {
+  return `ea-preview-${digest(ownerId).slice(0, 16)}`;
+}
+
 export class SandboxManager {
   private readonly sandboxes = new Map<string, Sandbox>();
   private readonly inflight = new Map<string, Promise<{ sandbox: Sandbox; isNew: boolean }>>();
@@ -147,6 +172,7 @@ export class SandboxManager {
     opts: SandboxManagerOptions = {},
   ) {
     this.opts = {
+      browserContainer: opts.browserContainer ?? '',
       maxRunning: opts.maxRunning ?? 2,
       idleMs: opts.idleMs ?? 30 * 60_000,
       containerTtlMs: opts.containerTtlMs ?? 7 * 24 * 3600_000,
@@ -181,6 +207,10 @@ export class SandboxManager {
       const s = this.record(m.ownerId, m.id, m.running);
       if (!m.running) s.stoppedAt = m.stoppedAt ?? this.opts.now();
       this.sandboxes.set(m.ownerId, s);
+    }
+    // Preview links do not survive a restart of the sandbox they point at; drop what is left so subnets are not leaked.
+    for (const n of await this.ops.listPreviewNetworks().catch(() => [])) {
+      await this.ops.removePreviewNetwork(n.name).catch(err => console.warn(`[sandboxes] stale preview network ${n.name}:`, err));
     }
     return managed.length;
   }
@@ -304,6 +334,33 @@ export class SandboxManager {
     s.cpu.hotSinceWarn = 0;
     s.cpu.warned = false;
     await this.ops.stopContainer(s.containerId).catch(err => console.warn(`[sandboxes] stop failed for ${s.ownerId}:`, err));
+    await this.unpreview(s.ownerId);
+  }
+
+  /**
+   * Makes the owner's sandbox reachable from the shared browser: a private network (no route out) with just those two
+   * containers on it. The dev server inside the sandbox must listen on 0.0.0.0. Returns the host to browse to.
+   */
+  async preview(ownerId: string): Promise<{ host: string; network: string }> {
+    if (!this.opts.browserContainer) throw new HttpError('Preview is not configured on this supervisor (PREVIEW_BROWSER_CONTAINER is empty).', 501);
+    const { containerId } = await this.claim(ownerId);
+    const network = previewNetworkName(ownerId);
+    const host = previewHost(ownerId);
+    await this.ops.ensurePreviewNetwork(network, ownerId);
+    try {
+      await this.ops.connectNetwork(network, containerId, [host]);
+      await this.ops.connectNetwork(network, this.opts.browserContainer);
+    } catch (err) {
+      await this.ops.removePreviewNetwork(network).catch(() => undefined);
+      throw new HttpError(`Could not link the sandbox and the browser: ${(err as Error).message}`, 502);
+    }
+    return { host, network };
+  }
+
+  /** Cuts the link again. Safe to call when there is none. */
+  async unpreview(ownerId: string): Promise<void> {
+    if (!this.opts.browserContainer) return;
+    await this.ops.removePreviewNetwork(previewNetworkName(ownerId)).catch(err => console.warn(`[sandboxes] unpreview ${ownerId}:`, err));
   }
 
   /** Stop a sandbox now (e.g. the chat's sandbox toggle was switched off). Files are untouched. */
@@ -330,6 +387,7 @@ export class SandboxManager {
       this.sandboxes.delete(ownerId);
     }
     for (const m of await this.ops.listManaged()) if (m.ownerId === ownerId) ids.add(m.id);
+    await this.unpreview(ownerId);
     let containersRemoved = 0;
     for (const id of ids) if (await this.ops.removeContainer(id)) containersRemoved++;
     const volumeRemoved = await this.ops.removeVolume(volumeName(ownerId));

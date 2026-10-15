@@ -97,3 +97,36 @@ describe('helpers', () => {
     assert.deepEqual(parseAllowHosts(undefined), []);
   });
 });
+
+describe('UrlGuard preview host pattern', () => {
+  const PRIVATE = ['172.30.0.2'];
+  const g = new UrlGuard({
+    allowPattern: /^sandbox-[0-9a-f]{10}$/,
+    resolve: async () => PRIVATE,
+    cacheTtlMs: 0,
+  });
+
+  it('reaches a sandbox preview host although it resolves to a private address', async () => {
+    await g.check('http://sandbox-a9993e3647:5173/');
+    await g.check('http://SANDBOX-a9993e3647:3000/path?x=1');
+  });
+
+  it('still blocks everything that merely looks similar', async () => {
+    for (const u of [
+      'http://sandbox-a9993e364:5173/', // 9 hex
+      'http://sandbox-a9993e36477:5173/', // 11 hex
+      'http://sandbox-zzzzzzzzzz:5173/', // not hex
+      'http://sandbox-a9993e3647.evil.example/', // a subdomain of something else
+      'http://sandbox-mcp:3002/', // a real service name
+      'http://sandbox-supervisor:3001/',
+      'http://172.30.0.2:5173/', // the raw address is not the preview name
+    ]) {
+      await assert.rejects(g.check(u), UrlBlockedError, u);
+    }
+  });
+
+  it('is off unless configured', async () => {
+    const plain = new UrlGuard({ resolve: async () => PRIVATE, cacheTtlMs: 0 });
+    await assert.rejects(plain.check('http://sandbox-a9993e3647:5173/'), UrlBlockedError);
+  });
+});
