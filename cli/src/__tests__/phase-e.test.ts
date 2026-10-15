@@ -100,13 +100,12 @@ function readdirNames(dir: string): string[] {
 // ─── read_file / write_file / edit_file ──────────────────────────────────────
 
 describe('file tools for the agent', () => {
-  it('need no approval, and only the reader is allowed in plan mode', () => {
+  it('need no approval', () => {
     const t = tempSandbox();
     try {
       const { list } = tools(t);
       assert.deepEqual(list.map(x => x.definition.name), ['read_file', 'edit_file', 'write_file']);
       for (const x of list) assert.equal(x.requiresApproval, undefined, x.definition.name);
-      assert.deepEqual(list.map(x => x.planSafe), [true, false, false]);
     } finally { t.cleanup(); }
   });
 

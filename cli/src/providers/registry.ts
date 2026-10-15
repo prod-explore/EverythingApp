@@ -155,39 +155,3 @@ export const supportsTools = (info: Pick<ModelInfo, 'toolSchemaMode'>): boolean 
 export function isCatalogModel(modelId: string): boolean {
   return snapshot.models.has(modelId);
 }
-
-// ─── Provider presets (starting points for "Add provider") ───────────────────
-
-export interface ProviderPreset {
-  slug: string;
-  label: string;
-  baseUrl: string;
-  /** Env var that overrides baseUrl (proxies, tests). */
-  baseUrlEnv?: string;
-  flavor: CompatFlavor;
-  keyOptional: boolean;
-  concurrency: number | null;
-  /** Suggested patience (see ProviderRecord) — a preset only pre-fills these like every other field. */
-  retryMin: number | null;
-  /** Rough shape of a valid key, used only to catch obvious paste mistakes in the UI — never for security. */
-  keyHint: string;
-}
-
-/**
- * Convenience only: a preset pre-fills the same form every provider goes through. MindGate is listed first because
- * it is meant to be the hub, but nothing downstream treats it differently from any other entry.
- */
-export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
-  { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://mindgate.futumore.pl/v1', baseUrlEnv: 'MINDGATE_BASE_URL', flavor: 'mindgate', keyOptional: false, concurrency: 1, retryMin: null, keyHint: 'mg-…' },
-  { slug: 'gemini', label: 'Google Gemini', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', baseUrlEnv: 'GEMINI_BASE_URL', flavor: 'gemini', keyOptional: false, concurrency: null, retryMin: 720, keyHint: 'AIza…' },
-  { slug: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com', baseUrlEnv: 'DEEPSEEK_BASE_URL', flavor: 'deepseek', keyOptional: false, concurrency: null, retryMin: null, keyHint: 'sk-…' },
-  { slug: 'openrouter', label: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', flavor: 'generic', keyOptional: false, concurrency: null, retryMin: null, keyHint: 'sk-or-…' },
-];
-
-export function findPreset(slug: string): ProviderPreset | undefined {
-  return PROVIDER_PRESETS.find(p => p.slug === slug);
-}
-
-export function presetBaseUrl(preset: ProviderPreset, env: NodeJS.ProcessEnv = process.env): string {
-  return (preset.baseUrlEnv ? env[preset.baseUrlEnv] : undefined) || preset.baseUrl;
-}

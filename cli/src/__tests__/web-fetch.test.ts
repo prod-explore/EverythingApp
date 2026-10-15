@@ -162,7 +162,6 @@ describe('web_fetch tool', () => {
   it('is registered without a search engine, web_search is not', () => {
     const { tools } = toolsFor();
     assert.deepEqual(tools.map(t => t.definition.name), ['web_fetch']);
-    assert.equal(tools[0]!.planSafe, true);
     assert.notEqual(tools[0]!.requiresApproval, true);
   });
 

@@ -60,9 +60,11 @@ describe('slots', () => {
     assert.equal(resolveSlot(d, 'helper', ALL, id => id !== '@p/free-b'), '@p/free-a', 'an unusable explicit choice falls back to a free model');
   });
 
-  it('subagent follows helper unless set; escalation is never automatic', () => {
+  it('subagent is independent of helper (first free model unless set); escalation is never automatic', () => {
     const d = db();
     assert.equal(resolveSlot(d, 'subagent', ALL, up), '@p/free-a');
+    setSlots(d, { helper: '@p/free-b' });
+    assert.equal(resolveSlot(d, 'subagent', ALL, up), '@p/free-a', 'choosing a helper does not move the agents');
     setSlots(d, { subagent: '@p/free-b' });
     assert.equal(resolveSlot(d, 'subagent', ALL, up), '@p/free-b');
     assert.equal(resolveSlot(d, 'escalation', ALL, up), null);

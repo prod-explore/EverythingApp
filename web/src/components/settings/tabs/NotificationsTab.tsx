@@ -42,7 +42,12 @@ export function NotificationsTab() {
       const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key.publicKey) });
       await post('/api/push/subscribe', { subscription: sub.toJSON() });
       setState('on');
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    } catch (e) {
+      // The browser could not reach its push service (Google's for Chrome/Edge/Brave, Mozilla's for Firefox).
+      setError((e as Error).name === 'AbortError'
+        ? 'The browser could not reach its push service. In Brave turn on “Use Google Services for Push Messaging” (brave://settings/privacy); in other browsers check that Google / Mozilla push traffic is not blocked.'
+        : (e as Error).message);
+    } finally { setBusy(false); }
   }
 
   async function disable() {

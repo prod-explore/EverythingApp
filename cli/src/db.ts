@@ -566,16 +566,14 @@ export function appendSummary(db: Database.Database, conversationId: string, con
   return appendMessage(db, conversationId, 'summary', content, null);
 }
 
-// ─── Conversation state (plan mode, reasoning effort, todo list, last measured context size) ──────
+// ─── Conversation state (reasoning effort, todo list, last measured context size) ──────
 
-export type ConversationMode = 'normal' | 'plan';
 export type ReasoningEffort = 'low' | 'medium' | 'high';
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = ['low', 'medium', 'high'];
 export type TodoStatus = 'pending' | 'in_progress' | 'completed';
 export interface TodoItem { content: string; status: TodoStatus }
 
 export interface ConversationState {
-  mode: ConversationMode;
   effort: ReasoningEffort | null;
   todos: TodoItem[];
   lastInputTokens: number | null;
@@ -583,13 +581,12 @@ export interface ConversationState {
 
 export function getConversationState(db: Database.Database, conversationId: string): ConversationState {
   const r = db
-    .prepare(`SELECT mode, effort, todos, last_input_tokens as lastInputTokens FROM conversation_state WHERE conversation_id = ?`)
-    .get(conversationId) as { mode: string; effort: string | null; todos: string; lastInputTokens: number | null } | undefined;
-  if (!r) return { mode: 'normal', effort: null, todos: [], lastInputTokens: null };
+    .prepare(`SELECT effort, todos, last_input_tokens as lastInputTokens FROM conversation_state WHERE conversation_id = ?`)
+    .get(conversationId) as { effort: string | null; todos: string; lastInputTokens: number | null } | undefined;
+  if (!r) return { effort: null, todos: [], lastInputTokens: null };
   let todos: TodoItem[] = [];
   try { todos = JSON.parse(r.todos) as TodoItem[]; } catch { /* keep empty */ }
   return {
-    mode: r.mode === 'plan' ? 'plan' : 'normal',
     effort: (REASONING_EFFORTS as readonly string[]).includes(r.effort ?? '') ? (r.effort as ReasoningEffort) : null,
     todos,
     lastInputTokens: r.lastInputTokens,
@@ -600,9 +597,9 @@ export function setConversationState(db: Database.Database, conversationId: stri
   const cur = getConversationState(db, conversationId);
   const next: ConversationState = { ...cur, ...patch };
   db.prepare(
-    `INSERT INTO conversation_state (conversation_id, mode, effort, todos, last_input_tokens) VALUES (?, ?, ?, ?, ?)
-     ON CONFLICT(conversation_id) DO UPDATE SET mode = excluded.mode, effort = excluded.effort, todos = excluded.todos, last_input_tokens = excluded.last_input_tokens`,
-  ).run(conversationId, next.mode, next.effort, JSON.stringify(next.todos), next.lastInputTokens);
+    `INSERT INTO conversation_state (conversation_id, effort, todos, last_input_tokens) VALUES (?, ?, ?, ?)
+     ON CONFLICT(conversation_id) DO UPDATE SET effort = excluded.effort, todos = excluded.todos, last_input_tokens = excluded.last_input_tokens`,
+  ).run(conversationId, next.effort, JSON.stringify(next.todos), next.lastInputTokens);
   return next;
 }
 

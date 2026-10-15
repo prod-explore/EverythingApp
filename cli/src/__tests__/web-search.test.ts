@@ -120,7 +120,6 @@ describe('web_search tool', () => {
   it('appears only when an engine is configured and needs no approval', () => {
     const { search } = toolsWith({ backend: 'searxng', searxngUrl: 'https://s.example' }, fakeFetch(() => ({})));
     assert.ok(search);
-    assert.equal(search!.planSafe, true);
     assert.notEqual(search!.requiresApproval, true);
     const db = openDb(':memory:');
     runMigrations(db);

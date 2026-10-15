@@ -5,7 +5,7 @@ import { setConversationState, type ConversationState, type TodoItem, type TodoS
 
 /**
  * Chat functions that are not MCP tools but behave like the ones in Claude Code / Antigravity: a todo list the model
- * keeps up to date, and plan mode (propose → approve → work). They are virtual tools — the orchestrator runs them
+ * keeps up to date, and the plan proposal (propose → approve → work). They are virtual tools — the orchestrator runs them
  * inside the loop — and their state lives in `conversation_state`, so a reload shows the same list.
  */
 
@@ -41,8 +41,9 @@ export const TODO_TOOL: Llm.Tool = {
 export const PROPOSE_PLAN_TOOL: Llm.Tool = {
   name: 'propose_plan',
   description:
-    'Plan mode only. Present the plan for the work (what you will change or do, in order, and anything you are unsure about). ' +
-    'The user approves or rejects it. Until it is approved, only read-only tools run. If it is rejected, revise it using their feedback.',
+    'Show the user a plan before you start work that is large, risky or hard to undo, or when the request leaves real choices open ' +
+    '(what you will change or do, in order, and anything you are unsure about). The user approves or rejects it; wait for the answer before changing anything. ' +
+    'If it is rejected, revise the plan using their feedback. Do not use it for small or obvious tasks.',
   input_schema: {
     type: 'object',
     properties: { plan: { type: 'string', description: 'The plan in Markdown — short, concrete, ordered.' } },
@@ -82,31 +83,21 @@ export function todoTool(db: Database.Database, convId: string, onChange: (state
   };
 }
 
-export function proposePlanTool(db: Database.Database, convId: string, onChange: (state: ConversationState) => void): VirtualTool {
+export function proposePlanTool(): VirtualTool {
   return {
     definition: PROPOSE_PLAN_TOOL,
     requiresApproval: true,
-    planSafe: true,
-    alwaysAsk: 'Plan mode: approve this plan to let the assistant start working on it.',
-    handler: async () => {
-      // Reaching the handler means the user approved (a rejection never runs it).
-      const state = setConversationState(db, convId, { mode: 'normal' });
-      onChange(state);
-      return { text: 'The user approved the plan. Plan mode is off — carry the plan out now, and keep the todo list current.' };
-    },
+    alwaysAsk: 'Approve this plan to let the assistant start working on it.',
+    // Reaching the handler means the user approved (a rejection never runs it).
+    handler: async () => ({ text: 'The user approved the plan. Carry it out now, and keep the todo list current.' }),
   };
 }
 
 /** Appended to every chat's system prompt. */
 export const WORKING_STYLE_PROMPT =
   'For work with several steps, keep a task list with todo_write (full list each time, one item in_progress, mark items completed as you finish them). ' +
+  'For a large, risky or ambiguous job, propose the plan with propose_plan and wait for approval before changing anything; for small, clear tasks just do the work. ' +
   'If tool results or your own earlier messages reveal that you misjudged something, say so and correct course instead of pressing on.';
-
-/** Appended while plan mode is on. */
-export const PLAN_MODE_PROMPT =
-  'PLAN MODE is on. Do not change anything yet: use read-only tools to understand the task, then call propose_plan with a short, concrete, ordered plan ' +
-  '(mention open questions and risks). Only after the user approves it may you make changes. If the user rejects it, revise the plan from their feedback and propose again. ' +
-  'For a trivial request that needs no changes, just answer.';
 
 export const AGENTS_FILE = 'AGENTS.md';
 const AGENTS_MAX_CHARS = 20_000;

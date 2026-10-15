@@ -234,7 +234,7 @@ function MainApp() {
         if (fullConv && !fullConv.sandboxEnabled) handleSandboxToggle(true);
         void sendMessage(selectedId, INIT_PROMPT).catch(() => {});
       }
-      else if (name === 'plan' || name === 'compact') window.dispatchEvent(new CustomEvent('chat:command', { detail: { name } }));
+      else if (name === 'compact') window.dispatchEvent(new CustomEvent('chat:command', { detail: { name } }));
       else if (name === 'export' && selectedId) window.location.assign(`/api/conversations/${selectedId}/export`);
     };
     window.addEventListener('app:command', onCommand);

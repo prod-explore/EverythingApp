@@ -68,22 +68,17 @@ describe('providers API', () => {
     db.close();
   });
 
-  it('starts empty and offers presets', async () => {
+  it('starts empty: no built-in providers, the user adds every one', async () => {
     const r = await req(port, 'GET', '/api/providers');
     assert.equal(r.status, 200);
     assert.equal(r.json.vaultEnabled, true);
     assert.deepEqual(r.json.providers, []);
-    assert.ok(r.json.presets.some((p: any) => p.slug === 'mindgate'));
-    // presets only suggest the busy-retry window: Gemini has peak hours; nothing is special-cased
-    const preset = (slug: string) => r.json.presets.find((p: any) => p.slug === slug);
-    assert.equal(preset('mindgate').retryMin, null);
-    assert.equal(preset('gemini').retryMin, 720);
-    assert.equal('timeoutSec' in preset('gemini'), false);
+    assert.equal('presets' in r.json, false);
     assert.deepEqual((await req(port, 'GET', '/api/models')).json.models, []);
   });
 
-  it('adds a provider from a preset: saves the key, discovers models, never returns the key', async () => {
-    const r = await req(port, 'POST', '/api/providers', { preset: 'mindgate', apiKey: KEY });
+  it('adds a provider: saves the key, discovers models, applies the dialect defaults, never returns the key', async () => {
+    const r = await req(port, 'POST', '/api/providers', { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://hub.example/v1', flavor: 'mindgate', apiKey: KEY });
     assert.equal(r.status, 201);
     assert.equal(r.json.refresh.ok, true);
     assert.equal(r.json.refresh.count, 3);
@@ -91,12 +86,10 @@ describe('providers API', () => {
 
     const list = (await req(port, 'GET', '/api/providers')).json.providers;
     const mg = list.find((p: any) => p.id === 'mindgate');
-    assert.deepEqual([mg.configured, mg.source, mg.last4, mg.modelCount, mg.enabledModelCount, mg.flavor], [true, 'vault', '9999', 3, 3, 'mindgate']);
+    assert.deepEqual([mg.configured, mg.source, mg.last4, mg.modelCount, mg.enabledModelCount, mg.flavor, mg.concurrency, mg.retryMin], [true, 'vault', '9999', 3, 3, 'mindgate', 1, null]);
     for (const path of ['/api/providers', '/api/settings', '/api/models', '/api/providers/mindgate/models']) {
       assert.ok(!JSON.stringify((await req(port, 'GET', path)).json).includes('super-secret'), `${path} leaked the key`);
     }
-    // the preset is used up
-    assert.ok(!(await req(port, 'GET', '/api/providers')).json.presets.some((p: any) => p.slug === 'mindgate'));
   });
 
   it('the discovered models carry kind and tags; pickers filter on kind', async () => {
@@ -106,6 +99,16 @@ describe('providers API', () => {
     assert.equal(models.find((m: any) => m.id === '@mindgate/whisper').kind, 'stt');
     const big = models.find((m: any) => m.id === '@mindgate/big');
     assert.ok(!('pricing' in big) && !('pricingKnown' in big), 'the app exposes no prices');
+  });
+
+  it('the gemini dialect starts with a long busy-retry window; an explicit value wins', async () => {
+    assert.equal((await req(port, 'POST', '/api/providers', { slug: 'gem', baseUrl: 'https://gem.example/v1', flavor: 'gemini', keyOptional: true })).status, 201);
+    assert.equal((await req(port, 'POST', '/api/providers', { slug: 'gem2', baseUrl: 'https://gem.example/v1', flavor: 'gemini', keyOptional: true, retryMin: 30 })).status, 201);
+    const list = (await req(port, 'GET', '/api/providers')).json.providers;
+    assert.equal(list.find((p: any) => p.id === 'gem').retryMin, 720);
+    assert.equal(list.find((p: any) => p.id === 'gem2').retryMin, 30);
+    await req(port, 'DELETE', '/api/providers/gem');
+    await req(port, 'DELETE', '/api/providers/gem2');
   });
 
   it('a plain API is added through the very same call', async () => {
@@ -128,7 +131,7 @@ describe('providers API', () => {
 
   it('the busy-retry window is a plain per-provider setting: validated and clearable', async () => {
     const get = async () => (await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'mindgate');
-    assert.equal((await get()).retryMin, null, 'from the preset');
+    assert.equal((await get()).retryMin, null, 'the mindgate dialect has no default');
     assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { retryMin: 0.5 })).status, 400);
     assert.equal((await req(port, 'PATCH', '/api/providers/mindgate', { retryMin: 90 })).status, 200);
     assert.equal((await get()).retryMin, 90);
@@ -225,7 +228,7 @@ describe('providers API with the vault disabled', () => {
     const server = built.app.listen(0);
     const port = (server.address() as AddressInfo).port;
     try {
-      const r = await req(port, 'POST', '/api/providers', { preset: 'gemini', apiKey: 'AIzaSy-something-long' });
+      const r = await req(port, 'POST', '/api/providers', { slug: 'gemini', baseUrl: 'https://api.example/v1', flavor: 'gemini', apiKey: 'AIzaSy-something-long' });
       assert.equal(r.status, 503);
       assert.match(r.json.error, /KEY_VAULT_SECRET/);
     } finally {

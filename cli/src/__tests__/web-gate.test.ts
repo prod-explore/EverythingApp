@@ -45,7 +45,6 @@ const DEFAULT_AUTO = loadConfig().autoApproveTools;
 function fetchTool(ran: Array<Record<string, unknown>>, reply = 'page text'): VirtualTool {
   return {
     definition: { name: 'web_fetch', description: 'fetch', input_schema: { type: 'object', properties: { url: { type: 'string' } } } },
-    planSafe: true,
     handler: async input => { ran.push(input); return { text: reply }; },
   };
 }
@@ -105,17 +104,6 @@ describe('web_fetch — approval per domain', () => {
     const results = (history[2]!.content as Llm.ToolResultBlockParam[]);
     assert.equal(results.length, 3);
     assert.ok(results.every(r => r.is_error === true));
-  });
-
-  it('plan mode still allows reading the web (the domain is asked as usual)', async () => {
-    const ran: Array<Record<string, unknown>> = [];
-    await runTurn(deps({
-      llm: scripted([msg([use('1', 'web_fetch', { url: 'https://example.com/' })], 'tool_use'), msg([text('ok')], 'end_turn')]),
-      tools: new ToolRegistry([]),
-      virtualTools: [fetchTool(ran)],
-      planMode: () => true,
-    }, []), [], 'research');
-    assert.equal(ran.length, 1);
   });
 });
 
@@ -178,19 +166,6 @@ describe('browser — approval per domain', () => {
     assert.equal(confirms.length, 1);
     assert.match(confirms[0]!.forcePrompt ?? '', /irreversible/);
     assert.deepEqual(calls.map(c => c.tool), ['browser_act', 'browser_close']);
-  });
-
-  it('plan mode refuses browser_act but allows looking', async () => {
-    const calls: Call[] = [];
-    await runTurn(deps({
-      llm: scripted([
-        msg([use('1', 'playwright__browser_act', { action: 'click', label: 'Buy' }), use('2', 'playwright__browser_observe', {})], 'tool_use'),
-        msg([text('ok')], 'end_turn'),
-      ]),
-      tools: await browserRegistry(calls, DEFAULT_AUTO),
-      planMode: () => true,
-    }, []), [], 'look');
-    assert.deepEqual(calls.map(c => c.tool), ['browser_observe']);
   });
 
   it('without webAccess the browser keeps the old behaviour (project policy only, generic approval)', async () => {

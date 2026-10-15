@@ -48,11 +48,6 @@ export interface VirtualTool {
   definition: Llm.Tool;
   /** Route through the approval gate before running. Default: false. */
   requiresApproval?: boolean;
-  /**
-   * Plan mode: true = allowed (the plan proposal itself, although it asks for approval), false = refused (e.g. starting
-   * workers). Unset = allowed unless the tool needs approval.
-   */
-  planSafe?: boolean;
   /** Always ask a human, never covered by a grant; the text is shown with the request. */
   alwaysAsk?: string;
   handler(input: Record<string, unknown>, ctx: VirtualToolContext): Promise<{ text: string; isError?: boolean }>;
@@ -141,8 +136,6 @@ export interface ConversationDeps {
   contextWindow?: number;
   /** Called with the provider-measured prompt size after every response. */
   onContext?: (info: { used: number; limit?: number }) => void;
-  /** Evaluated per tool call. While true, only read-only tools (and the plan proposal) run; everything else is refused with an explanation. */
-  planMode?: () => boolean;
   /** Passed to the model on every request; the adapter drops it for models that do not support it. */
   reasoningEffort?: 'low' | 'medium' | 'high';
 }
@@ -171,8 +164,6 @@ const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log', 'terminal_
 const STATEFUL_TOOL_NAMES = new Set([...SANDBOX_TOOL_NAMES, ...BROWSER_TOOL_NAMES]);
 /** Read-only tools that stay unprompted even after a page looked like a prompt injection. */
 const READ_ONLY_AFTER_INJECTION = new Set(['browser_observe', 'browser_close', 'read_log', 'terminal_list', 'read_file']);
-/** Tools that are auto-approved in normal mode but still have an effect, so plan mode refuses them. */
-const PLAN_UNSAFE_TOOLS = new Set(['browser_act']);
 /** Results of these virtual tools carry the same `[browser-meta]` first line as browser observations. */
 const WEB_VIRTUAL_TOOLS = new Set(['web_fetch', 'web_search']);
 const IRREVERSIBLE_WARNING = 'This browser action looks irreversible (payment, deletion, subscription…). Check that it is what you asked for.';
@@ -409,14 +400,6 @@ async function runLoop(
       if (typeof rawArgs === 'string') {
         const cut = response.cut_off === true ? ' Your reply hit the output limit while writing the call — send less in one call (split the content).' : '';
         const result = { text: `The arguments of ${use.name} were not valid JSON, so nothing was executed.${cut} Call it again with a valid JSON object. Received: ${rawArgs.slice(0, 200)}${rawArgs.length > 200 ? '…' : ''}`, isError: true };
-        deps.onToolResult?.(use.name, result.text, result.text, true);
-        toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
-        continue;
-      }
-
-      // Plan mode: look, think, propose — nothing with an effect until the user approved a plan.
-      if (deps.planMode?.() && !(virtual ? (virtual.planSafe ?? virtual.requiresApproval !== true) : !deps.tools.requiresApproval(use.name) && !PLAN_UNSAFE_TOOLS.has(realToolName(use.name)))) {
-        const result = { text: `Plan mode is on, so ${use.name} was not run. Research with read-only tools, then call propose_plan with the plan; changes are only allowed after the user approves it.`, isError: true };
         deps.onToolResult?.(use.name, result.text, result.text, true);
         toolResults.push({ type: 'tool_result', tool_use_id: use.id, content: result.text, is_error: true });
         continue;

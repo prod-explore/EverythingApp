@@ -15,7 +15,7 @@ import {
   updateProvider,
 } from '../../../api';
 import { MODEL_KINDS } from '../../../types';
-import type { CatalogModelRow, CompatFlavor, ModelKind, ModelLocality, ProviderInfo, ProviderPreset, ProvidersResponse } from '../../../types';
+import type { CatalogModelRow, CompatFlavor, ModelKind, ModelLocality, ProviderInfo, ProvidersResponse } from '../../../types';
 import { Button } from '../../shared/Button';
 
 const inputCls =
@@ -254,7 +254,7 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
             value={key}
             onChange={e => setKey(e.target.value)}
             disabled={!vaultEnabled || busy}
-            placeholder={p.source === 'vault' ? 'Paste a new key to replace it' : p.keyHint || 'API key'}
+            placeholder={p.source === 'vault' ? 'Paste a new key to replace it' : 'API key'}
             className={inputCls}
           />
           <button
@@ -314,25 +314,17 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
 interface Form { slug: string; label: string; baseUrl: string; flavor: CompatFlavor; apiKey: string; keyOptional: boolean; local: boolean }
 const EMPTY: Form = { slug: '', label: '', baseUrl: '', flavor: 'generic', apiKey: '', keyOptional: false, local: false };
 
-function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPreset[]; vaultEnabled: boolean; onAdded: (note: string) => void }) {
+function AddProvider({ vaultEnabled, onAdded }: { vaultEnabled: boolean; onAdded: (note: string) => void }) {
   const [open, setOpen] = useState(false);
-  const [preset, setPreset] = useState<string | null>(null);
   const [form, setForm] = useState<Form>(EMPTY);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  function pick(p: ProviderPreset | null) {
-    setPreset(p?.slug ?? null);
-    setForm(p ? { slug: p.slug, label: p.label, baseUrl: p.baseUrl, flavor: p.flavor, apiKey: '', keyOptional: p.keyOptional, local: false } : EMPTY);
-    setOpen(true);
-  }
 
   async function submit() {
     setBusy(true);
     setError(null);
     try {
       const r = await addProvider({
-        ...(preset ? { preset } : {}),
         slug: form.slug.trim(),
         label: form.label.trim() || undefined,
         baseUrl: form.baseUrl.trim(),
@@ -343,7 +335,6 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
       });
       setOpen(false);
       setForm(EMPTY);
-      setPreset(null);
       onAdded(r.refresh ? (r.refresh.ok ? `Added — ${r.refresh.count} models found.` : `Added, but the model list could not be loaded: ${r.refresh.error}`) : 'Added — set its key to load the models.');
     } catch (e) {
       setError((e as Error).message);
@@ -355,8 +346,7 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
   if (!open) {
     return (
       <div className="flex flex-wrap items-center gap-2">
-        {presets.map(p => <Button key={p.slug} variant="ghost" onClick={() => pick(p)}>+ {p.label}</Button>)}
-        <Button variant="ghost" onClick={() => pick(null)}>+ Other (OpenAI-compatible)</Button>
+        <Button variant="ghost" onClick={() => setOpen(true)}>+ Add provider</Button>
       </div>
     );
   }
@@ -365,13 +355,13 @@ function AddProvider({ presets, vaultEnabled, onAdded }: { presets: ProviderPres
   return (
     <div className="space-y-2 rounded-button border border-border p-3">
       <p className="text-xs text-fg-tertiary">
-        Every provider is the same thing: a base URL, a key and a dialect. MindGate, Gemini, OpenRouter and a server on your LAN go through this one form.
+        Every provider is the same thing: a base URL, a key and a dialect. The dialect only tells the app about the server’s quirks; pick Generic when unsure.
       </p>
       <div className="grid gap-2 sm:grid-cols-2">
-        <input className={inputCls} placeholder="slug (e.g. openrouter)" value={form.slug} disabled={!!preset} onChange={e => set('slug', e.target.value.toLowerCase())} aria-label="Slug" />
+        <input className={inputCls} placeholder="slug (e.g. my-hub)" value={form.slug} onChange={e => set('slug', e.target.value.toLowerCase())} aria-label="Slug" />
         <input className={inputCls} placeholder="Label" value={form.label} onChange={e => set('label', e.target.value)} aria-label="Label" />
       </div>
-      <input className={inputCls} placeholder="Base URL, e.g. https://openrouter.ai/api/v1" value={form.baseUrl} onChange={e => set('baseUrl', e.target.value)} aria-label="Base URL" />
+      <input className={inputCls} placeholder="Base URL, e.g. https://host.example/v1" value={form.baseUrl} onChange={e => set('baseUrl', e.target.value)} aria-label="Base URL" />
       <select className={inputCls} value={form.flavor} onChange={e => set('flavor', e.target.value as CompatFlavor)} aria-label="Dialect">
         {FLAVORS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
       </select>
@@ -419,12 +409,12 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
         </p>
       )}
       {data.providers.length === 0 && (
-        <p className="text-xs text-fg-tertiary">Nothing set up yet. Add MindGate (your hub) or any API directly.</p>
+        <p className="text-xs text-fg-tertiary">Nothing set up yet. Add a provider: a base URL, a key and a dialect.</p>
       )}
       {data.providers.map(p => (
         <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.modelCount}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />
       ))}
-      <AddProvider presets={data.presets} vaultEnabled={data.vaultEnabled} onAdded={m => { setMessage(m); changed(); }} />
+      <AddProvider vaultEnabled={data.vaultEnabled} onAdded={m => { setMessage(m); changed(); }} />
       {message && <p className="text-xs text-fg-secondary">{message}</p>}
       <p className="text-xs text-fg-tertiary">Keys are encrypted at rest and never sent back to the browser.</p>
     </div>

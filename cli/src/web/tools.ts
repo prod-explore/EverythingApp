@@ -139,7 +139,6 @@ export function buildWebTools(deps: WebToolsDeps): VirtualTool[] {
   if (currentSearcher(deps)) {
     tools.push({
       definition: WEB_SEARCH_TOOL,
-      planSafe: true,
       async handler(input, ctx) {
         const searcher = currentSearcher(deps);
         if (!searcher) return { text: 'Web search is not configured (Settings → Web).', isError: true };
@@ -170,7 +169,6 @@ export function buildWebTools(deps: WebToolsDeps): VirtualTool[] {
 
   tools.push({
     definition: WEB_FETCH_TOOL,
-    planSafe: true,
     async handler(input, ctx) {
       const rawUrl = typeof input['url'] === 'string' ? input['url'].trim() : '';
       if (!rawUrl) return { text: 'web_fetch needs a "url".', isError: true };

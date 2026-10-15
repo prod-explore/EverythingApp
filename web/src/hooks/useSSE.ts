@@ -35,7 +35,7 @@ export interface LiveTurnState {
   errorDetail?: string;
   /** Prompt size the provider measured on the latest request (live; the state endpoint has the stored one). */
   context?: { used: number; limit: number | null };
-  /** Pushed by the server when plan mode / effort / the todo list change. */
+  /** Pushed by the server when the effort / the todo list change. */
   convState?: ConversationStateInfo;
   /** Bumped when the server summarised older messages — consumers refetch the message list. */
   compactedCount: number;

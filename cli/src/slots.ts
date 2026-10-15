@@ -8,7 +8,7 @@ import type { ModelInfo } from './providers/registry.js';
  *
  *   chat        what a new conversation starts on (the `default_model` setting)
  *   helper      housekeeping: chat titles, the daily digest            → auto: first available `free` model
- *   subagent    default model for worker agents                        → auto: the helper model
+ *   subagent    default model for worker agents                        → auto: first available `free` model (independent of helper)
  *   escalation  what the orchestrator reaches for when the job is hard → never automatic
  *
  * The `free` tag is also the cost guard for agents: a chat that runs on a free model cannot start paid workers
@@ -64,7 +64,7 @@ export function resolveSlot(db: Database.Database, slot: SlotKey, candidates: re
     case 'helper':
       return (explicit && available(explicit) ? explicit : null) ?? firstFree(candidates, available);
     case 'subagent':
-      return (explicit && available(explicit) ? explicit : null) ?? resolveSlot(db, 'helper', candidates, available);
+      return (explicit && available(explicit) ? explicit : null) ?? firstFree(candidates, available);
     case 'escalation':
       return explicit && available(explicit) ? explicit : null;
   }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronDown, ChevronRight, Circle, ClipboardList, Loader2, Minimize2, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Circle, Loader2, Minimize2, X } from 'lucide-react';
 import type { ReasoningEffort } from '../../types';
 import type { ConversationStateApi } from '../../hooks/useConversationState';
 
@@ -41,21 +41,20 @@ function TodoPanel({ api }: { api: ConversationStateApi }) {
   );
 }
 
-/** /plan and /compact typed in the composer (App.tsx forwards them as `chat:command`). */
+/** /compact typed in the composer (App.tsx forwards them as `chat:command`). */
 function useChatCommands(api: ConversationStateApi, running: boolean) {
   useEffect(() => {
     const onCommand = (e: Event) => {
       if (running) return;
       const name = (e as CustomEvent<{ name: string }>).detail.name;
-      if (name === 'plan') void api.setMode(api.state?.mode === 'plan' ? 'normal' : 'plan');
-      else if (name === 'compact') void api.compact();
+      if (name === 'compact') void api.compact();
     };
     window.addEventListener('chat:command', onCommand);
     return () => window.removeEventListener('chat:command', onCommand);
   });
 }
 
-/** Plan mode switch, reasoning effort, and how full the model's context window is. */
+/** Reasoning effort, and how full the model's context window is. */
 export function ChatStatus({ api, running }: { api: ConversationStateApi; running: boolean }) {
   const s = api.state;
   useChatCommands(api, running);
@@ -68,16 +67,6 @@ export function ChatStatus({ api, running }: { api: ConversationStateApi; runnin
     <>
       <TodoPanel api={api} />
       <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2 text-xs text-fg-tertiary">
-        <button
-          onClick={() => void api.setMode(s.mode === 'plan' ? 'normal' : 'plan')}
-          disabled={running}
-          aria-pressed={s.mode === 'plan'}
-          title={s.mode === 'plan' ? 'Plan mode: the assistant researches and proposes a plan; nothing changes until you approve it. Click to turn off.' : 'Plan mode: have the assistant propose a plan first'}
-          className={`flex items-center gap-1 rounded-button border px-2 py-0.5 disabled:opacity-40 ${s.mode === 'plan' ? 'border-accent/60 bg-accent/10 text-accent' : 'border-border hover:text-fg-secondary'}`}
-        >
-          <ClipboardList size={12} /> Plan{s.mode === 'plan' ? ' mode on' : ''}
-        </button>
-
         {s.effortSupported && (
           <label className="flex items-center gap-1" title="How hard the model thinks before answering">
             Effort

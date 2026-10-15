@@ -121,7 +121,6 @@ export function fileTools(deps: FileToolsDeps): VirtualTool[] {
 
   const readTool: VirtualTool = {
     definition: READ_FILE_TOOL,
-    planSafe: true,
     handler: async input => {
       const path = resolve(input['path']);
       if (typeof path !== 'string') return err(path.error);
@@ -148,7 +147,6 @@ export function fileTools(deps: FileToolsDeps): VirtualTool[] {
 
   const writeTool: VirtualTool = {
     definition: WRITE_FILE_TOOL,
-    planSafe: false,
     handler: async input => {
       const content = str(input['content']);
       if (content === undefined) return err('content must be a string (the complete file).');
@@ -165,7 +163,6 @@ export function fileTools(deps: FileToolsDeps): VirtualTool[] {
 
   const editTool: VirtualTool = {
     definition: EDIT_FILE_TOOL,
-    planSafe: false,
     handler: async input => {
       const path = resolve(input['path']);
       if (typeof path !== 'string') return err(path.error);

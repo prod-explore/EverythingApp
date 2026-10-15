@@ -26,6 +26,16 @@ export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
 const FLAVORS: readonly CompatFlavor[] = ['generic', 'gemini', 'deepseek', 'mindgate'];
 export const isFlavor = (v: unknown): v is CompatFlavor => typeof v === 'string' && (FLAVORS as readonly string[]).includes(v);
 
+/**
+ * What a new provider of a given dialect starts with when the form does not say. The dialect is the only provider-specific
+ * knowledge the app carries: a MindGate hub serves one request at a time, and Gemini's free tier has busy peak hours worth waiting out.
+ */
+export function flavorDefaults(flavor: CompatFlavor): { concurrency: number | null; retryMin: number | null } {
+  if (flavor === 'mindgate') return { concurrency: 1, retryMin: null };
+  if (flavor === 'gemini') return { concurrency: null, retryMin: 720 };
+  return { concurrency: null, retryMin: null };
+}
+
 /** A provider that lists more models than this gets them switched OFF on discovery (OpenRouter has hundreds); the user enables what they use. */
 export const AUTO_ENABLE_LIMIT = 40;
 

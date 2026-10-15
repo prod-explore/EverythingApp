@@ -198,7 +198,7 @@ export function getConversationState(conversationId: string): Promise<Conversati
 
 export function patchConversationState(
   conversationId: string,
-  patch: Partial<{ mode: 'normal' | 'plan'; effort: ReasoningEffort | null; clearTodos: boolean }>,
+  patch: Partial<{ effort: ReasoningEffort | null; clearTodos: boolean }>,
 ): Promise<ConversationStateInfo> {
   return request(`/api/conversations/${conversationId}/state`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
@@ -379,8 +379,6 @@ export function getModels(): Promise<{ models: ModelOption[] }> {
 }
 
 export interface NewProvider {
-  /** A preset pre-fills slug, label, base URL and dialect. */
-  preset?: string;
   slug?: string;
   label?: string;
   baseUrl?: string;

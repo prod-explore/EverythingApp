@@ -1,6 +1,6 @@
 # Providers, models and slots
 
-EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions. A **provider** is a record — slug, label, base URL, API key, dialect — and every provider is added through the same form (*Settings → Models → Providers*): MindGate, Gemini, DeepSeek, OpenRouter, LM Studio on the LAN. The presets only pre-fill that form.
+EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions. A **provider** is a record — slug, label, base URL, API key, dialect — and every provider is added through the same form (*Settings → Models → Providers*): MindGate, Gemini, DeepSeek, OpenRouter, LM Studio on the LAN. There are no built-in providers: the list starts empty.
 
 | Field | Meaning |
 |---|---|
@@ -48,7 +48,7 @@ Nothing is inferred from a URL, a name or a tag, so a model nobody vouched for i
 |---|---|---|
 | Chat default | New conversations | first `free` model, else first usable |
 | Helper | Chat titles, daily digest, compaction | first `free` model — never a paid one. For a ghost chat only a *local* helper is used; without one, the chat's own model summarises and the title stays a plain slice |
-| Agents | Default model of `spawn_agent` workers | the helper; if none, the parent's own model |
+| Agents | Default model of `spawn_agent` workers | the first free model; if none, the parent's own model |
 | Escalation | The stronger model the assistant reaches for | none (never automatic) |
 
 **Cost guard:** a chat running on a `free` model can only start `free` workers, unless *Allow agents to use paid models* is on. `spawn_agent` takes `model` (an exact id) or `tag` (first usable model with it). The orchestrator's system prompt contains a generated list of the installed models with their tags and the slot assignments, so it always matches what is actually set up.
@@ -61,6 +61,6 @@ The app does not track whether a model is “up” and MindGate is not special: 
 |---|---|---|
 | *Retry busy errors for … min* | off (two quick retries) | Keep retrying 429/5xx/network errors with backoff for this long — for peak hours (Gemini flash-lite) |
 
-The Gemini preset pre-fills 12 h. `budget_exhausted` from a gateway is never retried.
+The Gemini dialect starts with 12 h. `budget_exhausted` from a gateway is never retried.
 
 Design rationale: [ADR 0008](adr/0008-unified-provider-catalog.md).

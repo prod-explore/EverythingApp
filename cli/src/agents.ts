@@ -430,8 +430,6 @@ export class AgentManager {
 
     const tools: VirtualTool[] = [
       {
-        // Workers can act; in plan mode the assistant only looks.
-        planSafe: false,
         definition: {
           name: 'spawn_agent',
           description:

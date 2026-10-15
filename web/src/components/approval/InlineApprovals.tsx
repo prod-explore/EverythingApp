@@ -90,7 +90,7 @@ function ApprovalCard({ approval, respond }: { approval: PendingApproval; respon
         <div className="prose prose-invert prose-sm mb-3 max-h-80 max-w-none overflow-y-auto text-fg">
           <MarkdownText type="text" text={String(approval.args['plan'] ?? '')} status={{ type: 'complete' }} />
         </div>
-        <p className="mb-3 text-xs text-fg-tertiary">Approving turns plan mode off, so the assistant can start making changes. Deny to send it back with your feedback in the next message.</p>
+        <p className="mb-3 text-xs text-fg-tertiary">Approve to let the assistant start. Reject to send it back; say what to change in your next message.</p>
         <div className="flex flex-wrap gap-2">
           <Button variant="ghost" disabled={busy} onClick={() => void answer(false, 'once')}>Reject</Button>
           <Button variant="primary" disabled={busy} onClick={() => void answer(true, 'once')}>Approve plan</Button>

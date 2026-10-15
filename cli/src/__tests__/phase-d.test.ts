@@ -256,11 +256,10 @@ describe('compaction view in the database', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const { id } = createConversation(db, {});
-    assert.deepEqual(getConversationState(db, id), { mode: 'normal', effort: null, todos: [], lastInputTokens: null });
-    setConversationState(db, id, { mode: 'plan' });
+    assert.deepEqual(getConversationState(db, id), { effort: null, todos: [], lastInputTokens: null });
     setConversationState(db, id, { effort: 'high', lastInputTokens: 1234 });
     setConversationState(db, id, { todos: [{ content: 'x', status: 'pending' }] });
-    assert.deepEqual(getConversationState(db, id), { mode: 'plan', effort: 'high', todos: [{ content: 'x', status: 'pending' }], lastInputTokens: 1234 });
+    assert.deepEqual(getConversationState(db, id), { effort: 'high', todos: [{ content: 'x', status: 'pending' }], lastInputTokens: 1234 });
   });
 });
 
@@ -286,58 +285,26 @@ describe('runTurn — invalid tool arguments', () => {
   });
 });
 
-describe('runTurn — plan mode', () => {
+describe('runTurn — propose_plan', () => {
   const planTool: VirtualTool = {
     definition: { name: 'propose_plan', description: 'p', input_schema: { type: 'object' } },
     requiresApproval: true,
-    planSafe: true,
     alwaysAsk: 'Approve this plan.',
     handler: async () => ({ text: 'approved' }),
   };
 
-  it('refuses tools that are not on the auto-approve list, lets read-only ones run, and lets the plan proposal through the gate', async () => {
-    const executed: string[] = [];
+  it('is always asked, never covered by a grant, and an approved plan hands the model the go-ahead', async () => {
     const asked: Array<{ label: string; force?: string }> = [];
-    const tools = await registry(executed, ['read_file']);
-    const { llm, calls } = scripted([
-      msg([toolUse('1', 's__read_file', {}), toolUse('2', 's__write_file', {}), toolUse('3', 'propose_plan', { plan: 'do X' })], 'tool_use'),
-      msg([text('done')], 'end_turn'),
-    ]);
+    const tools = await registry([], ['read_file']);
+    const { llm, calls } = scripted([msg([toolUse('1', 'propose_plan', { plan: 'do X' })], 'tool_use'), msg([text('done')], 'end_turn')]);
     await runTurn(
-      { ...base, llm, tools, virtualTools: [planTool], planMode: () => true, confirm: async (label, _a, o) => { asked.push({ label, force: o?.forcePrompt }); return true; } },
+      { ...base, llm, tools, virtualTools: [planTool], confirm: async (label, _a, o) => { asked.push({ label, force: o?.forcePrompt }); return true; } },
       [],
       'plan it',
     );
-    assert.deepEqual(executed, ['read_file'], 'write_file never ran');
     const results = calls[1]!.messages.at(-1)!.content as Llm.ToolResultBlockParam[];
-    assert.notEqual(results[0]!.is_error, true);
-    assert.equal(results[1]!.is_error, true);
-    assert.match(String(results[1]!.content), /Plan mode is on/);
-    assert.equal(results[2]!.content, 'approved');
-    assert.deepEqual(asked, [{ label: 'propose_plan', force: 'Approve this plan.' }], 'the plan is always asked, never covered by a grant');
-  });
-
-  it('refuses a virtual tool that declares itself unsafe for plan mode (starting workers) but allows the harmless ones', async () => {
-    const ran: string[] = [];
-    const mk = (name: string, planSafe?: boolean): VirtualTool => ({ definition: { name, description: name, input_schema: { type: 'object' } }, planSafe, handler: async () => { ran.push(name); return { text: 'ok' }; } });
-    const { llm, calls } = scripted([msg([toolUse('1', 'spawn_like', {}), toolUse('2', 'todo_like', {})], 'tool_use'), msg([text('k')], 'end_turn')]);
-    await runTurn({ ...base, llm, tools: await registry([]), virtualTools: [mk('spawn_like', false), mk('todo_like')], planMode: () => true }, [], 'x');
-    assert.deepEqual(ran, ['todo_like']);
-    assert.equal(((calls[1]!.messages.at(-1)!.content as Llm.ToolResultBlockParam[])[0]!).is_error, true);
-  });
-
-  it('is evaluated per call: once the plan is approved the very next tool call is allowed', async () => {
-    const executed: string[] = [];
-    let plan = true;
-    const approving: VirtualTool = { ...planTool, handler: async () => { plan = false; return { text: 'approved' }; } };
-    const tools = await registry(executed);
-    const { llm } = scripted([
-      msg([toolUse('1', 'propose_plan', { plan: 'p' })], 'tool_use'),
-      msg([toolUse('2', 's__write_file', {})], 'tool_use'),
-      msg([text('ok')], 'end_turn'),
-    ]);
-    await runTurn({ ...base, llm, tools, virtualTools: [approving], planMode: () => plan }, [], 'go');
-    assert.deepEqual(executed, ['write_file']);
+    assert.equal(results[0]!.content, 'approved');
+    assert.deepEqual(asked, [{ label: 'propose_plan', force: 'Approve this plan.' }]);
   });
 
   it('a rejected plan never runs the handler', async () => {
@@ -346,7 +313,7 @@ describe('runTurn — plan mode', () => {
     const tools = await registry(executed);
     const { llm, calls } = scripted([msg([toolUse('1', 'propose_plan', { plan: 'p' })], 'tool_use'), msg([text('revising')], 'end_turn')]);
     await runTurn(
-      { ...base, llm, tools, virtualTools: [{ ...planTool, handler: async () => { ran = true; return { text: 'approved' }; } }], planMode: () => true, confirm: async () => ({ approved: false, reason: 'too vague' }) },
+      { ...base, llm, tools, virtualTools: [{ ...planTool, handler: async () => { ran = true; return { text: 'approved' }; } }], confirm: async () => ({ approved: false, reason: 'too vague' }) },
       [],
       'go',
     );
@@ -535,15 +502,15 @@ const isSummaryCall = (p: Llm.MessageCreateParamsNonStreaming) => /compress the 
 const done = (db: ReturnType<typeof openDb>, conv: string, n: number) => waitFor(() => getMessages(db, conv).filter(m => m.role !== 'summary').length >= n);
 
 describe('server: conversation state', () => {
-  it('reads and validates plan mode / effort, reports what the model supports, and clears the todo list', async () => {
+  it('reads and validates effort, reports what the model supports, and clears the todo list', async () => {
     const t = await boot({ model: { contextLength: 50_000, supportsEffort: true }, script: () => msg([text('hi')], 'end_turn') });
     try {
       const s0 = (await req(t.port, 'GET', `/api/conversations/${t.conv}/state`)).json;
-      assert.deepEqual([s0.mode, s0.effort, s0.effortSupported, s0.todos, s0.context], ['normal', null, true, [], { used: null, limit: 50_000 }]);
-      assert.equal((await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { mode: 'nope' })).status, 400);
+      assert.deepEqual([s0.effort, s0.effortSupported, s0.todos, s0.context], [null, true, [], { used: null, limit: 50_000 }]);
+      assert.equal('mode' in s0, false);
       assert.equal((await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { effort: 'extreme' })).status, 400);
-      const s1 = (await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { mode: 'plan', effort: 'low' })).json;
-      assert.deepEqual([s1.mode, s1.effort], ['plan', 'low']);
+      const s1 = (await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { effort: 'low' })).json;
+      assert.equal(s1.effort, 'low');
       setConversationState(t.db, t.conv, { todos: [{ content: 'a', status: 'pending' }] });
       assert.deepEqual((await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { clearTodos: true, effort: null })).json.todos, []);
       assert.equal((await req(t.port, 'GET', '/api/conversations/nope/state')).status, 404);
@@ -571,10 +538,10 @@ describe('server: a normal turn', () => {
       const sys = String(t.seen[0]!.system);
       assert.match(sys, /custom instructions:\nAnswer in Polish\./);
       assert.match(sys, /todo_write/);
-      assert.equal(sys.includes('PLAN MODE'), false);
+      assert.match(sys, /propose_plan/);
       assert.equal(t.seen[0]!.reasoning_effort, 'medium');
       assert.ok(t.seen[0]!.tools!.some(x => x.name === 'todo_write'));
-      assert.equal(t.seen[0]!.tools!.some(x => x.name === 'propose_plan'), false, 'plan proposal exists only in plan mode');
+      assert.ok(t.seen[0]!.tools!.some(x => x.name === 'propose_plan'), 'the model can propose a plan whenever it judges one is needed');
 
       const st = (await req(t.port, 'GET', `/api/conversations/${t.conv}/state`)).json;
       assert.deepEqual(st.todos, [{ content: 'step one', status: 'in_progress' }, { content: 'step two', status: 'pending' }]);
@@ -585,27 +552,23 @@ describe('server: a normal turn', () => {
   });
 });
 
-describe('server: plan mode through the approval gate', () => {
-  it('shows the plan for approval, keeps plan mode until it is approved, then switches it off', async () => {
+describe('server: propose_plan through the approval gate', () => {
+  it('shows the plan for approval and, once approved, tells the model to carry it out', async () => {
     const t = await boot({
       script: (_p, n) => (n === 1 ? msg([toolUse('1', 'propose_plan', { plan: '1. read\n2. change' })], 'tool_use') : msg([text('starting')], 'end_turn')),
     });
     try {
-      await req(t.port, 'PATCH', `/api/conversations/${t.conv}/state`, { mode: 'plan' });
       await req(t.port, 'POST', `/api/conversations/${t.conv}/message`, { text: 'refactor' });
       await waitFor(() => t.seen.length === 1);
-      assert.match(String(t.seen[0]!.system), /PLAN MODE is on/);
       assert.ok(t.seen[0]!.tools!.some(x => x.name === 'propose_plan'));
 
       const pending: any[] = (await poll(() => req(t.port, 'GET', '/api/pending-approvals'), r => r.json.pending.length === 1)).json.pending;
       assert.equal(pending[0].toolLabel, 'propose_plan');
       assert.equal(pending[0].args.plan, '1. read\n2. change');
       assert.equal(pending[0].dangerous, true, 'a plan is never covered by "always allow"');
-      assert.equal(getConversationState(t.db, t.conv).mode, 'plan');
 
       await req(t.port, 'POST', '/api/approve', { id: pending[0].id, approved: true });
       await done(t.db, t.conv, 4);
-      assert.equal(getConversationState(t.db, t.conv).mode, 'normal');
       const fed = (t.seen[1]!.messages.at(-1)!.content as Llm.ToolResultBlockParam[])[0]!;
       assert.match(String(fed.content), /approved the plan/);
     } finally {

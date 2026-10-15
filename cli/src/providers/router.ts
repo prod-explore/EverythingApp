@@ -4,7 +4,7 @@ import { getToolCallMeta, setToolCallMeta } from '../db.js';
 import { ModelCatalog, type CatalogModel, type DiscoveryResult } from './catalog.js';
 import { KeyVault } from './key-vault.js';
 import { OpenAiCompatClient, type RetryInfo } from './openai-compat.js';
-import { PROVIDER_PRESETS, findPreset, getModelInfo, parseModelId, supportsTools, type ModelInfo, type ProviderId, type ProviderRecord } from './registry.js';
+import { getModelInfo, parseModelId, supportsTools, type ModelInfo, type ProviderId, type ProviderRecord } from './registry.js';
 
 export class ProviderNotConfiguredError extends Error {
   constructor(
@@ -42,7 +42,6 @@ export interface ProviderStatus {
   last4: string | null;
   /** A key is stored but can't be decrypted with the current KEY_VAULT_SECRET. */
   needsReentry: boolean;
-  keyHint: string;
   modelCount: number;
   enabledModelCount: number;
 }
@@ -151,7 +150,6 @@ export class ProviderRouter {
         source: stored.present && key ? 'vault' : null,
         last4: stored.present && key ? stored.last4 : null,
         needsReentry: stored.present && key === null,
-        keyHint: findPreset(p.slug)?.keyHint ?? '',
         modelCount: models.length,
         enabledModelCount: models.filter(m => m.enabled).length,
       };
@@ -268,11 +266,5 @@ export class ProviderRouter {
     } catch (err) {
       return { ok: false, error: this.redact((err as Error).message) };
     }
-  }
-
-  /** Presets the "Add provider" form offers, minus the ones already added. */
-  availablePresets() {
-    const have = new Set(this.catalog.list().map(p => p.slug));
-    return PROVIDER_PRESETS.filter(p => !have.has(p.slug)).map(p => ({ slug: p.slug, label: p.label, baseUrl: this.env[p.baseUrlEnv ?? ''] || p.baseUrl, flavor: p.flavor, keyOptional: p.keyOptional, concurrency: p.concurrency, retryMin: p.retryMin, keyHint: p.keyHint }));
   }
 }

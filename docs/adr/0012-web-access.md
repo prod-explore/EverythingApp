@@ -30,7 +30,7 @@ Two tools, each the standard shape users know from Claude, Gemini and Antigravit
 
 - Hosts are exact (`docs.example.com` ≠ `example.com`); the user sees what they allow.
 - For the browser the orchestrator sends the currently granted hosts as `_policy.domainGrant` on **every** call, so revoking a grant stops the next click. "Allow once" is passed as `_approved_host` on that `browser_open` and lives in the browser session only. Both hidden arguments are stripped from model input. Top-level navigation to a host that is neither granted nor approved is refused with a message telling the model to call `browser_open` for it (which asks). Sub-resources (images, scripts, XHR) are not gated — only the operator's deny list and the SSRF guard apply, as in every browser.
-- `browser_open`, `browser_act` and `browser_close` are in the default auto-approve list, because the domain is the approval. `browser_act` still asks when its label looks irreversible (payment, deletion, subscription…) and, like every effectful tool, after a page looked like a prompt injection. Plan mode refuses `browser_act` but allows reading.
+- `browser_open`, `browser_act` and `browser_close` are in the default auto-approve list, because the domain is the approval. `browser_act` still asks when its label looks irreversible (payment, deletion, subscription…) and, like every effectful tool, after a page looked like a prompt injection.
 - The operator layers stay above the user: `BROWSER_DOMAIN_DENY` always wins, `BROWSER_DOMAIN_ALLOW` restricts everything to its list, the SSRF guard (browser) and the connect-time address check (`web_fetch`) cannot be approved away.
 
 ## Consequences

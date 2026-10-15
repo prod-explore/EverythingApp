@@ -4,7 +4,7 @@ import type { ConversationStateInfo, ReasoningEffort } from '../types';
 import type { LiveTurnState } from './useSSE';
 
 /**
- * Plan mode, reasoning effort, the todo list and the context meter of one chat. Loaded from the server when the chat
+ * Reasoning effort, the todo list and the context meter of one chat. Loaded from the server when the chat
  * opens and after every turn; between those the live stream (useSSE) pushes changes.
  */
 export function useConversationState(conversationId: string | null, live: LiveTurnState) {
@@ -31,7 +31,6 @@ export function useConversationState(conversationId: string | null, live: LiveTu
     [conversationId],
   );
 
-  const setMode = useCallback((mode: 'normal' | 'plan') => patch({ mode }), [patch]);
   const setEffort = useCallback((effort: ReasoningEffort | null) => patch({ effort }), [patch]);
   const clearTodos = useCallback(() => patch({ clearTodos: true }), [patch]);
 
@@ -53,7 +52,7 @@ export function useConversationState(conversationId: string | null, live: LiveTu
     }
   }, [conversationId]);
 
-  return { state, busy, note, setMode, setEffort, clearTodos, compact };
+  return { state, busy, note, setEffort, clearTodos, compact };
 }
 
 export type ConversationStateApi = ReturnType<typeof useConversationState>;

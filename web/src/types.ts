@@ -45,7 +45,6 @@ export interface TodoItem { content: string; status: TodoStatus }
 
 /** What the chat shows beyond its messages (GET /api/conversations/:id/state). */
 export interface ConversationStateInfo {
-  mode: 'normal' | 'plan';
   effort: ReasoningEffort | null;
   /** Whether the current model accepts a reasoning effort at all. */
   effortSupported: boolean;
@@ -270,26 +269,14 @@ export interface ProviderInfo {
   source: 'vault' | null;
   last4: string | null;
   needsReentry: boolean;
-  keyHint: string;
   modelCount: number;
   enabledModelCount: number;
-}
-
-/** A starting point for "Add provider" — it only pre-fills the same form every provider goes through. */
-export interface ProviderPreset {
-  slug: string;
-  label: string;
-  baseUrl: string;
-  flavor: CompatFlavor;
-  keyOptional: boolean;
-  keyHint: string;
 }
 
 export interface ProvidersResponse {
   vaultEnabled: boolean;
   vaultDisabledReason: string | null;
   providers: ProviderInfo[];
-  presets: ProviderPreset[];
 }
 
 /** A model as the pickers see it (enabled models of enabled providers). */

@@ -9,7 +9,7 @@ const selectCls = 'w-full rounded-button border border-border bg-bg-secondary px
 const SLOTS: Array<{ key: SlotKey; label: string; auto: string; hint: string }> = [
   { key: 'chat', label: 'Chat default', auto: 'Automatic (first free model)', hint: 'What a new conversation starts on.' },
   { key: 'helper', label: 'Helper', auto: 'Automatic (first free model)', hint: 'Chat titles and the daily digest. Only ever a model you pick or a free one.' },
-  { key: 'subagent', label: 'Agents', auto: 'Same as helper', hint: 'Default model for workers the assistant starts.' },
+  { key: 'subagent', label: 'Agents', auto: 'Automatic (first free model)', hint: 'Default model for workers the assistant starts.' },
   { key: 'escalation', label: 'Escalation', auto: 'None', hint: 'The stronger model the assistant reaches for when a job is hard.' },
 ];
 

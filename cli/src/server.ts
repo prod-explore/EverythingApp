@@ -21,13 +21,13 @@ import { generateDailySummary } from './gazeta.js';
 import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { withModelIdentity } from './providers/identity.js';
 import { ProviderRouter } from './providers/router.js';
-import { SLUG_RE, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
-import { findPreset, getModelInfo, isCatalogModel, isLocalModel, presetBaseUrl, supportsTools } from './providers/registry.js';
+import { SLUG_RE, flavorDefaults, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
+import { getModelInfo, isCatalogModel, isLocalModel, supportsTools } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { classifyError } from './providers/errors.js';
 import { compactConversation, llmHistory } from './compaction.js';
 import { COMPACT_AT, estimateTokens } from './context.js';
-import { AGENTS_FILE, PLAN_MODE_PROMPT, WORKING_STYLE_PROMPT, projectInstructionsPrompt, proposePlanTool, todoTool } from './chat-tools.js';
+import { AGENTS_FILE, WORKING_STYLE_PROMPT, projectInstructionsPrompt, proposePlanTool, todoTool } from './chat-tools.js';
 import { REQUEST_HUMAN_INPUT_TOOL, POST_REPORT_TOOL, formatHumanResponse, handleRequestHumanInput, resolveHumanInput, awaitHumanInput, DISMISSED_RESPONSE, isDismissedResponse, type GazetaField } from './gazeta.js';
 import { parseCommandPolicy } from './command-policy.js';
 import { PolicyStore, policyFilePath } from './policy-file.js';
@@ -498,7 +498,6 @@ ${formatHumanResponse(response)}` };
     const modelId = conv ? modelOf(conv) : defaultModelId();
     const info = modelId ? getModelInfo(modelId) : undefined;
     return {
-      mode: st.mode,
       effort: st.effort,
       effortSupported: info?.supportsEffort === true,
       todos: st.todos,
@@ -530,7 +529,7 @@ ${formatHumanResponse(response)}` };
       humanInputTool(origin, signal),
       reportTool(origin),
       todoTool(db, convId, announce),
-      ...(getConversationState(db, convId).mode === 'plan' ? [proposePlanTool(db, convId, announce)] : []),
+      proposePlanTool(),
       ...agents.agentTools(rootRunId, signal),
       ...workspaceFileTools(convId, rootRunId),
       ...webToolsFor(convId),
@@ -947,7 +946,7 @@ ${formatHumanResponse(response)}` };
     res.json({ ok: true });
   });
 
-  // ─── Conversation state: plan mode, reasoning effort, todo list, context size ─────────────────────────
+  // ─── Conversation state: reasoning effort, todo list, context size ─────────────────────────
   app.get('/api/conversations/:id/state', (req, res) => {
     if (!getConversation(db, req.params.id)) { res.status(404).json({ error: 'conversation not found' }); return; }
     res.json(publicState(req.params.id));
@@ -955,11 +954,9 @@ ${formatHumanResponse(response)}` };
 
   app.patch('/api/conversations/:id/state', (req, res) => {
     if (!getConversation(db, req.params.id)) { res.status(404).json({ error: 'conversation not found' }); return; }
-    const { mode, effort, clearTodos } = (req.body ?? {}) as Record<string, unknown>;
-    if (mode !== undefined && mode !== 'normal' && mode !== 'plan') { res.status(400).json({ error: "mode: 'normal' or 'plan'" }); return; }
+    const { effort, clearTodos } = (req.body ?? {}) as Record<string, unknown>;
     if (effort !== undefined && effort !== null && !(REASONING_EFFORTS as readonly unknown[]).includes(effort)) { res.status(400).json({ error: 'effort: low, medium, high or null' }); return; }
     const next = setConversationState(db, req.params.id, {
-      ...(mode !== undefined ? { mode } : {}),
       ...(effort !== undefined ? { effort: effort as ConversationState['effort'] } : {}),
       ...(clearTodos === true ? { todos: [] } : {}),
     });
@@ -1052,12 +1049,11 @@ ${formatHumanResponse(response)}` };
         // too — `??` only catches null/undefined.
         let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
-        // Settings → "custom instructions" (how the user wants answers), the working-style note, plan mode, and the
+        // Settings → "custom instructions" (how the user wants answers), the working-style note, and the
         // project's own instruction file.
         const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
         if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
         effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
-        if (getConversationState(db, convId).mode === 'plan') effectiveSystem += '\n\n' + PLAN_MODE_PROMPT;
         if (conv.sandboxEnabled) {
           // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
           const agentsFile = await Promise.race([
@@ -1152,7 +1148,6 @@ ${formatHumanResponse(response)}` };
             systemPrompt: effectiveSystem,
             contextWindow: info.contextLength,
             reasoningEffort: state.effort ?? undefined,
-            planMode: () => getConversationState(db, convId).mode === 'plan',
             onContext: (c: { used: number; limit?: number }) => {
               setConversationState(db, convId, { lastInputTokens: c.used });
               sse.emit(convId, 'turn:context', { used: c.used, limit: c.limit ?? null });
@@ -1731,30 +1726,30 @@ ${formatHumanResponse(response)}`;
       vaultEnabled: router.vault.enabled,
       vaultDisabledReason: router.vault.disabledReason,
       providers: router.status(),
-      presets: router.availablePresets(),
     });
   });
 
   app.post('/api/providers', async (req, res) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
-    const preset = typeof b['preset'] === 'string' ? findPreset(b['preset']) : undefined;
-    const slug = (typeof b['slug'] === 'string' ? b['slug'] : preset?.slug ?? '').trim().toLowerCase();
-    const baseUrl = normalizeBaseUrl(b['baseUrl'] ?? (preset ? presetBaseUrl(preset) : undefined));
+    const slug = (typeof b['slug'] === 'string' ? b['slug'] : '').trim().toLowerCase();
+    const baseUrl = normalizeBaseUrl(b['baseUrl']);
     if (!SLUG_RE.test(slug)) { res.status(400).json({ error: 'slug: lowercase letters, digits and dashes (max 32)' }); return; }
     if (!baseUrl) { res.status(400).json({ error: 'baseUrl must be an http(s) URL without credentials, e.g. https://openrouter.ai/api/v1' }); return; }
     if (router.catalog.get(slug)) { res.status(409).json({ error: 'a provider with this slug already exists' }); return; }
     const apiKey = typeof b['apiKey'] === 'string' && b['apiKey'].trim() ? b['apiKey'].trim() : null;
     if (apiKey && !validKey(apiKey)) { res.status(400).json({ error: 'the API key must be a single token with no whitespace' }); return; }
     if (apiKey && !router.vault.enabled) { res.status(503).json({ error: router.vault.disabledReason }); return; }
-    const keyOptional = b['keyOptional'] === true || preset?.keyOptional === true;
+    const keyOptional = b['keyOptional'] === true;
+    const flavor = isFlavor(b['flavor']) ? b['flavor'] : 'generic';
+    const defaults = flavorDefaults(flavor);
     router.catalog.create({
       slug,
-      label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : preset?.label ?? slug,
+      label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : slug,
       baseUrl,
       keyOptional,
-      flavor: isFlavor(b['flavor']) ? b['flavor'] : preset?.flavor ?? 'generic',
-      concurrency: preset?.concurrency ?? null,
-      retryMin: patience(b['retryMin'], 1, 24 * 60) ?? preset?.retryMin ?? null,
+      flavor,
+      concurrency: defaults.concurrency,
+      retryMin: patience(b['retryMin'], 1, 24 * 60) ?? defaults.retryMin,
       local: b['local'] === true,
     });
     if (apiKey) router.saveKey(slug, apiKey);
