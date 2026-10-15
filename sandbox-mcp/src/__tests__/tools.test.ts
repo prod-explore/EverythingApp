@@ -45,6 +45,12 @@ describe('run_bash result formatting', () => {
     assert.deepEqual(formatRunResult(base, 1000), { text: 'hi\nexit code: 0', isError: false });
   });
 
+  it('passes on the disk quota notice without turning it into an error', () => {
+    const r = formatRunResult({ ...base, notice: 'The workspace is 95 MB of its 100 MB quota.' }, 1000);
+    assert.equal(r.isError, false);
+    assert.equal(r.text, 'hi\nexit code: 0\n[The workspace is 95 MB of its 100 MB quota.]');
+  });
+
   it('non-zero exit is an error', () => {
     const r = formatRunResult({ ...base, exitCode: 2 }, 1000);
     assert.equal(r.isError, true);

@@ -75,6 +75,8 @@ export interface DockerOps extends ArchiveOps {
   listManaged(): Promise<ManagedContainer[]>;
   /** CPU usage as a percentage of the container's CPU limit (one sample). */
   cpuPercent(id: string): Promise<number>;
+  /** Bytes used under /workspace right now. */
+  workspaceBytes(id: string): Promise<number>;
   /** A private, internal-only network (no route out) used to let the shared browser reach one sandbox. Idempotent. */
   ensurePreviewNetwork(name: string, ownerId: string): Promise<void>;
   /** Attaches a container (id or name) to a network, optionally under DNS aliases. Idempotent. */
@@ -98,6 +100,11 @@ export interface CpuWatchdogOptions {
   agentIdleMs?: number;
 }
 
+export interface DiskQuotaOptions {
+  /** Workspace size at which a sandbox is warned about and then stopped when it keeps growing. 0 = no quota. */
+  quotaMb?: number;
+}
+
 export interface SandboxManagerOptions {
   maxRunning?: number;
   /** A sandbox with no activity for this long is stopped (its volume stays). */
@@ -111,17 +118,19 @@ export interface SandboxManagerOptions {
   maxFileBytes?: number;
   checkpointTimeoutMs?: number;
   cpu?: CpuWatchdogOptions;
+  disk?: DiskQuotaOptions;
   /** Name of the browser container that previews attach to. Empty = previews are not configured (501). */
   browserContainer?: string;
   now?: () => number;
 }
 
 export interface SandboxEvent {
-  type: 'cpu_high' | 'cpu_stopped';
+  type: 'cpu_high' | 'cpu_stopped' | 'disk_high' | 'disk_over_quota' | 'disk_stopped';
   /** ISO timestamp */
   at: string;
   message: string;
-  cpuPercent: number;
+  cpuPercent: number | null;
+  diskBytes?: number;
 }
 
 interface Sandbox {
@@ -134,12 +143,16 @@ interface Sandbox {
   stoppedAt: number | null;
   terminals: TerminalManager;
   cpu: { last: number | null; hot: number; warned: boolean; hotSinceWarn: number };
+  /** Last measured size of /workspace and where the quota stands. */
+  disk: { bytes: number | null; checkedAt: number | null; level: 'ok' | 'high' | 'over' };
   events: SandboxEvent[];
 }
 
 const OWNER_RE = /^[A-Za-z0-9_-]{1,64}$/;
 export const ACTION_LOG = `${META_DIR}/actions.log`;
 const MAX_EVENTS = 20;
+/** Growth smaller than this between two samples is noise (logs, caches), not a runaway writer. */
+const GROWTH_SLACK_BYTES = 1024 * 1024;
 
 export function volumeName(ownerId: string): string {
   return `everything-workspace-${ownerId.toLowerCase()}`;
@@ -165,7 +178,8 @@ export class SandboxManager {
   private readonly materializing = new Map<string, Promise<Sandbox | null>>();
   private watchdog: NodeJS.Timeout | undefined;
   private cpuTimer: NodeJS.Timeout | undefined;
-  private readonly opts: Required<Omit<SandboxManagerOptions, 'cpu'>> & { cpu: Required<CpuWatchdogOptions> };
+  private diskTimer: NodeJS.Timeout | undefined;
+  private readonly opts: Required<Omit<SandboxManagerOptions, 'cpu' | 'disk'>> & { cpu: Required<CpuWatchdogOptions>; disk: Required<DiskQuotaOptions> };
 
   constructor(
     private readonly ops: DockerOps,
@@ -187,6 +201,7 @@ export class SandboxManager {
         stopAfterSamples: opts.cpu?.stopAfterSamples ?? 5,
         agentIdleMs: opts.cpu?.agentIdleMs ?? 10 * 60_000,
       },
+      disk: { quotaMb: opts.disk?.quotaMb ?? 2048 },
       now: opts.now ?? Date.now,
     };
   }
@@ -229,9 +244,17 @@ export class SandboxManager {
     this.cpuTimer.unref();
   }
 
+  startDiskWatchdog(intervalMs: number): void {
+    this.diskTimer = setInterval(() => {
+      this.sampleDisk().catch(err => console.error('[sandboxes] disk watchdog error:', err));
+    }, intervalMs);
+    this.diskTimer.unref();
+  }
+
   stopWatchdog(): void {
     if (this.watchdog) clearInterval(this.watchdog);
     if (this.cpuTimer) clearInterval(this.cpuTimer);
+    if (this.diskTimer) clearInterval(this.diskTimer);
   }
 
   private record(ownerId: string, containerId: string, running: boolean): Sandbox {
@@ -244,6 +267,7 @@ export class SandboxManager {
       lastAgentActivityAt: now,
       stoppedAt: running ? null : now,
       cpu: { last: null, hot: 0, warned: false, hotSinceWarn: 0 },
+      disk: { bytes: null, checkedAt: null, level: 'ok' },
       events: [],
       terminals: new TerminalManager(this.ops.shellFactory(containerId), {
         maxTerminals: this.opts.maxTerminals,
@@ -333,6 +357,7 @@ export class SandboxManager {
     s.cpu.hot = 0;
     s.cpu.hotSinceWarn = 0;
     s.cpu.warned = false;
+    s.disk.bytes = null;
     await this.ops.stopContainer(s.containerId).catch(err => console.warn(`[sandboxes] stop failed for ${s.ownerId}:`, err));
     await this.unpreview(s.ownerId);
   }
@@ -396,7 +421,7 @@ export class SandboxManager {
   }
 
   /** Run a command in one of the owner's terminals, creating the sandbox and terminal if needed. */
-  async run(ownerId: string, terminal: string | undefined, command: string, timeoutMs: number): Promise<RunResult & { terminal: string }> {
+  async run(ownerId: string, terminal: string | undefined, command: string, timeoutMs: number): Promise<RunResult & { terminal: string; notice?: string }> {
     const name = terminal ?? DEFAULT_TERMINAL;
     const { containerId } = await this.claim(ownerId);
     const s = this.sandboxes.get(ownerId)!;
@@ -410,7 +435,19 @@ export class SandboxManager {
       throw err;
     }
     this.touchAgent(s);
-    return { ...result, terminal: name };
+    return { ...result, terminal: name, ...this.diskNotice(s) };
+  }
+
+  /** A line for the agent when the workspace is close to or over its quota, so it can clean up instead of failing later. */
+  private diskNotice(s: Sandbox): { notice?: string } {
+    const quota = this.opts.disk.quotaMb * 1024 * 1024;
+    if (quota <= 0 || s.disk.bytes === null || s.disk.level === 'ok') return {};
+    const mb = (b: number) => `${Math.round(b / 1024 / 1024)} MB`;
+    return {
+      notice: s.disk.level === 'over'
+        ? `The workspace is ${mb(s.disk.bytes)}, over its ${mb(quota)} quota. Free space now (delete build output, caches, node_modules you can reinstall); this sandbox is stopped if it keeps growing.`
+        : `The workspace is ${mb(s.disk.bytes)} of its ${mb(quota)} quota.`,
+    };
   }
 
   /** Append to the action log that read_log serves. The command travels as base64 — it is never parsed by a shell. */
@@ -597,6 +634,55 @@ export class SandboxManager {
     return { warned, stopped };
   }
 
+  /**
+   * One disk watchdog tick. Docker cannot cap a named volume on every filesystem, so the quota is enforced by
+   * measuring: at 90% a warning is recorded; over 100% the owner is told, and a sandbox whose workspace is still
+   * GROWING at the next sample is stopped (a runaway writer). A sandbox that is over quota but not growing is left running, so the
+   * owner can clean up; it is stopped again only if it starts growing. The volume is never touched.
+   */
+  async sampleDisk(): Promise<{ warned: string[]; stopped: string[] }> {
+    const quota = this.opts.disk.quotaMb * 1024 * 1024;
+    const warned: string[] = [];
+    const stopped: string[] = [];
+    if (quota <= 0) return { warned, stopped };
+    for (const s of this.runningSandboxes()) {
+      let bytes: number;
+      try {
+        bytes = await this.ops.workspaceBytes(s.containerId);
+      } catch {
+        continue;
+      }
+      const grew = s.disk.bytes !== null && bytes > s.disk.bytes + GROWTH_SLACK_BYTES;
+      s.disk.bytes = bytes;
+      s.disk.checkedAt = this.opts.now();
+      const mb = (b: number) => `${Math.round(b / 1024 / 1024)} MB`;
+      if (bytes < quota * 0.9) {
+        s.disk.level = 'ok';
+        continue;
+      }
+      if (bytes < quota) {
+        if (s.disk.level === 'ok') {
+          this.addEvent(s, { type: 'disk_high', message: `workspace is ${mb(bytes)} of ${mb(quota)}`, cpuPercent: null, diskBytes: bytes });
+          warned.push(s.ownerId);
+        }
+        s.disk.level = 'high';
+        continue;
+      }
+      const wasOver = s.disk.level === 'over';
+      if (!wasOver) {
+        this.addEvent(s, { type: 'disk_over_quota', message: `workspace is ${mb(bytes)}, over its ${mb(quota)} quota; free some space (it will be stopped if it keeps growing)`, cpuPercent: null, diskBytes: bytes });
+        warned.push(s.ownerId);
+      }
+      s.disk.level = 'over';
+      if (wasOver && grew) {
+        this.addEvent(s, { type: 'disk_stopped', message: `stopped: the workspace kept growing past its ${mb(quota)} quota (${mb(bytes)}); the files are kept`, cpuPercent: null, diskBytes: bytes });
+        await this.stopSandbox(s, 'workspace over quota');
+        stopped.push(s.ownerId);
+      }
+    }
+    return { warned, stopped };
+  }
+
   private describe(s: Sandbox, now: number) {
     return {
       ownerId: s.ownerId,
@@ -607,6 +693,7 @@ export class SandboxManager {
       stoppedAt: s.stoppedAt === null ? null : new Date(s.stoppedAt).toISOString(),
       cpuPercent: s.cpu.last,
       cpuHot: s.cpu.warned,
+      disk: { bytes: s.disk.bytes, quotaBytes: this.opts.disk.quotaMb * 1024 * 1024, level: s.disk.level },
       warnings: [...s.events],
       terminals: s.terminals.list(),
     };

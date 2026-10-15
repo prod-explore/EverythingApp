@@ -13,6 +13,8 @@ export interface TerminalRunResult {
   truncated: boolean;
   /** The shell no longer exists; the next command in this terminal starts a fresh one (cwd/env reset). */
   terminalClosed: boolean;
+  /** Set when the workspace is near or over its disk quota. */
+  notice?: string;
 }
 
 export interface TerminalInfo {
@@ -30,10 +32,11 @@ export interface CheckpointInfo {
 }
 
 export interface SandboxWarning {
-  type: 'cpu_high' | 'cpu_stopped';
+  type: 'cpu_high' | 'cpu_stopped' | 'disk_high' | 'disk_over_quota' | 'disk_stopped';
   at: string;
   message: string;
-  cpuPercent: number;
+  cpuPercent: number | null;
+  diskBytes?: number;
 }
 
 export interface HealthResult {
@@ -50,6 +53,7 @@ export interface HealthResult {
     stoppedAt: string | null;
     cpuPercent: number | null;
     cpuHot: boolean;
+    disk: { bytes: number | null; quotaBytes: number; level: 'ok' | 'high' | 'over' };
     warnings: SandboxWarning[];
     terminals: TerminalInfo[];
   }>;

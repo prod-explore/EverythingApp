@@ -27,6 +27,8 @@ async function main(): Promise<void> {
     // The browser the agent shares with the user; sandboxes are linked to it on demand (preview_sandbox). Empty = off.
     browserContainer: process.env['PREVIEW_BROWSER_CONTAINER'] ?? 'everythingapp-playwright-mcp',
     checkpointTimeoutMs: num('SANDBOX_CHECKPOINT_TIMEOUT_MS', 120_000),
+    // 0 turns the workspace quota off; unset = 2048 MB.
+    disk: { quotaMb: process.env['SANDBOX_WORKSPACE_MB'] === '0' ? 0 : num('SANDBOX_WORKSPACE_MB', 2048) },
     cpu: {
       thresholdPercent: num('SANDBOX_CPU_THRESHOLD_PCT', 90),
       samples: num('SANDBOX_CPU_SAMPLES', 5),
@@ -38,6 +40,7 @@ async function main(): Promise<void> {
   console.log(`[supervisor] adopted ${adopted} existing sandbox(es)`);
   sandboxes.startWatchdog(num('SANDBOX_WATCHDOG_INTERVAL_MS', 120_000));
   sandboxes.startCpuWatchdog(num('SANDBOX_CPU_INTERVAL_MS', 30_000));
+  sandboxes.startDiskWatchdog(num('SANDBOX_DISK_INTERVAL_MS', 30_000));
 
   const app = createSupervisorApp(sandboxes, num('SANDBOX_DEFAULT_TIMEOUT_MS', 30_000), { token });
   const server = app.listen(PORT, '0.0.0.0', () => console.log(`[supervisor] listening on port ${PORT}`));

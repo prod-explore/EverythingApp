@@ -43,6 +43,9 @@ services:
       MAX_TERMINALS_PER_SANDBOX: ${MAX_TERMINALS_PER_SANDBOX:-4}
       SANDBOX_MEMORY_MB: ${SANDBOX_MEMORY_MB:-512}
       SANDBOX_CPUS: ${SANDBOX_CPUS:-1}
+      # Workspace quota per project, enforced by measuring (30 s): warn at 90%, stop a sandbox that keeps writing past it.
+      # The files are never deleted. 0 = no quota.
+      SANDBOX_WORKSPACE_MB: ${SANDBOX_WORKSPACE_MB:-2048}
       # Sandboxes live on their own bridge (created by the supervisor); fence it off from the LAN with
       # deploy/egress-guard.sh (EGRESS_BRIDGES must include br-ea-sandbox).
       SANDBOX_NETWORK: ${SANDBOX_NETWORK:-ea-sandbox-egress}

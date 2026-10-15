@@ -337,3 +337,83 @@ describe('CPU watchdog', () => {
     await m.shutdown();
   });
 });
+
+describe('workspace disk quota', () => {
+  const MB = 1024 * 1024;
+  const setup = (quotaMb = 100) => {
+    const f = fakeOps();
+    const m = new SandboxManager(f.ops, { idleMs: 365 * DAY, disk: { quotaMb } });
+    return { m, f };
+  };
+
+  it('stays quiet under 90% of the quota', async () => {
+    const { m, f } = setup();
+    const { containerId } = await m.claim('p');
+    f.disk.set(containerId, 80 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: [] });
+    const st = m.sandboxStatus('p')!;
+    assert.deepEqual(st.disk, { bytes: 80 * MB, quotaBytes: 100 * MB, level: 'ok' });
+    assert.equal(st.warnings.length, 0);
+    await m.shutdown();
+  });
+
+  it('warns once at 90%, once when over, and stops only a workspace that is still growing', async () => {
+    const { m, f } = setup();
+    const { containerId } = await m.claim('p');
+    f.disk.set(containerId, 95 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: ['p'], stopped: [] });
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: [] }, 'one warning per level');
+    f.disk.set(containerId, 101 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: ['p'], stopped: [] }, 'over quota, but only 6 MB since the last sample… and it is allowed to clean up');
+    f.disk.set(containerId, 101 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: [] }, 'not growing: left running so the owner can free space');
+    assert.equal(f.containers.get(containerId)!.running, true);
+    f.disk.set(containerId, 140 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: ['p'] }, 'growing past the quota: a runaway writer');
+    assert.equal(f.containers.get(containerId)!.running, false);
+    assert.deepEqual(m.sandboxStatus('p')!.warnings.map(w => w.type), ['disk_high', 'disk_over_quota', 'disk_stopped']);
+    await m.shutdown();
+  });
+
+  it('tells the agent about the quota in the result of a command', async () => {
+    const { m, f } = setup();
+    const { containerId } = await m.claim('p');
+    assert.equal((await m.run('p', undefined, 'true', 1000)).notice, undefined);
+    f.disk.set(containerId, 95 * MB);
+    await m.sampleDisk();
+    assert.match((await m.run('p', undefined, 'true', 1000)).notice ?? '', /95 MB of its 100 MB quota/);
+    f.disk.set(containerId, 105 * MB);
+    await m.sampleDisk();
+    assert.match((await m.run('p', undefined, 'true', 1000)).notice ?? '', /over its 100 MB quota\. Free space now/);
+    await m.shutdown();
+  });
+
+  it('lets a stopped, over-quota workspace start again so it can be cleaned', async () => {
+    const { m, f } = setup();
+    const first = await m.claim('p');
+    f.disk.set(first.containerId, 101 * MB);
+    await m.sampleDisk();
+    f.disk.set(first.containerId, 150 * MB);
+    await m.sampleDisk();
+    assert.equal(f.containers.get(first.containerId)!.running, false);
+    const again = await m.claim('p');
+    assert.equal(f.containers.get(again.containerId)!.running, true);
+    f.disk.set(again.containerId, 60 * MB);
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: [] });
+    assert.equal(m.sandboxStatus('p')!.disk.level, 'ok');
+    await m.shutdown();
+  });
+
+  it('quota 0 turns it off; a failed measurement is skipped', async () => {
+    const off = setup(0);
+    const a = await off.m.claim('p');
+    off.f.disk.set(a.containerId, 10_000 * MB);
+    assert.deepEqual(await off.m.sampleDisk(), { warned: [], stopped: [] });
+    const { m, f } = setup();
+    await m.claim('p');
+    f.ops.workspaceBytes = async () => { throw new Error('exec failed'); };
+    assert.deepEqual(await m.sampleDisk(), { warned: [], stopped: [] });
+    await off.m.shutdown();
+    await m.shutdown();
+  });
+});

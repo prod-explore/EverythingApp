@@ -15,6 +15,7 @@ export function formatRunResult(r: TerminalRunResult, timeoutMs: number): { text
     lines.push(`[terminal "${r.terminal}" ended (the shell exited); the next command opens a fresh one]`);
   }
   if (r.exitCode !== null) lines.push(`exit code: ${r.exitCode}`);
+  if (r.notice) lines.push(`[${r.notice}]`);
   return { text: lines.filter(l => l !== '').join('\n'), isError: r.exitCode !== 0 };
 }
 

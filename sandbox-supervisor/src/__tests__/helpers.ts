@@ -115,6 +115,7 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
   const logLines: string[] = [];
   const execCommands: string[] = [];
   const cpu = new Map<string, number>();
+  const disk = new Map<string, number>();
   /** network name → attached containers (name → aliases) */
   const networks = new Map<string, { ownerId: string; attached: Map<string, string[]> }>();
   let n = 0;
@@ -164,6 +165,9 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
     async cpuPercent(id) {
       return cpu.get(id) ?? 0;
     },
+    async workspaceBytes(id) {
+      return disk.get(id) ?? 0;
+    },
     async ensurePreviewNetwork(name, ownerId) {
       calls.push(`net:${name}`);
       if (!networks.has(name)) networks.set(name, { ownerId, attached: new Map() });
@@ -202,5 +206,5 @@ export function fakeOps(over: Partial<DockerOps> = {}) {
     shellFactory: () => localBashFactory,
     ...over,
   };
-  return { ops, calls, containers, volumes, logLines, execCommands, cpu, networks };
+  return { ops, calls, containers, volumes, logLines, execCommands, cpu, disk, networks };
 }

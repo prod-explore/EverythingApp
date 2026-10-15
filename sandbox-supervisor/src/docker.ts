@@ -266,6 +266,13 @@ export class DockerodeOps implements DockerOps {
     return cpuPercentFromStats(stats, this.cfg.cpus);
   }
 
+  async workspaceBytes(id: string): Promise<number> {
+    const r = await this.exec(id, `du -sk ${WORKSPACE} 2>/dev/null | cut -f1`, 25_000);
+    const kb = Number.parseInt(r.stdout.trim(), 10);
+    if (!Number.isFinite(kb)) throw new Error(`du gave no size: ${r.stdout.trim().slice(0, 80)}`);
+    return kb * 1024;
+  }
+
   async statPath(id: string, path: string): Promise<PathStat | null> {
     try {
       const res = (await this.docker.getContainer(id).infoArchive({ path })) as IncomingMessage;
