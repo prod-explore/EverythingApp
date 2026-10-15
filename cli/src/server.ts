@@ -570,12 +570,14 @@ ${formatHumanResponse(response)}` };
       },
     },
   }));
-  app.use(express.json({ limit: '10mb' }));
+  // POST /api/artifacts takes the raw bytes of a file whatever its type (a .json upload included), so it skips this parser.
+  const jsonBody = express.json({ limit: '10mb' });
+  app.use((req, res, next) => (req.method === 'POST' && req.path === '/api/artifacts' ? next() : jsonBody(req, res, next)));
 
   // ─── Health (no auth) ─────────────────────────────────────────────────────
+  // Only "the process is up": which connectors exist is not for anonymous callers (Settings → Connectors shows it).
   app.get('/health', (_req, res) => {
-    const connectorStatus = connections.map(c => ({ name: c.name, connected: c.connected !== false }));
-    res.json({ status: 'ok', connectors: connectorStatus });
+    res.json({ status: 'ok' });
   });
 
   // ─── Auth middleware ──────────────────────────────────────────────────────
@@ -672,14 +674,22 @@ ${formatHumanResponse(response)}` };
   });
 
   // ─── Settings ─────────────────────────────────────────────────────────────
+  // The free-form settings the UI edits. Everything else in the settings table (web search config, push keys, model
+  // slots, bookkeeping) has its own route with its own validation, or is not the client's to write.
+  const GENERAL_SETTINGS: readonly string[] = ['global_system_prompt', 'custom_instructions'];
   app.get('/api/settings', (_req, res) => {
-    res.json({ settings: getAllSettings(db) });
+    const all = getAllSettings(db);
+    res.json({ settings: Object.fromEntries(GENERAL_SETTINGS.filter(k => k in all).map(k => [k, all[k]])) });
   });
 
   app.put('/api/settings', (req, res) => {
     const { key, value } = req.body ?? {};
     if (typeof key !== 'string' || typeof value !== 'string') {
       res.status(400).json({ error: 'expected { key: string, value: string }' });
+      return;
+    }
+    if (!GENERAL_SETTINGS.includes(key)) {
+      res.status(400).json({ error: `unknown setting '${key}' (editable here: ${GENERAL_SETTINGS.join(', ')})` });
       return;
     }
     setSetting(db, key, value);
@@ -1612,7 +1622,7 @@ ${formatHumanResponse(response)}`;
     return !fs.existsSync(safe) && fs.existsSync(legacy) ? legacy : safe;
   };
 
-  app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), (req, res) => {
+  app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), async (req, res) => {
     const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
     const filename = sanitizeFilename(typeof req.query['filename'] === 'string' ? req.query['filename'] : 'artifact');
     const mimeType = req.headers['content-type'] ?? 'application/octet-stream';
@@ -1633,8 +1643,14 @@ ${formatHumanResponse(response)}`;
       source,
     });
 
-    const filePath = artifactPath(artifact);
-    fs.writeFileSync(filePath, body);
+    try {
+      await fs.promises.writeFile(artifactPath(artifact), body);
+    } catch (err) {
+      deleteArtifact(db, artifact.id); // no row without its file
+      console.error(`[artifacts] could not write ${artifact.id}: ${(err as Error).message}`);
+      res.status(500).json({ error: 'could not store the file' });
+      return;
+    }
 
     if (convId) sse.emit(convId, 'artifact:new', artifact);
     res.status(201).json(artifact);
@@ -1859,13 +1875,17 @@ ${formatHumanResponse(response)}`;
 
   // ─── Static frontend ─────────────────────────────────────────────────────
   const webDistPath = path.join(__dirname, '..', '..', 'web', 'dist');
+  // An unknown API path is a 404 in JSON, not the web app's index.html with status 200.
+  app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }); });
   app.use(express.static(webDistPath));
   // Express 5 (path-to-regexp v7+) rejects a bare '*' — it's ambiguous
   // now. This app is a single-page app, so the SPA fallback needs a
   // pattern that matches literally everything not already handled above
   // (every /api/* route, static assets from webDistPath); '/*splat' is
   // the current syntax for that.
-  app.get('/*splat', (_req, res) => {
+  app.get('/*splat', (req, res) => {
+    // A path with a file extension that static did not find is a missing file, not a page of the app.
+    if (path.extname(req.path)) { res.status(404).type('text/plain').send('not found'); return; }
     res.sendFile(path.join(webDistPath, 'index.html'));
   });
 
@@ -1885,7 +1905,8 @@ ${formatHumanResponse(response)}`;
 
   /** Once per local day: a free-tier digest of what is waiting in Gazeta. Skipped silently without a free model. */
   async function runDailyDigest(force = false): Promise<string | null> {
-    const today = new Date().toISOString().slice(0, 10);
+    const now = new Date(); // the server's local day (set TZ for the container), not UTC
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
     if (!force && getSetting(db, 'last_digest_date') === today) return null;
     const bg = backgroundModel(db, router);
     if (!bg) return null;
@@ -1919,6 +1940,7 @@ ${formatHumanResponse(response)}`;
   pruneInterval.unref();
 
   function stop(): void {
+    auth.dispose();
     clearInterval(digestInterval);
     clearInterval(pruneInterval);
     offPush();

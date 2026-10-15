@@ -183,12 +183,21 @@ export async function summarizeHistory(o: SummarizeOptions): Promise<string> {
     const prompt =
       (summary ? `Summary of the conversation so far:\n${summary}\n\nNext part of the conversation:\n` : 'Conversation to summarise:\n') +
       `${chunk}\n\nWrite the ${summary ? 'updated ' : ''}summary now.`;
-    const res = await o.llm.messages.create(
-      { model: o.model, max_tokens: o.maxTokens ?? 2000, system: SUMMARY_SYSTEM, messages: [{ role: 'user', content: prompt }] },
-      { signal: o.signal },
-    );
-    o.onUsage?.(res.usage);
-    const text = res.content.filter((b): b is Llm.TextBlock => b.type === 'text').map(b => b.text).join('\n').trim();
+    // A summary that hit the output limit stops mid-sentence and would replace the originals for good: ask again with
+    // room for twice as much, and give up rather than store a cut-off one.
+    let budget = o.maxTokens ?? 2000;
+    let text = '';
+    for (let attempt = 0; ; attempt++) {
+      const res = await o.llm.messages.create(
+        { model: o.model, max_tokens: budget, system: SUMMARY_SYSTEM, messages: [{ role: 'user', content: prompt }] },
+        { signal: o.signal },
+      );
+      o.onUsage?.(res.usage);
+      text = res.content.filter((b): b is Llm.TextBlock => b.type === 'text').map(b => b.text).join('\n').trim();
+      if (res.stop_reason !== 'max_tokens' && res.cut_off !== true) break;
+      if (attempt >= 1) throw new Error('the summary was cut off by the output limit, so it was not used');
+      budget *= 2;
+    }
     if (!text) throw new Error('the model returned an empty summary');
     summary = text;
   }

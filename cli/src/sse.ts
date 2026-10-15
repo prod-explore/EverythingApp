@@ -26,6 +26,9 @@ export type SSEEventName =
   | 'provider:retry'
   | 'keepalive';
 
+/** Bytes a single event-stream client may have waiting before it is dropped. */
+const MAX_CLIENT_BACKLOG = 1024 * 1024;
+
 export class SSEManager {
   private clients = new Map<string, Set<Response>>();
 
@@ -69,6 +72,11 @@ export class SSEManager {
     for (const res of bucket) {
       try {
         res.write(payload);
+        // A client on a dead connection never drains its buffer; cut it loose (it resyncs through /status on reconnect).
+        if (res.writableLength > MAX_CLIENT_BACKLOG) {
+          this.removeClient(conversationId, res);
+          res.destroy();
+        }
       } catch {
         this.removeClient(conversationId, res);
       }

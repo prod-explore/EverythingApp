@@ -30,10 +30,9 @@ export function migrateSessions(db: Db): void {
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
+/** Compares digests, so neither the content nor the length of the secret shows in the response time. */
 function safeEqual(a: string, b: string): boolean {
-  const x = Buffer.from(a);
-  const y = Buffer.from(b);
-  return x.length === y.length && timingSafeEqual(x, y);
+  return timingSafeEqual(createHash('sha256').update(a).digest(), createHash('sha256').update(b).digest());
 }
 
 export function parseCookies(header: string | undefined): Record<string, string> {
@@ -143,6 +142,8 @@ export interface Auth {
   middleware: RequestHandler;
   isBearerValid: (header: string | undefined) => boolean;
   isCookieValid: (cookieHeader: string | undefined) => boolean;
+  /** Stops the expired-session purge timer. */
+  dispose: () => void;
 }
 
 function isSecureRequest(req: Request): boolean {
@@ -159,7 +160,8 @@ export function createAuth(opts: AuthOptions): Auth {
   const limiter = new LoginLimiter();
   const password = opts.password ?? opts.authToken;
   sessions.purgeExpired();
-  setInterval(() => sessions.purgeExpired(), 6 * 60 * 60 * 1000).unref();
+  const purgeTimer = setInterval(() => sessions.purgeExpired(), 6 * 60 * 60 * 1000);
+  purgeTimer.unref();
 
   const isBearerValid = (header: string | undefined) => !!header && safeEqual(header, `Bearer ${opts.authToken}`);
   const isCookieValid = (cookies: string | undefined) => sessions.verify(parseCookies(cookies)[SESSION_COOKIE]);
@@ -220,5 +222,5 @@ export function createAuth(opts: AuthOptions): Auth {
     res.status(401).json({ error: 'unauthorized' });
   };
 
-  return { sessions, routes, middleware, isBearerValid, isCookieValid };
+  return { sessions, routes, middleware, isBearerValid, isCookieValid, dispose: () => clearInterval(purgeTimer) };
 }
