@@ -11,10 +11,9 @@ import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
-import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
+import { resolveWorkspacePath, writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
 import { assertStrongSecret } from './secret-check.js';
-import { PushService } from './push.js';
 import { searchMessages, exportMarkdown } from './search.js';
 import { backgroundModel, generateTitle } from './background.js';
 import { generateDailySummary } from './gazeta.js';
@@ -35,7 +34,7 @@ import { AgentManager } from './agents.js';
 import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
 import { OrchestratorSupervisorClient, SupervisorExec, guessMime, type SandboxExec } from './supervisor-client.js';
 import { GitHubCredentials } from './github.js';
-import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
+import { createGithubRoutes, latestOwnerConversation } from './github-routes.js';
 import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
 import { createWebRoutes } from './web-routes.js';
 import { buildWebTools, PageCache, WEB_TOOLS_PROMPT } from './web/tools.js';
@@ -44,7 +43,7 @@ import type { McpConnectionLike } from './mcp-client.js';
 import { attachLiveViewProxy } from './liveview-proxy.js';
 import {
   GHOST_IMMUTABLE_CODE, GHOST_MODEL_CODE, GHOST_MOVE_CODE, GHOST_PROMPT,
-  assertLocalModel, gazetaPushPayload, ghostConnectorNames, ghostModelProblem,
+  assertLocalModel, ghostConnectorNames, ghostModelProblem,
 } from './ghost.js';
 import { createAuth, type Auth } from './session.js';
 import { pruneHistory, retentionMonths } from './retention.js';
@@ -83,7 +82,6 @@ import {
   logApprovalAudit,
   expireGazetaItem,
   createGazetaItem,
-  onGazetaItemCreated,
   listSkills,
   getSkill,
   createSkill,
@@ -92,10 +90,9 @@ import {
   getConversationSkills,
   attachSkill,
   detachSkill,
-  createArtifact, getArtifactsTotalBytes,
-  listArtifacts,
+  createArtifact,
   getArtifact,
-  deleteArtifact,
+  listPins, addPin, removePin,
   listSubagentRuns,
   getSubagentRun,
   createProject,
@@ -354,7 +351,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   const lastConvForProject = new Map<string, string>();
   const github = createGithubRoutes({
     db, approvalGate, credentials: new GitHubCredentials(router.vault), sandbox: sandboxExec,
-    activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestProjectConversation(db, projectId),
+    activeConversationFor: projectId => lastConvForProject.get(projectId) ?? latestOwnerConversation(db, projectId),
   });
 
   // request_human_input / spawn_agent are orchestrator-executed virtual tools (see VirtualTool in
@@ -506,18 +503,22 @@ ${formatHumanResponse(response)}` };
   }
 
   /**
-   * Text-file tools: no approval (see file-tools.ts). Only chats that have a sandbox have a workspace. The main
+   * Text-file tools: no approval (see file-tools.ts). Every chat has a workspace. The main
    * assistant and its subagents get the same tools — a worker that has to edit through the shell would need an
    * approval per command for what the user never wants to approve.
    */
   function workspaceFileTools(convId: string | null, runId: string): VirtualTool[] {
     const conv = convId ? getConversation(db, convId) : null;
-    if (!convId || !conv?.sandboxEnabled) return [];
+    if (!convId || !conv) return [];
     return fileTools({
       owner: conv.projectId ?? convId,
       sandbox: sandboxExec,
       readFile: (o, p) => supervisor.readFile(o, p),
       onWrite: w => logApprovalAudit(db, { action: 'agent_file_edit', toolLabel: `${w.action} ${w.path}`, toolArgs: JSON.stringify({ bytes: w.bytes }), conversationId: convId, runId }),
+      pins: {
+        add: (path, note) => { addPin(db, conv.projectId ?? convId, path, note); sse.emit(convId, 'pins:changed', { owner: conv.projectId ?? convId }); },
+        remove: path => { const gone = removePin(db, conv.projectId ?? convId, path); if (gone) sse.emit(convId, 'pins:changed', { owner: conv.projectId ?? convId }); return gone; },
+      },
     });
   }
 
@@ -675,7 +676,7 @@ ${formatHumanResponse(response)}` };
   // ─── Settings ─────────────────────────────────────────────────────────────
   // The free-form settings the UI edits. Everything else in the settings table (web search config, push keys, model
   // slots, bookkeeping) has its own route with its own validation, or is not the client's to write.
-  const GENERAL_SETTINGS: readonly string[] = ['global_system_prompt', 'custom_instructions'];
+  const GENERAL_SETTINGS: readonly string[] = ['custom_instructions'];
   app.get('/api/settings', (_req, res) => {
     const all = getAllSettings(db);
     res.json({ settings: Object.fromEntries(GENERAL_SETTINGS.filter(k => k in all).map(k => [k, all[k]])) });
@@ -811,7 +812,7 @@ ${formatHumanResponse(response)}` };
   };
 
   app.post('/api/conversations', (req, res) => {
-    const { title, projectId, systemPrompt, sandboxEnabled } = req.body ?? {};
+    const { title, projectId, systemPrompt } = req.body ?? {};
     let { model } = req.body ?? {};
     if (refusesAsChatModel(model)) { res.status(400).json({ error: `"${model}" can't be used for chat (not a chat model, or no tool calls)` }); return; }
     let project: ReturnType<typeof getProject> = null;
@@ -829,7 +830,7 @@ ${formatHumanResponse(response)}` };
       const problem = ghostModelProblem(model);
       if (problem) { res.status(400).json({ error: problem, code: GHOST_MODEL_CODE }); return; }
     }
-    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, sandboxEnabled, ghost });
+    const { id } = createConversation(db, { title, projectId: projectId ?? undefined, systemPrompt, model, ghost });
     res.status(201).json({ id, ghost });
   });
 
@@ -872,29 +873,6 @@ ${formatHumanResponse(response)}` };
     const ok = deleteConversation(db, req.params.id);
     if (!ok) { res.status(404).json({ error: 'conversation not found' }); return; }
     res.json({ ok: true });
-  });
-
-  // ─── Web Push (urgent Gazeta items) ───────────────────────────────────────
-  const push = new PushService(db, router.vault);
-  const offPush = onGazetaItemCreated(item => {
-    // What a ghost chat asks stays in the app: the notification says only that something is waiting.
-    if (item.urgent) void push.notify(gazetaPushPayload(item));
-  });
-  app.get('/api/push/key', (_req, res) => {
-    const publicKey = push.publicKey();
-    if (!publicKey) { res.status(503).json({ error: 'Push needs KEY_VAULT_SECRET to be set on the server.' }); return; }
-    res.json({ publicKey, subscriptions: push.count() });
-  });
-  app.post('/api/push/subscribe', (req, res) => {
-    try { push.subscribe(req.body?.subscription); res.json({ ok: true }); }
-    catch (err) { res.status(400).json({ error: (err as Error).message }); }
-  });
-  app.post('/api/push/unsubscribe', (req, res) => {
-    if (typeof req.body?.endpoint === 'string') push.unsubscribe(req.body.endpoint);
-    res.json({ ok: true });
-  });
-  app.post('/api/push/test', async (_req, res) => {
-    res.json({ ok: true, sent: await push.notify({ title: 'EverythingApp', body: 'Push notifications work.' }) });
   });
 
   app.get('/api/search', (req, res) => {
@@ -1031,30 +1009,28 @@ ${formatHumanResponse(response)}` };
         const unregisterRoot = agents.registerRoot(rootRun.id, controller);
         releaseRoot = unregisterRoot;
         activeRootRun.set(convId, rootRun.id);
-        if (conv.projectId) lastConvForProject.set(conv.projectId, convId);
-        if (conv.sandboxEnabled) {
+        lastConvForProject.set(conv.projectId ?? convId, convId);
+        {
           // Checkpoint the workspace before the turn (rollback point), and refresh sandbox git wiring.
           // Best-effort and bounded: a supervisor hiccup must not block the chat.
           const owner = conv.projectId ?? convId;
           await Promise.race([
             Promise.allSettled([
               supervisor.checkpoint(owner, `before: ${goalText.slice(0, 60)}`),
-              conv.projectId ? github.ensureSandboxGit(conv.projectId) : Promise.resolve(),
+              github.ensureSandboxGit(owner),
             ]),
             new Promise(r => setTimeout(r, 15_000)),
           ]);
         }
-        // `||` not `??`: an empty-string setting (e.g. global_system_prompt
-        // saved as "" from the Settings UI) must fall through to the default
-        // too — `??` only catches null/undefined.
-        let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
+        // `||` not `??`: an empty per-chat prompt falls through to the default too.
+        let effectiveSystem = withModelIdentity(conv.systemPrompt || DEFAULT_SYSTEM_PROMPT, effectiveModel);
 
         // Settings → "custom instructions" (how the user wants answers), the working-style note, and the
         // project's own instruction file.
         const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
         if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
         effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
-        if (conv.sandboxEnabled) {
+        {
           // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
           const agentsFile = await Promise.race([
             supervisor.readFile(conv.projectId ?? convId, `/workspace/${AGENTS_FILE}`).then(b => b.toString('utf8')).catch(() => ''),
@@ -1589,26 +1565,12 @@ ${formatHumanResponse(response)}`;
     res.json({ ok: true });
   });
 
-  // ─── §6b Chunk B: Artifacts ───────────────────────────────────────────────
-  // Files are stored under EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/).
-  // The DB row holds only metadata; the file content is served directly from disk.
-  // Artifact file writes happen via POST /api/artifacts (browser agent, subagent, etc.).
-  // Artifact file reads  happen via GET  /api/artifacts/:id/file  (inline display in the UI).
+  // ─── Report snapshots ─────────────────────────────────────────────────────
+  // The copy of a workspace file a Gazeta report was posted with (see snapshotFiles). The DB row holds only metadata; the
+  // bytes are served from EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/). Files the user wants at hand
+  // are pins of the workspace (below), not copies.
   const artifactsDir = process.env['EVERYTHINGAPP_ARTIFACTS_DIR']
     ?? path.join(os.homedir(), '.everythingapp', 'artifacts');
-
-  app.get('/api/artifacts', (req, res) => {
-    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : undefined;
-    res.json({ artifacts: listArtifacts(db, convId) });
-  });
-
-  app.get('/api/conversations/:id/artifacts', (req, res) => {
-    res.json({ artifacts: listArtifacts(db, req.params.id) });
-  });
-
-  // Pi-sized limits: one upload is buffered in RAM, and the whole store is capped.
-  const artifactMaxBytes = Number(process.env['ARTIFACT_MAX_BYTES'] ?? 25 * 1024 * 1024);
-  const artifactQuotaBytes = Number(process.env['ARTIFACT_QUOTA_BYTES'] ?? 2 * 1024 * 1024 * 1024);
 
   // On-disk name: id + an ASCII-safe filename (portable across filesystems); legacy files used the raw name.
   const artifactPath = (a: { id: string; filename: string }) => {
@@ -1617,51 +1579,11 @@ ${formatHumanResponse(response)}`;
     return !fs.existsSync(safe) && fs.existsSync(legacy) ? legacy : safe;
   };
 
-  app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), async (req, res) => {
-    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
-    const filename = sanitizeFilename(typeof req.query['filename'] === 'string' ? req.query['filename'] : 'artifact');
-    const mimeType = req.headers['content-type'] ?? 'application/octet-stream';
-    const source = typeof req.query['source'] === 'string' ? req.query['source'] : 'upload';
-    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-
-    if (getArtifactsTotalBytes(db) + body.length > artifactQuotaBytes) {
-      res.status(413).json({ error: 'artifact storage quota exceeded — delete some artifacts first' });
-      return;
-    }
-    fs.mkdirSync(artifactsDir, { recursive: true });
-
-    const artifact = createArtifact(db, {
-      conversationId: convId,
-      filename,
-      mimeType,
-      sizeBytes: body.length,
-      source,
-    });
-
-    try {
-      await fs.promises.writeFile(artifactPath(artifact), body);
-    } catch (err) {
-      deleteArtifact(db, artifact.id); // no row without its file
-      console.error(`[artifacts] could not write ${artifact.id}: ${(err as Error).message}`);
-      res.status(500).json({ error: 'could not store the file' });
-      return;
-    }
-
-    if (convId) sse.emit(convId, 'artifact:new', artifact);
-    res.status(201).json(artifact);
-  });
-
-  app.get('/api/artifacts/:id', (req, res) => {
-    const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    res.json(artifact);
-  });
-
   app.get('/api/artifacts/:id/file', (req, res) => {
     const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    if (!artifact) { res.status(404).json({ error: 'snapshot not found' }); return; }
     const filePath = artifactPath(artifact);
-    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'artifact file not found on disk' }); return; }
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'snapshot file not found on disk' }); return; }
     // Never serve a client-chosen MIME type from the app's origin (see artifact-http.ts).
     const policy = servePolicy(artifact.mimeType);
     res.setHeader('Content-Type', policy.contentType);
@@ -1671,13 +1593,26 @@ ${formatHumanResponse(response)}`;
     res.sendFile(filePath);
   });
 
-  app.delete('/api/artifacts/:id', (req, res) => {
-    const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    const filePath = artifactPath(artifact);
-    try { fs.unlinkSync(filePath); } catch { /* file already gone — don't fail */ }
-    const ok = deleteArtifact(db, req.params.id);
-    res.json({ ok });
+  // ─── Pins: files of a workspace kept at hand (the top of the Files panel) ─────
+  app.get('/api/workspace/:owner/pins', (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    res.json({ pins: listPins(db, owner) });
+  });
+
+  app.post('/api/workspace/:owner/pins', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    let filePath: string;
+    try { filePath = resolveWorkspacePath(String(req.body?.path ?? '')); } catch (err) { res.status(400).json({ error: (err as Error).message }); return; }
+    try { await supervisor.readFile(owner, filePath); } catch { res.status(404).json({ error: 'no such file in the workspace' }); return; }
+    res.status(201).json(addPin(db, owner, filePath, typeof req.body?.note === 'string' ? req.body.note : null));
+  });
+
+  app.delete('/api/workspace/:owner/pins', (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner || typeof req.query['path'] !== 'string') { res.status(400).json({ error: 'owner and path required' }); return; }
+    res.json({ ok: removePin(db, owner, req.query['path']) });
   });
 
   // ─── §6b Chunk B: Subagent runs ──────────────────────────────────────────
@@ -1939,7 +1874,6 @@ ${formatHumanResponse(response)}`;
     auth.dispose();
     clearInterval(digestInterval);
     clearInterval(pruneInterval);
-    offPush();
     clearInterval(keepaliveInterval);
   }
 

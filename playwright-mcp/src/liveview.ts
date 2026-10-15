@@ -46,6 +46,7 @@ const JPEG_QUALITY = 60; // balance between latency and clarity on mobile
 type ClientMsg =
   | { type: 'open'; url?: string }
   | { type: 'takeover'; active: boolean }
+  | { type: 'close' }
   | { type: 'mouse'; action: 'move' | 'down' | 'up'; x: number; y: number; button?: 'left' | 'right' | 'middle' }
   | { type: 'keyboard'; action: 'down' | 'up' | 'press'; key: string }
   | { type: 'scroll'; x: number; y: number; deltaX: number; deltaY: number };
@@ -242,6 +243,13 @@ async function handleClientMessage(
 
   if (msg.type === 'takeover') {
     client.takeover = msg.active;
+    return;
+  }
+
+  // The person ends the session (the agent's browser_close does the same): the tab, its pages and its profile go away.
+  if (msg.type === 'close') {
+    client.takeover = false;
+    await pool.close(client.convId, 'closed by the user');
     return;
   }
 

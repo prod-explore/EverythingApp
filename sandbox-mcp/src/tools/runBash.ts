@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ok, fail, ownerIds, ownerOf, MAX_COMMAND_MS, ToolContext } from './types.js';
-import { checkApprovalGate } from '../approval.js';
 import type { TerminalRunResult } from '../supervisor-client.js';
 
 /** Turns a supervisor result into the text the model sees. Pure, so it can be tested without a server. */
@@ -30,7 +29,7 @@ export function registerRunBash(server: McpServer, { config, supervisor }: ToolC
       `A command is limited to ${Math.round(MAX_COMMAND_MS / 1000)}s; if it times out the terminal is killed. ` +
       'For long-running processes (dev servers, builds, watchers) start them in the background, e.g. `nohup npm run dev > dev.log 2>&1 &`, ' +
       'and check on them with `tail dev.log`. Stdin is not available: commands cannot prompt for input. ' +
-      'Requires approval before execution; every command is logged.',
+      'Every command is logged.',
     {
       command: z.string().describe('The shell command to run (any bash, multi-line allowed).'),
       terminal: z
@@ -48,8 +47,6 @@ export function registerRunBash(server: McpServer, { config, supervisor }: ToolC
       ...ownerIds,
     },
     async args => {
-      const gate = checkApprovalGate('run_bash', config.autoApproveTools);
-      if (gate.decision === 'deny') return fail(gate.reason);
 
       const timeoutMs = Math.min(args.timeout_ms ?? config.sandboxTimeoutMs, MAX_COMMAND_MS);
       try {

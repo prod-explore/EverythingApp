@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Monitor, Hand, X, Loader, Globe } from 'lucide-react';
+import { Monitor, Hand, X, Loader, Globe, Power } from 'lucide-react';
 
 /**
  * §6b Chunk B: Live-view panel for an active browser session.
@@ -18,7 +18,7 @@ import { Monitor, Hand, X, Loader, Globe } from 'lucide-react';
  * start one without asking the agent to call browser_open.
  *
  * Layout: the frame is scaled to fit (object-contain) whatever size the panel has. When the browser
- * is the only panel in the dock it fills the full height; otherwise it has a drag-resizable height.
+ * is the only panel in the dock it takes the frame's own 16:9 shape at full width (no black bars); otherwise it has a drag-resizable height.
  */
 
 function liveViewUrl(conversationId: string): string {
@@ -227,7 +227,7 @@ export function BrowserPanel({
 
   return (
     <div
-      className={`flex w-full flex-col overflow-hidden border-b border-border bg-bg ${fill ? 'min-h-0 flex-1' : 'shrink-0'}`}
+      className="flex w-full shrink-0 flex-col overflow-hidden border-b border-border bg-bg"
       style={fill ? undefined : { height }}
     >
       {/* Toolbar */}
@@ -251,17 +251,28 @@ export function BrowserPanel({
             {takeover ? 'In control' : 'Take control'}
           </button>
         )}
+        {connected && status.session && (
+          <button
+            onClick={() => { setTakeover(false); sendEvent({ type: 'close' }); }}
+            title="End the browser session (closes the tab and forgets everything in it)"
+            className="flex items-center gap-1 rounded-button border border-border px-2 py-0.5 text-xs font-medium text-fg-tertiary transition-colors hover:border-danger/50 hover:text-danger"
+          >
+            <Power size={11} />
+            Close browser
+          </button>
+        )}
         <button
           onClick={onClose}
           className="text-fg-tertiary hover:text-fg-secondary"
-          aria-label="Close browser panel"
+          aria-label="Hide browser panel"
+          title="Hide the panel (the session keeps running)"
         >
           <X size={14} />
         </button>
       </div>
 
       {/* Live view */}
-      <div className="relative min-h-0 flex-1 bg-black">
+      <div className={`relative bg-black ${fill ? 'aspect-video w-full' : 'min-h-0 flex-1'}`}>
         {unavailable && (
           <div className="flex h-full min-h-24 items-center justify-center px-4 text-center text-xs text-fg-tertiary">
             Live view is unavailable — the browser service is not reachable or not configured.

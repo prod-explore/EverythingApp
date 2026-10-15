@@ -66,7 +66,7 @@ export function ChatStatus({ api, running }: { api: ConversationStateApi; runnin
   return (
     <>
       <TodoPanel api={api} />
-      <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-3 gap-y-1 px-3 pt-2 text-xs text-fg-tertiary">
+      <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-xs text-fg-tertiary">
         {s.effortSupported && (
           <label className="flex items-center gap-1" title="How hard the model thinks before answering">
             Effort

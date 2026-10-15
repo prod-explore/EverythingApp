@@ -52,14 +52,6 @@ export function ghostConnectorNames(env: NodeJS.ProcessEnv = process.env): strin
   return raw.split(',').map(s => s.trim()).filter(Boolean);
 }
 
-/** The text of a push notification for something that came from a ghost chat: it says nothing about the content. */
-export const GHOST_PUSH = { title: 'EverythingApp', body: 'A private chat needs your attention.' } as const;
-
-/** What a push notification for an inbox item contains. */
-export function gazetaPushPayload(item: { title: string; description?: string | null; ghost: boolean }): { title: string; body?: string; url: string } {
-  return item.ghost ? { ...GHOST_PUSH, url: '/' } : { title: item.title, body: item.description ?? undefined, url: '/' };
-}
-
 /** What the model is told in a ghost chat, so it does not try to reach out. */
 export const GHOST_PROMPT =
   'This is a ghost chat: everything stays on this machine. You have no internet access here — no web search, no page fetching, no browser — and you only see local tools. ' +

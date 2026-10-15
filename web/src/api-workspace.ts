@@ -40,6 +40,14 @@ export function saveWorkspaceFile(owner: string, path: string, content: string):
   return request(`/api/workspace/${owner}/file`, { method: 'PUT', body: JSON.stringify({ path, content }) });
 }
 
+export interface WorkspacePin { path: string; note: string | null; createdAt: string }
+
+export const workspacePins = {
+  list: (owner: string) => request<{ pins: WorkspacePin[] }>(`/api/workspace/${owner}/pins`).then(r => r.pins),
+  add: (owner: string, path: string) => request<WorkspacePin>(`/api/workspace/${owner}/pins`, post({ path })),
+  remove: (owner: string, path: string) => request<{ ok: boolean }>(`/api/workspace/${owner}/pins?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
+};
+
 export function listCheckpoints(owner: string): Promise<{ checkpoints: Checkpoint[] }> {
   return request(`/api/workspace/${owner}/checkpoints`);
 }

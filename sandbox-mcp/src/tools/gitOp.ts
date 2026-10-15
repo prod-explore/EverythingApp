@@ -1,7 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { ok, fail, ownerIds, ownerOf, ToolContext } from './types.js';
-import { checkApprovalGate } from '../approval.js';
 
 // Whitelist: only subcommands useful for coding agent work.
 // `push` is deliberately excluded — use the GitHub connector (github-mcp-server)
@@ -42,8 +41,6 @@ export function registerGitOp(server: McpServer, { config, supervisor }: ToolCon
       ...ownerIds,
     },
     async ({ subcommand, args = [], ...ids }: { subcommand: GitSubcommand; args?: string[]; _conversation_id?: string; _project_id?: string }) => {
-      const gate = checkApprovalGate('git_op', config.autoApproveTools);
-      if (gate.decision === 'deny') return fail(gate.reason);
 
       const owner = ownerOf(ids);
 

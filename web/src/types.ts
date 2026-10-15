@@ -18,7 +18,6 @@ export interface Conversation {
   model: string | null;
   /** What the next turn will actually use: the conversation's own model, else the default. Set by the server. */
   effectiveModel?: string;
-  sandboxEnabled: boolean;
   /** Ghost chat (own flag or its project's). Never changes. */
   ghost?: boolean;
   createdAt: string;
@@ -343,17 +342,7 @@ export interface ProviderRetry {
   remainingMs: number;
 }
 
-// ─── §6b Chunk B: Artifacts & Subagent runs ──────────────────────────────────
-
-export interface ArtifactRow {
-  id: string;
-  conversationId: string | null;
-  filename: string;
-  mimeType: string;
-  sizeBytes: number;
-  source: string;
-  createdAt: string;
-}
+// ─── Subagent runs ───────────────────────────────────────────────────────────
 
 // ─── N6/N7: durable runs (Agents-lite) — mirrors cli/src/runs.ts ─────────────
 

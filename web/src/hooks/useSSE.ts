@@ -132,7 +132,7 @@ const SIDE_EVENTS = [
   'conversation:titled',
   'approval:resolved',
   'provider:retry',
-  'artifact:new',
+  'pins:changed',
   'agent:spawned',
   'agent:finished',
   'agent:budget_warning',

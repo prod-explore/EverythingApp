@@ -721,10 +721,11 @@ describe('server: AGENTS.md', () => {
       rs.end('{}');
     });
     await new Promise<void>(r => supervisor.listen(0, r));
+    const prevSupervisorUrl = process.env['SUPERVISOR_URL'];
     process.env['SUPERVISOR_URL'] = `http://127.0.0.1:${(supervisor.address() as AddressInfo).port}`;
     const t = await boot({ script: () => msg([text('ok')], 'end_turn') });
     try {
-      const sandboxed = (await req(t.port, 'POST', '/api/conversations', { model: '@t/m', sandboxEnabled: true })).json.id as string;
+      const sandboxed = (await req(t.port, 'POST', '/api/conversations', { model: '@t/m' })).json.id as string;
       await req(t.port, 'POST', `/api/conversations/${sandboxed}/message`, { text: 'hi' });
       await done(t.db, sandboxed, 2);
       assert.match(String(t.seen[0]!.system), /Project instructions \(from AGENTS\.md[^)]*\)[\s\S]*Use tabs\. Run npm test/);
@@ -733,16 +734,10 @@ describe('server: AGENTS.md', () => {
       await req(t.port, 'POST', `/api/conversations/${sandboxed}/message`, { text: 'again' });
       await done(t.db, sandboxed, 4);
       assert.equal(String(t.seen[1]!.system).includes('Project instructions'), false);
-
-      // chats without a sandbox never ask for the file
-      const before = asked.length;
-      await req(t.port, 'POST', `/api/conversations/${t.conv}/message`, { text: 'plain' });
-      await done(t.db, t.conv, 2);
-      assert.equal(asked.length, before);
     } finally {
       t.stop();
       supervisor.close();
-      delete process.env['SUPERVISOR_URL'];
+      if (prevSupervisorUrl === undefined) delete process.env['SUPERVISOR_URL']; else process.env['SUPERVISOR_URL'] = prevSupervisorUrl;
     }
   });
 });

@@ -55,8 +55,19 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
             <span className="truncate text-xs font-medium text-fg" title={m.description || m.label}>{m.label}</span>
             {m.toolSchemaMode === 'none' && <span className="rounded bg-bg-tertiary px-1 text-[10px] text-danger" title="No tool calls — this model is not offered for chat">no tools</span>}
           </div>
-          <code className="block truncate text-[11px] text-fg-tertiary">{m.upstream}</code>
+          <code className="block truncate text-[11px] text-fg-tertiary" title="The id the provider knows this model by">{m.id === m.upstream ? m.id : `${m.id} → ${m.upstream}`}</code>
         </div>
+        {m.source === 'manual' && (
+          <button
+            onClick={() => void removeModel(m.id).then(onChanged).catch(e => setError((e as Error).message))}
+            className="rounded p-1 text-fg-tertiary hover:text-danger"
+            aria-label={`Remove ${m.id}`}
+          >
+            <Trash2 size={12} />
+          </button>
+        )}
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-2 pl-6">
         <select
           value={m.kind}
           onChange={e => void patch({ kind: e.target.value as ModelKind })}
@@ -99,15 +110,6 @@ function ModelRow({ m, onChanged }: { m: CatalogModelRow; onChanged: () => void 
           <input type="checkbox" checked={m.supportsEffort === true} onChange={e => void patch({ supportsEffort: e.target.checked })} aria-label={`Reasoning effort for ${m.id}`} />
           effort
         </label>
-        {m.source === 'manual' && (
-          <button
-            onClick={() => void removeModel(m.id).then(onChanged).catch(e => setError((e as Error).message))}
-            className="rounded p-1 text-fg-tertiary hover:text-danger"
-            aria-label={`Remove ${m.id}`}
-          >
-            <Trash2 size={12} />
-          </button>
-        )}
       </div>
       {error && <p className="mt-1 text-xs text-danger">{error}</p>}
     </li>

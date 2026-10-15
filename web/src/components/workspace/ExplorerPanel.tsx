@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ArrowLeft, File, FileText, Folder, FolderTree, History, Image, Link2, Pencil, RotateCcw } from 'lucide-react';
-import { fetchWorkspaceFile, listCheckpoints, listWorkspaceFiles, rollbackWorkspace, saveWorkspaceFile } from '../../api-workspace';
+import { ArrowLeft, File, FileText, Folder, FolderTree, History, Image, Link2, Pencil, Pin, PinOff, RotateCcw } from 'lucide-react';
+import { fetchWorkspaceFile, listCheckpoints, listWorkspaceFiles, rollbackWorkspace, saveWorkspaceFile, workspacePins, type WorkspacePin } from '../../api-workspace';
 import type { Checkpoint, WorkspaceEntry, WorkspaceListing } from '../../types-workspace';
 import { DockPanel, PanelMessage } from '../shared/DockPanel';
 
@@ -27,13 +27,25 @@ function EntryIcon({ e }: { e: WorkspaceEntry }) {
  * while the sandbox is stopped. Preview: text/markdown/images only, everything else downloads. A text file opens read-only;
  * the pencil switches to the editor (saving needs no approval — a checkpoint is taken first).
  * Checkpoints: one per agent turn; rollback restores the workspace to that point.
+ * Pins: the files you (or the agent) keep at hand sit at the top of the list. A pin only points at the file in the workspace,
+ * so it always opens the current version.
  */
-export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () => void }) {
+export function ExplorerPanel({ owner, onClose, pinsRefresh = 0 }: { owner: string; onClose: () => void; /** Bumped when the agent pins or unpins a file. */ pinsRefresh?: number }) {
   const [path, setPath] = useState(ROOT);
   const [listing, setListing] = useState<WorkspaceListing | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ path: string; url: string; type: string; text?: string; size: number } | null>(null);
   const [tab, setTab] = useState<'files' | 'checkpoints'>('files');
+  const [pins, setPins] = useState<WorkspacePin[]>([]);
+  const loadPins = useCallback(() => { workspacePins.list(owner).then(setPins).catch(() => { /* pins are a convenience: the files still list */ }); }, [owner]);
+  useEffect(loadPins, [loadPins, pinsRefresh]);
+  const isPinned = (p: string) => pins.some(x => x.path === p);
+  async function togglePin(p: string) {
+    try {
+      if (isPinned(p)) await workspacePins.remove(owner, p); else await workspacePins.add(owner, p);
+      loadPins();
+    } catch (e) { setError((e as Error).message); }
+  }
   // Editing: `draft` is null while just viewing. Saving takes a checkpoint first (server side), so it is undoable.
   const [draft, setDraft] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -125,6 +137,9 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
                 <button onClick={() => { setDraft(null); setSaveError(null); }} className="text-fg-secondary underline hover:text-fg">Cancel</button>
               </>
             )}
+            <button onClick={() => void togglePin(preview.path)} className="rounded p-1 text-fg-secondary hover:bg-bg-secondary hover:text-fg" aria-label={isPinned(preview.path) ? 'Unpin file' : 'Pin file'} title={isPinned(preview.path) ? 'Unpin' : 'Pin to the top of Files'}>
+              {isPinned(preview.path) ? <PinOff size={14} /> : <Pin size={14} />}
+            </button>
             <a href={preview.url} download={preview.path.split('/').pop()} className="text-fg-tertiary underline hover:text-fg">Download</a>
           </div>
           {saveError && <p role="alert" className="border-b border-border px-3 py-1 text-xs text-danger">{saveError}</p>}
@@ -150,6 +165,25 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
         </div>
       ) : (
         <div>
+          {pins.length > 0 && (
+            <section aria-label="Pinned files" className="border-b border-border py-1">
+              <h3 className="flex items-center gap-1 px-3 py-1 text-[11px] font-medium text-fg-tertiary"><Pin size={11} /> Pinned</h3>
+              <ul>
+                {pins.map(pin => (
+                  <li key={pin.path} className="group flex items-center hover:bg-bg-secondary">
+                    <button onClick={() => void openFile(pin.path)} className="flex min-w-0 flex-1 items-center gap-2 px-3 py-1 text-left text-xs text-fg" title={pin.path}>
+                      <FileText size={14} className="shrink-0 text-fg-secondary" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate">{pin.path.split('/').pop()}</span>
+                        <span className="block truncate text-[11px] text-fg-tertiary">{pin.note ?? pin.path.replace(/^\/workspace\//, '')}</span>
+                      </span>
+                    </button>
+                    <button onClick={() => void togglePin(pin.path)} className="mr-2 rounded p-1 text-fg-tertiary hover:text-fg" aria-label={`Unpin ${pin.path}`} title="Unpin"><PinOff size={12} /></button>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           <nav className="flex flex-wrap items-center gap-0.5 border-b border-border px-3 py-1.5 text-xs" aria-label="Path">
             {crumbs.map((c, i) => {
               const target = '/' + crumbs.slice(0, i + 1).join('/');
@@ -182,6 +216,7 @@ export function ExplorerPanel({ owner, onClose }: { owner: string; onClose: () =
                   <EntryIcon e={e} />
                   <span className="min-w-0 flex-1 truncate">{e.name}</span>
                   {e.type === 'file' && <span className="shrink-0 text-fg-tertiary">{formatSize(e.size)}</span>}
+                  {e.type === 'file' && isPinned(e.path) && <Pin size={11} className="shrink-0 text-fg-tertiary" aria-label="Pinned" />}
                 </button>
               </li>
             ))}

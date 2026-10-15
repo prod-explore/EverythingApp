@@ -1,7 +1,6 @@
 import { useState } from 'react';
 import { logout } from '../../api';
 import { Modal } from '../shared/Modal';
-import { NotificationsTab } from './tabs/NotificationsTab';
 import { ConnectorsTab } from './tabs/ConnectorsTab';
 import { GitHubTab } from './tabs/GitHubTab';
 import { ModelsTab } from './tabs/ModelsTab';
@@ -9,7 +8,7 @@ import { SkillsTab } from './tabs/SkillsTab';
 import { UsageTab } from './tabs/UsageTab';
 import { WebTab } from './tabs/WebTab';
 
-export type SettingsTab = 'models' | 'usage' | 'connectors' | 'web' | 'github' | 'skills' | 'notifications' | 'account';
+export type SettingsTab = 'models' | 'usage' | 'connectors' | 'web' | 'github' | 'skills' | 'account';
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'models', label: 'Models' },
@@ -18,7 +17,6 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: 'web', label: 'Web' },
   { id: 'github', label: 'GitHub' },
   { id: 'skills', label: 'Skills' },
-  { id: 'notifications', label: 'Notifications' },
   { id: 'account', label: 'Account' },
 ];
 
@@ -65,7 +63,6 @@ export function SettingsModal({
         {activeTab === 'web' && <WebTab />}
         {activeTab === 'github' && <GitHubTab />}
         {activeTab === 'skills' && <SkillsTab conversationId={conversationId} />}
-        {activeTab === 'notifications' && <NotificationsTab />}
         {activeTab === 'account' && <AccountTab />}
       </div>
     </Modal>

@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { WebApprovalGate } from './web-approval.js';
 import { GitHubCredentials, classifyGithubPath } from './github.js';
 import { shq, type SandboxExec } from './supervisor-client.js';
-import { getProject, listProjectConversations, logApprovalAudit } from './db.js';
+import { getConversation, getProject, listProjectConversations, logApprovalAudit } from './db.js';
 
 /**
  * N4 — GitHub without functional limits (Plan v3 §7), orchestrator side:
@@ -57,6 +57,8 @@ interface ExpectedPush { projectId: string; owner: string; repo: string; until: 
 export function createGithubRoutes(deps: GithubRoutesDeps) {
   const { db, approvalGate, credentials, sandbox } = deps;
   const env = deps.env ?? process.env;
+  /** A workspace belongs to a project, or to a chat that is not in one — either id is a valid owner. */
+  const knownOwner = (id: string): boolean => Boolean(getProject(db, id) || getConversation(db, id));
   const doFetch = deps.fetchImpl ?? fetch;
   const adminToken = env['GIT_PROXY_ADMIN_TOKEN'];
   const proxyUrl = env['GIT_PROXY_URL'] ?? 'http://git-proxy:8080';
@@ -74,7 +76,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
 
   internal.get('/github-token', async (req, res) => {
     const projectId = typeof req.query['projectId'] === 'string' ? req.query['projectId'] : '';
-    if (!projectId || !getProject(db, projectId)) { res.status(404).json({ error: 'unknown project' }); return; }
+    if (!projectId || !knownOwner(projectId)) { res.status(404).json({ error: 'unknown project or chat' }); return; }
     const token = await credentials.getToken();
     if (!token) { res.status(404).json({ error: 'GitHub is not connected' }); return; }
     res.json({ token });
@@ -150,7 +152,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
 
   // Repositories that exist in the project's sandbox workspace (any git checkout up to 3 levels deep) + their origin.
   api.get('/projects/:id/scm-repos', async (req, res) => {
-    if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
+    if (!knownOwner(req.params.id)) { res.status(404).json({ error: 'project or chat not found' }); return; }
     try {
       const r = await sandbox.exec(owner(req.params.id), `cd /workspace 2>/dev/null && find . -maxdepth 3 -name .git -prune | while IFS= read -r g; do d=$(dirname "$g"); printf '%s\\t%s\\n' "$d" "$(git -C "$d" remote get-url origin 2>/dev/null)"; done`, 30_000);
       const repos = r.stdout.split('\n').filter(Boolean).map(line => {
@@ -171,7 +173,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
     const path = '/' + (Array.isArray(rest) ? rest.join('/') : String(rest ?? ''));
     const target = classifyGithubPath(path);
     if (!target) { res.status(400).json({ error: 'path not allowed' }); return; }
-    if (!getProject(db, req.params.id)) { res.status(404).json({ error: 'project not found' }); return; }
+    if (!knownOwner(req.params.id)) { res.status(404).json({ error: 'project or chat not found' }); return; }
     if (target.kind === 'account' && req.method !== 'GET') { res.status(405).json({ error: 'read-only' }); return; }
     if (!['GET', 'POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) { res.status(405).end(); return; }
     const token = await credentials.getToken();
@@ -220,8 +222,7 @@ export function createGithubRoutes(deps: GithubRoutesDeps) {
 
   const scm = express.Router({ mergeParams: true });
   scm.use((req, res, next) => {
-    const p = getProject(db, (req.params as { id: string }).id);
-    if (!p) { res.status(404).json({ error: 'project not found' }); return; }
+    if (!knownOwner((req.params as { id: string }).id)) { res.status(404).json({ error: 'project or chat not found' }); return; }
     const dir = repoDir(req.query['dir'] ?? req.body?.dir);
     if (!dir) { res.status(400).json({ error: 'invalid repository directory' }); return; }
     res.locals['dir'] = dir;
@@ -446,7 +447,7 @@ export function parseStatus(out: string): { branch: string | null; upstream: str
   return { branch, upstream, ahead, behind, files };
 }
 
-/** Most recent chat in a project (fallback for push approval cards when no turn is running). */
-export function latestProjectConversation(db: Database.Database, projectId: string): string | null {
-  return listProjectConversations(db, projectId)[0]?.id ?? null;
+/** Where a push approval card goes when no turn is running: the project's most recent chat, or the chat itself when the owner is a chat. */
+export function latestOwnerConversation(db: Database.Database, owner: string): string | null {
+  return listProjectConversations(db, owner)[0]?.id ?? (getConversation(db, owner) ? owner : null);
 }

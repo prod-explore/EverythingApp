@@ -108,7 +108,6 @@ export function createConversation(opts?: {
   projectId?: string;
   systemPrompt?: string;
   model?: string;
-  sandboxEnabled?: boolean;
   /** A ghost chat: local models only, no internet. Decided here and never changeable. */
   ghost?: boolean;
 }): Promise<{ id: string; ghost?: boolean }> {
@@ -121,7 +120,7 @@ export function getConversation(id: string): Promise<Conversation> {
 
 export function updateConversation(
   id: string,
-  patch: { title?: string; systemPrompt?: string; model?: string; sandboxEnabled?: boolean },
+  patch: { title?: string; systemPrompt?: string; model?: string },
 ): Promise<{ ok: true }> {
   return request(`/api/conversations/${id}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }
