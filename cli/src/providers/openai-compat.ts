@@ -45,6 +45,8 @@ export interface OpenAiCompatOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Longest a single request may take. Only a guard against a hung connection. Default 15 min. */
   timeoutMs?: number;
+  /** A streamed answer that goes silent (no data, not even keep-alive comments) for this long is cut off. Default 2 min. */
+  streamIdleMs?: number;
   /** How the provider is called in messages shown to a person (its label). */
   label?: string;
   maxRetries?: number;
@@ -541,6 +543,20 @@ function effortField(params: Llm.MessageCreateParamsNonStreaming, info: ModelInf
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15 * 60_000;
+const DEFAULT_STREAM_IDLE_MS = 120_000;
+
+/** reader.read() that gives up when nothing (not even an SSE comment) arrives for `idleMs`. */
+async function readWithIdleLimit(reader: ReadableStreamDefaultReader<Uint8Array>, idleMs: number, provider: string): Promise<Awaited<ReturnType<ReadableStreamDefaultReader<Uint8Array>["read"]>>> {
+  let timer: NodeJS.Timeout | undefined;
+  const stalled = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new ProviderHttpError(provider, 504, `the response stream went silent for ${Math.round(idleMs / 1000)}s`)), idleMs);
+  });
+  try {
+    return await Promise.race([reader.read(), stalled]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function linkSignals(external: AbortSignal | undefined, timeoutMs: number): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
@@ -663,6 +679,7 @@ export class OpenAiCompatClient implements LlmClient {
       ...(tools.length > 0 ? { tools, tool_choice: 'auto' } : {}),
     };
     const { signal, cleanup } = linkSignals(external, this.opts.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS);
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
     try {
       const res = await this.fetchImpl(`${this.opts.baseUrl}/chat/completions`, {
         method: 'POST',
@@ -701,11 +718,12 @@ export class OpenAiCompatClient implements LlmClient {
       let usage: OaiResponse['usage'];
       const calls: OaiToolCall[] = [];
       const decoder = new TextDecoder();
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       let buffer = '';
       let done = false;
+      const idleMs = this.opts.streamIdleMs ?? DEFAULT_STREAM_IDLE_MS;
       while (!done) {
-        const chunk = await reader.read();
+        const chunk = await readWithIdleLimit(reader, idleMs, this.name);
         if (chunk.done) break;
         buffer += decoder.decode(chunk.value, { stream: true });
         let nl: number;
@@ -742,6 +760,9 @@ export class OpenAiCompatClient implements LlmClient {
           }
         }
       }
+      // A stream that ends with neither [DONE] nor a finish reason was cut off (dropped connection, proxy reset):
+      // handing back what arrived as if it were the whole answer would silently truncate it.
+      if (!done && finish === null) throw new ProviderHttpError(this.name, 502, 'the response stream ended before the answer was complete');
       const toolCalls = calls.filter(Boolean).map((c, i) => ({ ...c, id: c.id || `call_${i}` }));
       const json = {
         id, model: model || body.model,
@@ -766,6 +787,7 @@ export class OpenAiCompatClient implements LlmClient {
       return message;
     } finally {
       cleanup();
+      void reader?.cancel().catch(() => {});
     }
   }
 

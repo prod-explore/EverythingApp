@@ -96,4 +96,26 @@ describe('OpenAI-compat streaming (N2b)', () => {
     assert.equal((msg.content[0] as Llm.TextBlock).text, 'plain');
     assert.deepEqual(bodies.map(b => b.stream), [true, false]);
   });
+  it('fails when the stream ends without [DONE] or a finish reason (cut-off answer)', async () => {
+    const c = client((async () => sse([
+      { id: 'r', model: 'm', choices: [{ delta: { content: 'half an ans' } }] },
+    ])) as typeof fetch);
+    await assert.rejects(() => c.messages.stream!(params).finalMessage(), /ended before the answer was complete/);
+  });
+
+  it('accepts a stream that has a finish reason but no [DONE]', async () => {
+    const c = client((async () => sse([
+      { id: 'r', model: 'm', choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] },
+    ])) as typeof fetch);
+    const msg = await c.messages.stream!(params).finalMessage();
+    assert.equal((msg.content[0] as Llm.TextBlock).text, 'ok');
+  });
+
+  it('cuts off a stream that goes silent', async () => {
+    const c = new OpenAiCompatClient({
+      baseUrl: 'https://x/v1', apiKey: 'k', modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0, streamIdleMs: 30,
+      fetchImpl: (async () => new Response(new ReadableStream({ start(ctl) { ctl.enqueue(new TextEncoder().encode('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')); } }), { status: 200, headers: { 'content-type': 'text/event-stream' } })) as typeof fetch,
+    });
+    await assert.rejects(() => c.messages.stream!(params).finalMessage(), /went silent/);
+  });
 });
