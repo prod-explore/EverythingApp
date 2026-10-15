@@ -14,7 +14,6 @@ import type {
   GazetaQuery,
   OutgoingAttachment,
   CatalogModelRow,
-  CompatFlavor,
   ModelKind,
   ModelLocality,
   ModelOption,
@@ -382,7 +381,6 @@ export interface NewProvider {
   slug?: string;
   label?: string;
   baseUrl?: string;
-  flavor?: CompatFlavor;
   apiKey?: string;
   keyOptional?: boolean;
   /** Everything behind this URL runs on the user's own hardware. */
@@ -391,14 +389,14 @@ export interface NewProvider {
 
 export type RefreshResult = { ok: true; count: number; added: number; removed: number } | { ok: false; error: string };
 
-/** The one way to add any provider — MindGate, Gemini, OpenRouter or a LAN server. Tests the connection and loads its models. */
+/** The one way to add any provider — a hosted API, a gateway or a LAN server. Tests the connection and loads its models. */
 export function addProvider(p: NewProvider): Promise<{ ok: true; id: string; refresh: RefreshResult | null }> {
   return request('/api/providers', { method: 'POST', body: JSON.stringify(p) });
 }
 
 export function updateProvider(
   id: ProviderId,
-  patch: Partial<{ label: string; baseUrl: string; flavor: CompatFlavor; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>,
+  patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>,
 ): Promise<{ ok: true }> {
   return request(`/api/providers/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) });
 }

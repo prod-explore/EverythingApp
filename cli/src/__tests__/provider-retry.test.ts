@@ -21,7 +21,6 @@ function client(f: typeof fetch, extra: Partial<ConstructorParameters<typeof Ope
   const sleeps: number[] = [];
   const retries: RetryInfo[] = [];
   const c = new OpenAiCompatClient({
-    flavor: 'gemini',
     baseUrl: 'https://api.example.test',
     apiKey: 'k',
     meta: { get: () => null, set: () => {} },

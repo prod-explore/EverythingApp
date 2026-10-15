@@ -1,10 +1,8 @@
-import type { CompatFlavor } from './openai-compat.js';
-
 /**
  * What the rest of the app knows about providers and models.
  *
- * Providers are all the same kind of thing: a row with a base URL, a key and a dialect (`flavor`).
- * MindGate, Gemini, OpenRouter, a LAN vLLM — no provider is special-cased outside the adapter. Models are
+ * Providers are all the same kind of thing: a row with a base URL and a key.
+ * MindGate, OpenRouter, a LAN vLLM — none is special-cased anywhere, the adapter speaks plain OpenAI chat completions. Models are
  * identified everywhere as `@<provider>/<upstream-id>`; the catalog behind them lives in SQLite
  * (see catalog.ts) and is mirrored here as a read-only snapshot so that `getModelInfo()` stays a plain
  * synchronous function for the ledger, the identity line and the adapter.
@@ -74,8 +72,6 @@ export interface ProviderRecord {
   baseUrl: string;
   /** Local servers often need no key. */
   keyOptional: boolean;
-  /** Dialect quirks the adapter applies (see openai-compat.ts); `generic` = plain OpenAI-compatible. */
-  flavor: CompatFlavor;
   enabled: boolean;
   /** Concurrent model calls for agent workers; null = default (3). Local inference: 1. */
   concurrency: number | null;

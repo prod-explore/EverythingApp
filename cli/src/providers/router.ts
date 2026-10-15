@@ -29,7 +29,6 @@ export interface ProviderStatus {
   id: ProviderId;
   label: string;
   baseUrl: string;
-  flavor: ProviderRecord['flavor'];
   enabled: boolean;
   keyOptional: boolean;
   concurrency: number | null;
@@ -68,8 +67,8 @@ export interface RouterOptions {
 /**
  * Single answer to "which client talks to model X, and does it have a key?".
  *
- * Every provider is the same thing — a base URL, a key and a dialect — so there is one code path for MindGate,
- * Gemini, OpenRouter and a LAN server alike. Keys are resolved at call time, so saving or deleting a key in
+ * Every provider is the same thing — a base URL and a key — so there is one code path for a hosted API,
+ * a gateway and a LAN server alike. Keys are resolved at call time, so saving or deleting a key in
  * Settings takes effect on the very next turn with no restart. Decrypted keys are cached in memory only until
  * that provider's key changes.
  */
@@ -140,7 +139,6 @@ export class ProviderRouter {
         id: p.slug,
         label: p.label,
         baseUrl: p.baseUrl,
-        flavor: p.flavor,
         enabled: p.enabled,
         keyOptional: p.keyOptional,
         concurrency: p.concurrency,
@@ -177,7 +175,6 @@ export class ProviderRouter {
 
   private makeClient(provider: ProviderRecord, apiKey: string, withMeta = true): OpenAiCompatClient {
     return new OpenAiCompatClient({
-      flavor: provider.flavor,
       label: provider.label,
       baseUrl: provider.baseUrl.replace(/\/+$/, ''),
       apiKey,

@@ -4,21 +4,19 @@ import type { LlmClient, MessageStreamLike } from '../llm-loop.js';
 import type { ModelInfo } from './registry.js';
 
 /**
- * Adapter for providers that speak the OpenAI chat-completions dialect (Gemini's
- * compatibility endpoint, DeepSeek, MindGate, OpenRouter, LAN servers). The app's
+ * Adapter for any server that speaks OpenAI chat-completions. It never looks at who the
+ * provider is; a server with quirks is fixed by a gateway in front of it. The app's
  * canonical message format (llm-types.ts) is what's persisted and what the tool loop
  * consumes, so this file's whole job is translating *out* to chat-completions and *back*
  * to an Llm.Message, per request. Nothing provider-specific ever reaches
  * the database or the loop except through MetaStore.
  */
 
-/** 'generic' = any OpenAI-compatible endpoint added by the user (N5): no provider-specific quirks. */
-export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
-
 /**
- * Provider state that has no slot in the message format but that the
- * provider insists on getting back (Gemini 3 thought signatures, DeepSeek
- * reasoning_content during a tool loop). Keyed by tool call id.
+ * Provider state that has no slot in the message format but that the provider insists on getting back
+ * (a tool call's `extra_content` such as Gemini's thought signature, `reasoning_content` during a tool loop).
+ * Whatever a response carries is kept as it came and sent back as it was, so no provider needs special handling here.
+ * Keyed by tool call id.
  */
 export interface MetaStore {
   get(toolCallId: string): Record<string, unknown> | null;
@@ -37,7 +35,6 @@ export class ProviderHttpError extends Error {
 }
 
 export interface OpenAiCompatOptions {
-  flavor: CompatFlavor;
   baseUrl: string;
   apiKey: string;
   /** Maps our model id to the upstream one (`@slug/x` → `x`). */
@@ -48,7 +45,7 @@ export interface OpenAiCompatOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Longest a single request may take. Only a guard against a hung connection. Default 15 min. */
   timeoutMs?: number;
-  /** How the provider is called in messages shown to a person (its label). Defaults to the dialect name. */
+  /** How the provider is called in messages shown to a person (its label). */
   label?: string;
   maxRetries?: number;
   /**
@@ -93,14 +90,6 @@ function abortableSleep(sleep: (ms: number) => Promise<void>, ms: number, signal
   });
 }
 
-/**
- * Google documents this literal for histories whose function calls were not
- * produced by Gemini (so no real signature exists) — e.g. a conversation that
- * started on Claude and was switched to Gemini mid-way. Without it Gemini 3
- * rejects the request with a 400 about a missing thought_signature.
- */
-const GEMINI_DUMMY_SIGNATURE = 'skip_thought_signature_validator';
-
 // ─── Wire types (only the fields we touch) ───────────────────────────────────
 
 type ContentPart =
@@ -111,7 +100,8 @@ interface OaiToolCall {
   id: string;
   type: 'function';
   function: { name: string; arguments: string };
-  extra_content?: { google?: { thought_signature?: string } };
+  /** Provider-specific per-call state, echoed back verbatim (Gemini keeps its thought signature here). */
+  extra_content?: Record<string, unknown>;
 }
 
 type OaiMessage =
@@ -137,7 +127,7 @@ interface OaiResponse {
       tool_calls?: Array<{
         id?: string;
         function?: { name?: string; arguments?: string };
-        extra_content?: { google?: { thought_signature?: string } };
+        extra_content?: Record<string, unknown>;
       }>;
       reasoning_content?: string | null;
       /** OpenRouter and some gateways call it `reasoning`. */
@@ -229,34 +219,7 @@ export function recoverJsonToolCalls(
   return out;
 }
 
-// ─── Schema sanitising ───────────────────────────────────────────────────────
-
-/**
- * MCP servers emit full JSON Schema (`$schema`, `additionalProperties`, …).
- * Gemini's function-declaration schema is an OpenAPI subset and historically
- * rejects keys it doesn't know; it also rejects an OBJECT with an empty
- * `properties` map, which is exactly what every no-argument tool has. Returns
- * undefined when the tool should be declared with no parameters at all.
- */
-export function sanitizeSchemaForGemini(schema: unknown): Record<string, unknown> | undefined {
-  const strip = (node: unknown): unknown => {
-    if (Array.isArray(node)) return node.map(strip);
-    if (node && typeof node === 'object') {
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
-        if (k === '$schema' || k === 'additionalProperties') continue;
-        out[k] = strip(v);
-      }
-      return out;
-    }
-    return node;
-  };
-  const cleaned = strip(schema) as Record<string, unknown> | undefined;
-  if (!cleaned || typeof cleaned !== 'object') return undefined;
-  const props = cleaned['properties'];
-  if (cleaned['type'] === 'object' && (!props || Object.keys(props as object).length === 0)) return undefined;
-  return cleaned;
-}
+// ─── Schema simplifying ──────────────────────────────────────────────────────
 
 /**
  * 'flat' tool schema mode for small models. Keeps top-level primitive parameters as they are;
@@ -332,7 +295,6 @@ function normalizeToolCallId(id: string | undefined | null): string {
 }
 
 export interface TranslateContext {
-  flavor: CompatFlavor;
   modelInfo: ModelInfo;
   meta: MetaStore;
   names: NameMap;
@@ -346,8 +308,6 @@ export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx:
   if (sys) out.push({ role: 'system', content: sys });
 
   const turnStart = currentTurnStart(params.messages);
-  // tool_use id → tool name, so Gemini tool messages can carry the function name.
-  const toolNames = new Map<string, string>();
 
   params.messages.forEach((m, idx) => {
     if (typeof m.content === 'string') {
@@ -360,9 +320,7 @@ export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx:
       const parts: ContentPart[] = [];
       for (const block of m.content) {
         if (block.type === 'tool_result') {
-          const msg: OaiMessage = { role: 'tool', tool_call_id: block.tool_use_id, content: toolResultText(block) };
-          if (ctx.flavor === 'gemini') msg.name = ctx.names.safe(toolNames.get(block.tool_use_id) ?? 'tool');
-          toolMessages.push(msg);
+          toolMessages.push({ role: 'tool', tool_call_id: block.tool_use_id, content: toolResultText(block) });
         } else if (block.type === 'text') {
           if (block.text) parts.push({ type: 'text', text: block.text });
         } else if (block.type === 'image') {
@@ -396,7 +354,6 @@ export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx:
       if (block.type === 'text') {
         if (block.text) texts.push(block.text);
       } else if (block.type === 'tool_use') {
-        toolNames.set(block.id, block.name);
         calls.push({
           id: block.id,
           type: 'function',
@@ -410,23 +367,14 @@ export function toChatMessages(params: Llm.MessageCreateParamsNonStreaming, ctx:
       msg.tool_calls = calls;
       const metas = calls.map(c => ctx.meta.get(c.id));
 
-      if (ctx.flavor === 'gemini') {
-        let anyReal = false;
-        calls.forEach((c, i) => {
-          const sig = metas[i]?.['thoughtSignature'];
-          if (typeof sig === 'string' && sig) {
-            c.extra_content = { google: { thought_signature: sig } };
-            anyReal = true;
-          }
-        });
-        // Only the first call of a parallel batch carries a signature in real Gemini output; we only
-        // need a stand-in when the message has none at all (history that didn't originate from Gemini).
-        if (!anyReal) calls[0]!.extra_content = { google: { thought_signature: GEMINI_DUMMY_SIGNATURE } };
-      }
+      calls.forEach((c, i) => {
+        const extra = metas[i]?.['extraContent'];
+        if (extra && typeof extra === 'object') c.extra_content = extra as Record<string, unknown>;
+      });
 
-      if (ctx.flavor === 'deepseek' && idx > turnStart) {
-        // Thinking mode requires the reasoning to be echoed back while a tool loop is still in
-        // progress, and rejects it (or ignores it) on earlier turns — so: current loop only.
+      if (idx > turnStart) {
+        // Thinking models want their reasoning echoed back while a tool loop is still in progress and
+        // reject (or ignore) it on earlier turns — so: current loop only.
         const reasoning = metas.map(x => x?.['reasoningContent']).find(r => typeof r === 'string' && r);
         if (typeof reasoning === 'string') msg.reasoning_content = reasoning;
       }
@@ -455,10 +403,7 @@ export function toChatTools(
         ctx.flattened.set(safeName, new Set(flat.flattened));
       }
     } else {
-      parameters =
-        ctx.flavor === 'gemini'
-          ? sanitizeSchemaForGemini(tool.input_schema)
-          : (tool.input_schema as Record<string, unknown>);
+      parameters = tool.input_schema as Record<string, unknown>;
     }
     out.push({
       type: 'function',
@@ -485,8 +430,8 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
     : (msg.content ?? '');
 
   let calls = msg.tool_calls ?? [];
-  // Local models (MindGate / custom endpoints) sometimes write the call as JSON text instead of using tool_calls.
-  if (calls.length === 0 && text && (ctx.flavor === 'mindgate' || ctx.flavor === 'generic') && ctx.names.size > 0) {
+  // Local models sometimes write the call as JSON text instead of using tool_calls.
+  if (calls.length === 0 && text && ctx.names.size > 0) {
     const recovered = recoverJsonToolCalls(text, n => ctx.names.resolve(n));
     if (recovered) {
       calls = recovered.map((r, i) => ({ id: `call_recovered_${randomUUID().replace(/-/g, '').slice(0, 12)}_${i}`, function: { name: r.name, arguments: JSON.stringify(r.arguments) } }));
@@ -529,16 +474,15 @@ export function fromChatResponse(json: OaiResponse, requestedModel: string, ctx:
     });
 
     const meta: Record<string, unknown> = {};
-    const sig = tc.extra_content?.google?.thought_signature;
-    if (ctx.flavor === 'gemini' && sig) meta['thoughtSignature'] = sig;
+    if (tc.extra_content && Object.keys(tc.extra_content).length > 0) meta['extraContent'] = tc.extra_content;
     // One copy of the reasoning per response, hung off the first call — the replay side scans the whole message.
-    if (ctx.flavor === 'deepseek' && i === 0 && reasoning) meta['reasoningContent'] = reasoning;
+    if (i === 0 && reasoning) meta['reasoningContent'] = reasoning;
     if (Object.keys(meta).length > 0) ctx.meta.set(id, meta);
   });
 
   const toolUse = content.some(b => b.type === 'tool_use');
   const finish = choice.finish_reason;
-  // Gemini's compat layer has been seen returning finish_reason "stop" alongside tool calls; the loop keys off stop_reason.
+  // Some compatibility layers return finish_reason "stop" alongside tool calls; the loop keys off stop_reason.
   const stop_reason: Llm.StopReason = toolUse
     ? 'tool_use'
     : finish === 'length'
@@ -588,19 +532,6 @@ function errorCode(body: string): string | undefined {
   }
 }
 
-/**
- * MindGate is a gateway in front of Ollama and wraps upstream errors in its own 5xx. A deterministic
- * upstream 4xx (e.g. Ollama failing to parse a generated tool call) must NOT be retried as if it were
- * a transient outage, and must read as what it is. Returns the status to treat the response as.
- */
-export function effectiveStatus(flavor: CompatFlavor, status: number, body: string): number {
-  if (flavor !== 'mindgate' || status < 500) return status;
-  const m = /\b(?:error|status)\W{0,3}(4\d\d)\b/i.exec(body) ?? /\b(4\d\d)\s+(?:bad request|unprocessable)/i.exec(body);
-  if (m) return Number(m[1]);
-  if (TOOL_PARSE_ERROR.test(body)) return 400;
-  return status;
-}
-
 /** Ollama / llama.cpp messages for a generated tool call that is not valid JSON. */
 const TOOL_PARSE_ERROR = /looks like object|can'?t find closing|error parsing tool call|invalid tool call|failed to parse.*tool/i;
 
@@ -632,7 +563,7 @@ export class OpenAiCompatClient implements LlmClient {
   private readonly fetchImpl: typeof fetch;
   private readonly sleep: (ms: number) => Promise<void>;
   private get name(): string {
-    return this.opts.label ?? this.opts.flavor;
+    return this.opts.label ?? 'provider';
   }
 
   constructor(private readonly opts: OpenAiCompatOptions) {
@@ -646,7 +577,7 @@ export class OpenAiCompatClient implements LlmClient {
       options?: { signal?: AbortSignal },
     ): Promise<Llm.Message> => {
       const info = this.opts.modelInfo(params.model);
-      const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
+      const ctx: TranslateContext = { modelInfo: info, meta: this.opts.meta, names: new NameMap() };
 
       const tools = toChatTools(params.tools, ctx);
       const body = {
@@ -660,12 +591,11 @@ export class OpenAiCompatClient implements LlmClient {
 
       try {
         const json = (await this.post('/chat/completions', body, options?.signal)) as OaiResponse;
-        return fromChatResponse(json, params.model, ctx, this.opts.flavor);
+        return fromChatResponse(json, params.model, ctx, this.name);
       } catch (err) {
         // A local model that cannot produce valid tool-call JSON must not kill the whole chat:
         // answer once without tools and say so, instead of surfacing a raw gateway error.
         if (
-          this.opts.flavor === 'mindgate' &&
           tools.length > 0 &&
           err instanceof ProviderHttpError &&
           err.status === 400 &&
@@ -673,7 +603,7 @@ export class OpenAiCompatClient implements LlmClient {
         ) {
           const { tools: _t, tool_choice: _c, ...bare } = body as typeof body & { tool_choice?: string };
           const json = (await this.post('/chat/completions', bare, options?.signal)) as OaiResponse;
-          const msg = fromChatResponse(json, params.model, ctx, this.opts.flavor);
+          const msg = fromChatResponse(json, params.model, ctx, this.name);
           const note = '_(This local model could not produce a valid tool call, so it answered without tools. Pick a larger model for tool use.)_\n\n';
           const first = msg.content.find(b => b.type === 'text') as Llm.TextBlock | undefined;
           if (first) first.text = note + first.text;
@@ -691,7 +621,6 @@ export class OpenAiCompatClient implements LlmClient {
    * `content_block_delta` events as they arrive; text, reasoning and `tool_calls` deltas (by index, with
    * arguments split across chunks) are accumulated and the final message goes through the same
    * fromChatResponse() translation as the non-streaming path, so tool calls behave identically.
-   * Gemini stays non-streaming: its thought signatures arrive outside the delta format we can trust.
    * Any HTTP error before the stream starts falls back to create() (retries, local-model fallback).
    */
   stream(params: Llm.MessageCreateParamsNonStreaming, options?: { signal?: AbortSignal }): MessageStreamLike {
@@ -704,7 +633,6 @@ export class OpenAiCompatClient implements LlmClient {
     const emitThinking = (thinking: string) => emit({ type: 'thinking_delta', thinking });
     const final = (async () => {
       await Promise.resolve(); // let the caller attach listeners first
-      if (this.opts.flavor === 'gemini') return this.messages.create(params, options);
       return this.streamOnce(params, options?.signal, emitText, emitThinking);
     })();
     return {
@@ -723,7 +651,7 @@ export class OpenAiCompatClient implements LlmClient {
     emitThinking?: (text: string) => void,
   ): Promise<Llm.Message> {
     const info = this.opts.modelInfo(params.model);
-    const ctx: TranslateContext = { flavor: this.opts.flavor, modelInfo: info, meta: this.opts.meta, names: new NameMap() };
+    const ctx: TranslateContext = { modelInfo: info, meta: this.opts.meta, names: new NameMap() };
     const tools = toChatTools(params.tools, ctx);
     const body = {
       model: this.opts.upstreamModel?.(params.model) ?? params.model,
@@ -748,12 +676,12 @@ export class OpenAiCompatClient implements LlmClient {
         return this.messages.create(params, { signal: external });
       }
       // Some servers ignore stream:true and answer with plain JSON — accept that too.
-      if (!type.includes('event-stream')) return fromChatResponse((await res.json()) as OaiResponse, params.model, ctx, this.opts.flavor);
+      if (!type.includes('event-stream')) return fromChatResponse((await res.json()) as OaiResponse, params.model, ctx, this.name);
 
       let text = '';
       // MindGate/custom models may answer with a tool call written as JSON text. A reply that starts with
       // { [ or ``` is held back (not streamed) until we know whether it was a call; otherwise it flows live.
-      const mayBeTextCall = (this.opts.flavor === 'mindgate' || this.opts.flavor === 'generic') && ctx.names.size > 0;
+      const mayBeTextCall = ctx.names.size > 0;
       let mode = (mayBeTextCall ? 'undecided' : 'stream') as 'undecided' | 'stream' | 'hold';
       const onText = (delta: string) => {
         text += delta;
@@ -771,7 +699,7 @@ export class OpenAiCompatClient implements LlmClient {
       let id = '';
       let model = '';
       let usage: OaiResponse['usage'];
-      const calls: Array<{ id: string; type: 'function'; function: { name: string; arguments: string } }> = [];
+      const calls: OaiToolCall[] = [];
       const decoder = new TextDecoder();
       const reader = res.body.getReader();
       let buffer = '';
@@ -789,7 +717,7 @@ export class OpenAiCompatClient implements LlmClient {
           if (data === '[DONE]') { done = true; break; }
           let evt: {
             id?: string; model?: string; usage?: OaiResponse['usage'];
-            choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string } }> } }>;
+            choices?: Array<{ finish_reason?: string | null; delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null; tool_calls?: Array<{ index?: number; id?: string; function?: { name?: string; arguments?: string }; extra_content?: Record<string, unknown> }> } }>;
             error?: { message?: string };
           };
           try { evt = JSON.parse(data); } catch { continue; }
@@ -810,6 +738,7 @@ export class OpenAiCompatClient implements LlmClient {
             if (tc.id) calls[i]!.id = tc.id;
             if (tc.function?.name) calls[i]!.function.name += tc.function.name;
             if (tc.function?.arguments) calls[i]!.function.arguments += tc.function.arguments;
+            if (tc.extra_content) calls[i]!.extra_content = { ...calls[i]!.extra_content, ...tc.extra_content };
           }
         }
       }
@@ -828,7 +757,7 @@ export class OpenAiCompatClient implements LlmClient {
         }],
         usage,
       } as unknown as OaiResponse;
-      const message = fromChatResponse(json, params.model, ctx, this.opts.flavor);
+      const message = fromChatResponse(json, params.model, ctx, this.name);
       // Held text that turned out NOT to be a tool call (a JSON answer, a code block) is released now.
       if (mode === 'hold') {
         const first = message.content.find(b => b.type === 'text') as Llm.TextBlock | undefined;
@@ -906,7 +835,7 @@ export class OpenAiCompatClient implements LlmClient {
         if (res.ok) return await res.json();
 
         const errBody = await res.text();
-        const status = effectiveStatus(this.opts.flavor, res.status, errBody);
+        const status = res.status;
         const retryable = RETRYABLE.has(status) && !NO_RETRY_CODES.has(errorCode(errBody) ?? '');
         if (retryable) {
           const retryAfter = Number(res.headers.get('retry-after'));

@@ -356,10 +356,9 @@ describe('runTurn — context window', () => {
 // ─── adapter: reasoning effort ───────────────────────────────────────────────
 
 describe('reasoning_effort on the wire', () => {
-  const run = async (supportsEffort: boolean, flavor: 'generic' | 'deepseek' = 'generic') => {
+  const run = async (supportsEffort: boolean) => {
     let body: Record<string, unknown> = {};
     const client = new OpenAiCompatClient({
-      flavor,
       baseUrl: 'https://x.example/v1',
       apiKey: 'k',
       meta: { get: () => null, set: () => {} },
@@ -376,15 +375,12 @@ describe('reasoning_effort on the wire', () => {
   it('is sent only to a model that supports it — the same rule for every provider', async () => {
     assert.equal((await run(true))['reasoning_effort'], 'high');
     assert.equal('reasoning_effort' in (await run(false)), false);
-    assert.equal((await run(true, 'deepseek'))['reasoning_effort'], 'high');
-    assert.equal('reasoning_effort' in (await run(false, 'deepseek')), false);
   });
 
   it('names the provider by its label in errors and retry notices', async () => {
     const retries: string[] = [];
     let n = 0;
     const client = new OpenAiCompatClient({
-      flavor: 'generic',
       label: 'My Gateway',
       baseUrl: 'https://x.example/v1',
       apiKey: 'k',
@@ -402,7 +398,6 @@ describe('reasoning_effort on the wire', () => {
 
   it('flags a reply that was cut off while writing tool calls', async () => {
     const client = new OpenAiCompatClient({
-      flavor: 'generic',
       baseUrl: 'https://x.example/v1',
       apiKey: 'k',
       meta: { get: () => null, set: () => {} },
@@ -489,7 +484,7 @@ async function boot(opts: { model?: Record<string, unknown>; script: (p: Llm.Mes
   runMigrations(db);
   for (const [k, v] of Object.entries(opts.settings ?? {})) db.prepare(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`).run(k, v);
   const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
-  router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+  router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
   router.catalog.addManual('t', 'm', { tags: [], ...(opts.model ?? {}) });
   const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] } });
   const server = built.app.listen(0);

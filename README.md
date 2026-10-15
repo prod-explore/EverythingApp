@@ -26,7 +26,7 @@ A **self-hosted, bring-your-own-key AI workspace**: multi-provider chat, a sandb
 
 | Area | What it does |
 |---|---|
-| **Providers** | One OpenAI-compatible format for everything: a provider is just *base URL + key + dialect* — MindGate (the hub), Gemini, DeepSeek, OpenRouter, a LAN server all go through the same “Add provider” form. Models are discovered from `GET {base}/models` (with `kind` and free-form `tags`: `free`, `coder`, `reasoning`…) and can be edited per model. Internally one block-based message format of its own (no vendor SDK); the adapter translates. Models without tool calls are not supported. Thinking models show their reasoning in a collapsible block. The app keeps no prices — usage is counted in tokens, money is the gateway's job. Keys are AES-256-GCM encrypted at rest. |
+| **Providers** | One OpenAI-compatible format for everything: a provider is just *base URL + key* — OpenAI, OpenRouter, a gateway such as MindGate, a LAN server all go through the same “Add provider” form, and the app has no code that depends on who the provider is. Models are discovered from `GET {base}/models` (with `kind` and free-form `tags`: `free`, `coder`, `reasoning`…) and can be edited per model. Internally one block-based message format of its own (no vendor SDK); the adapter translates. Models without tool calls are not supported. Thinking models show their reasoning in a collapsible block. The app keeps no prices — usage is counted in tokens, money is the gateway's job. Keys are AES-256-GCM encrypted at rest. |
 | **Model slots & cost guard** | Pick a chat default, a helper (titles, digest), an agent model and an escalation model. A chat on a `free` model can only start `free` workers unless “Allow agents to use paid models” is on. The orchestrator gets a generated list of the installed models and their tags to choose from. |
 | **Agents** | `spawn_agent` / `wait_agents` / `send_message`. Per-tree budgets, depth and spawn limits, kill switch. Finished workers can be resumed with a follow-up. |
 | **Sandbox** | Per-project Docker container, no secrets, no `docker.sock`. Files explorer (read-only preview, pencil to edit) with a checkpoint before every edit, rollback, Source Control, GitHub. |
@@ -57,7 +57,7 @@ flowchart LR
     GP[git-proxy<br/>scoped tokens]
   end
   UI <--> API
-  API --> LOOP --> ROUTER --> LLM{{OpenAI-compatible providers<br/>MindGate · Gemini · DeepSeek · OpenRouter · local}}
+  API --> LOOP --> ROUTER --> LLM{{OpenAI-compatible providers<br/>any OpenAI-compatible API · gateway · local}}
   LOOP --> GATE --> MCP[MCP: sandbox · browser · GitHub · custom]
   LOOP --> AGENTS --> LOOP
   API --- DB

@@ -1,13 +1,13 @@
 # Providers, models and slots
 
-EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions. A **provider** is a record — slug, label, base URL, API key, dialect — and every provider is added through the same form (*Settings → Models → Providers*): MindGate, Gemini, DeepSeek, OpenRouter, LM Studio on the LAN. There are no built-in providers: the list starts empty.
+EverythingApp speaks exactly one wire format: OpenAI-compatible chat completions. A **provider** is a record — slug, label, base URL, API key — and every provider is added through the same form (*Settings → Models → Providers*): OpenAI, OpenRouter, a gateway such as MindGate, LM Studio on the LAN. There are no built-in providers and no per-provider code: the list starts empty and the adapter never looks at a provider's name. A server that needs special treatment gets it in the gateway in front of it, not in this app.
 
 | Field | Meaning |
 |---|---|
 | slug | Lowercase id used in model ids: `@<slug>/<upstream-id>` |
 | base URL | Where `/chat/completions` and `/models` live, e.g. `https://openrouter.ai/api/v1` |
 | key | Stored AES-256-GCM encrypted (`KEY_VAULT_SECRET`); optional for local servers |
-| dialect | `generic`, `mindgate`, `gemini`, `deepseek` — small per-provider quirks (tool-call recovery, retry rules) |
+| retry, parallel requests | Plain per-provider settings, see below |
 
 ## Model discovery
 
@@ -59,8 +59,11 @@ The app does not track whether a model is “up” and MindGate is not special: 
 
 | Setting | Default | Use |
 |---|---|---|
-| *Retry busy errors for … min* | off (two quick retries) | Keep retrying 429/5xx/network errors with backoff for this long — for peak hours (Gemini flash-lite) |
+| *Retry busy errors for … min* | off (two quick retries) | Keep retrying 429/5xx/network errors with backoff for this long — for providers with peak hours |
+| *Parallel requests* | 3 | How many requests agent workers may have in flight at this provider; 1 for a server that handles one at a time |
 
-The Gemini dialect starts with 12 h. `budget_exhausted` from a gateway is never retried.
+`budget_exhausted` from a gateway is never retried.
+
+The adapter keeps what a provider returns per tool call (`extra_content`, `reasoning_content`) and sends it back unchanged while the tool loop runs, which is what providers with thought signatures or thinking modes ask of an OpenAI-compatible client. Anything beyond that — schema limits, missing fields, odd error codes — is for the gateway to smooth over.
 
 Design rationale: [ADR 0008](adr/0008-unified-provider-catalog.md).

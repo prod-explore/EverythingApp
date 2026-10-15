@@ -77,7 +77,7 @@ describe('model locality (catalog)', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const c = new ModelCatalog(db, {});
-    c.create({ slug: 'lan', label: 'LAN', baseUrl: 'http://192.168.1.5:11434/v1', keyOptional: true, flavor: 'generic' });
+    c.create({ slug: 'lan', label: 'LAN', baseUrl: 'http://192.168.1.5:11434/v1', keyOptional: true });
     c.addManual('lan', 'plain');
     assert.equal(getModelInfo('@lan/plain').locality, undefined);
     assert.match(ghostModelProblem('@lan/plain') ?? '', /not marked as a local model/);
@@ -105,7 +105,7 @@ describe('model locality (catalog)', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const c = new ModelCatalog(db, {});
-    c.create({ slug: 'lan', label: 'LAN', baseUrl: 'http://10.0.0.2:11434/v1', keyOptional: true, flavor: 'generic', local: true });
+    c.create({ slug: 'lan', label: 'LAN', baseUrl: 'http://10.0.0.2:11434/v1', keyOptional: true, local: true });
     c.addManual('lan', 'm');
     assert.equal(getModelInfo('@lan/m').locality, 'local');
     c.update('lan', { baseUrl: 'https://api.example.com/v1' });
@@ -251,10 +251,10 @@ describe('ghost chats over the API', () => {
     };
     router = new ProviderRouter({ db, env: {}, llmOverride: client as never });
     catalogBefore = router.catalog;
-    router.catalog.create({ slug: 'home', label: 'Home node', baseUrl: 'http://192.168.1.10:11434/v1', keyOptional: true, flavor: 'generic', local: true });
+    router.catalog.create({ slug: 'home', label: 'Home node', baseUrl: 'http://192.168.1.10:11434/v1', keyOptional: true, local: true });
     router.catalog.addManual('home', 'qwen', { tags: ['free'] });
     router.catalog.addManual('home', 'llama');
-    router.catalog.create({ slug: 'cloud', label: 'Cloud', baseUrl: 'https://cloud.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 'cloud', label: 'Cloud', baseUrl: 'https://cloud.example/v1', keyOptional: true });
     router.catalog.addManual('cloud', 'flash', { tags: ['free'] });
     router.catalog.addManual('cloud', 'big');
     setSlots(db, { helper: '@cloud/flash', chat: '@cloud/big' });
@@ -442,10 +442,10 @@ describe('worker agents in a ghost chat', () => {
     const registry = new ToolRegistry(['x']);
     await registry.loadFrom([fakeConnector('sandbox', ['x']), fakeConnector('playwright', ['browser_open'])]);
     const router = new ProviderRouter({ db, env: {}, llmOverride: client as never });
-    router.catalog.create({ slug: 'home', label: 'Home', baseUrl: 'http://10.0.0.2/v1', keyOptional: true, flavor: 'generic', local: true });
+    router.catalog.create({ slug: 'home', label: 'Home', baseUrl: 'http://10.0.0.2/v1', keyOptional: true, local: true });
     router.catalog.addManual('home', 'small', { tags: ['free'] });
     router.catalog.addManual('home', 'medium', { tags: ['free', 'coder'] });
-    router.catalog.create({ slug: 'cloud', label: 'Cloud', baseUrl: 'https://cloud.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 'cloud', label: 'Cloud', baseUrl: 'https://cloud.example/v1', keyOptional: true });
     router.catalog.addManual('cloud', 'flash', { tags: ['free'] });
     router.catalog.addManual('cloud', 'big', { tags: ['reasoning', 'coder'] });
     const agents = new AgentManager({ db, router, registry, approval: new WebApprovalGate(db), sse: new SSEManager(), limits: LIMITS, recordUsage: () => {}, ghostConnectors: ['sandbox'] });

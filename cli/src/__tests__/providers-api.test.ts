@@ -77,8 +77,8 @@ describe('providers API', () => {
     assert.deepEqual((await req(port, 'GET', '/api/models')).json.models, []);
   });
 
-  it('adds a provider: saves the key, discovers models, applies the dialect defaults, never returns the key', async () => {
-    const r = await req(port, 'POST', '/api/providers', { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://hub.example/v1', flavor: 'mindgate', apiKey: KEY });
+  it('adds a provider: saves the key, discovers models, never returns the key', async () => {
+    const r = await req(port, 'POST', '/api/providers', { slug: 'mindgate', label: 'MindGate', baseUrl: 'https://hub.example/v1', apiKey: KEY });
     assert.equal(r.status, 201);
     assert.equal(r.json.refresh.ok, true);
     assert.equal(r.json.refresh.count, 3);
@@ -86,7 +86,7 @@ describe('providers API', () => {
 
     const list = (await req(port, 'GET', '/api/providers')).json.providers;
     const mg = list.find((p: any) => p.id === 'mindgate');
-    assert.deepEqual([mg.configured, mg.source, mg.last4, mg.modelCount, mg.enabledModelCount, mg.flavor, mg.concurrency, mg.retryMin], [true, 'vault', '9999', 3, 3, 'mindgate', 1, null]);
+    assert.deepEqual([mg.configured, mg.source, mg.last4, mg.modelCount, mg.enabledModelCount, mg.concurrency, mg.retryMin, 'flavor' in mg], [true, 'vault', '9999', 3, 3, null, null, false]);
     for (const path of ['/api/providers', '/api/settings', '/api/models', '/api/providers/mindgate/models']) {
       assert.ok(!JSON.stringify((await req(port, 'GET', path)).json).includes('super-secret'), `${path} leaked the key`);
     }
@@ -101,14 +101,14 @@ describe('providers API', () => {
     assert.ok(!('pricing' in big) && !('pricingKnown' in big), 'the app exposes no prices');
   });
 
-  it('the gemini dialect starts with a long busy-retry window; an explicit value wins', async () => {
-    assert.equal((await req(port, 'POST', '/api/providers', { slug: 'gem', baseUrl: 'https://gem.example/v1', flavor: 'gemini', keyOptional: true })).status, 201);
-    assert.equal((await req(port, 'POST', '/api/providers', { slug: 'gem2', baseUrl: 'https://gem.example/v1', flavor: 'gemini', keyOptional: true, retryMin: 30 })).status, 201);
-    const list = (await req(port, 'GET', '/api/providers')).json.providers;
-    assert.equal(list.find((p: any) => p.id === 'gem').retryMin, 720);
-    assert.equal(list.find((p: any) => p.id === 'gem2').retryMin, 30);
-    await req(port, 'DELETE', '/api/providers/gem');
-    await req(port, 'DELETE', '/api/providers/gem2');
+  it('a provider starts with the same defaults as every other and takes retry and concurrency as plain settings', async () => {
+    assert.equal((await req(port, 'POST', '/api/providers', { slug: 'plain', baseUrl: 'https://plain.example/v1', keyOptional: true, retryMin: 30 })).status, 201);
+    const get = async () => (await req(port, 'GET', '/api/providers')).json.providers.find((p: any) => p.id === 'plain');
+    assert.deepEqual([(await get()).concurrency, (await get()).retryMin], [null, 30]);
+    assert.equal((await req(port, 'PATCH', '/api/providers/plain', { concurrency: 0 })).status, 400);
+    assert.equal((await req(port, 'PATCH', '/api/providers/plain', { concurrency: 1 })).status, 200);
+    assert.equal((await get()).concurrency, 1);
+    await req(port, 'DELETE', '/api/providers/plain');
   });
 
   it('a plain API is added through the very same call', async () => {
@@ -228,7 +228,7 @@ describe('providers API with the vault disabled', () => {
     const server = built.app.listen(0);
     const port = (server.address() as AddressInfo).port;
     try {
-      const r = await req(port, 'POST', '/api/providers', { slug: 'gemini', baseUrl: 'https://api.example/v1', flavor: 'gemini', apiKey: 'AIzaSy-something-long' });
+      const r = await req(port, 'POST', '/api/providers', { slug: 'gemini', baseUrl: 'https://api.example/v1', apiKey: 'AIzaSy-something-long' });
       assert.equal(r.status, 503);
       assert.match(r.json.error, /KEY_VAULT_SECRET/);
     } finally {

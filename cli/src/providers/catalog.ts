@@ -1,5 +1,4 @@
 import type Database from 'better-sqlite3';
-import type { CompatFlavor } from './openai-compat.js';
 import {
   formatModelId,
   isModelKind,
@@ -23,18 +22,6 @@ import {
  */
 
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
-const FLAVORS: readonly CompatFlavor[] = ['generic', 'gemini', 'deepseek', 'mindgate'];
-export const isFlavor = (v: unknown): v is CompatFlavor => typeof v === 'string' && (FLAVORS as readonly string[]).includes(v);
-
-/**
- * What a new provider of a given dialect starts with when the form does not say. The dialect is the only provider-specific
- * knowledge the app carries: a MindGate hub serves one request at a time, and Gemini's free tier has busy peak hours worth waiting out.
- */
-export function flavorDefaults(flavor: CompatFlavor): { concurrency: number | null; retryMin: number | null } {
-  if (flavor === 'mindgate') return { concurrency: 1, retryMin: null };
-  if (flavor === 'gemini') return { concurrency: null, retryMin: 720 };
-  return { concurrency: null, retryMin: null };
-}
 
 /** A provider that lists more models than this gets them switched OFF on discovery (OpenRouter has hundreds); the user enables what they use. */
 export const AUTO_ENABLE_LIMIT = 40;
@@ -187,7 +174,6 @@ export function migrateCatalogSchema(db: Database.Database): void {
       label        TEXT NOT NULL,
       base_url     TEXT NOT NULL,
       key_optional INTEGER NOT NULL DEFAULT 0,
-      flavor       TEXT NOT NULL DEFAULT 'generic',
       enabled      INTEGER NOT NULL DEFAULT 1,
       concurrency  INTEGER,
       retry_min    INTEGER,
@@ -211,7 +197,7 @@ export function migrateCatalogSchema(db: Database.Database): void {
   if (!cols.some(c => c.name === 'local')) db.exec(`ALTER TABLE providers ADD COLUMN local INTEGER NOT NULL DEFAULT 0`);
 }
 
-interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; flavor: string; enabled: number; concurrency: number | null; retry_min: number | null; local: number }
+interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; enabled: number; concurrency: number | null; retry_min: number | null; local: number }
 interface ModelRow { provider: string; model_id: string; enabled: number; source: string; reported: string; overrides: string }
 
 const toRecord = (r: ProviderRow): ProviderRecord => ({
@@ -219,7 +205,6 @@ const toRecord = (r: ProviderRow): ProviderRecord => ({
   label: r.label,
   baseUrl: r.base_url,
   keyOptional: r.key_optional === 1,
-  flavor: isFlavor(r.flavor) ? r.flavor : 'generic',
   enabled: r.enabled === 1,
   concurrency: r.concurrency,
   retryMin: r.retry_min,
@@ -253,16 +238,16 @@ export class ModelCatalog {
     return r ? toRecord(r) : undefined;
   }
 
-  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; concurrency?: number | null; retryMin?: number | null; local?: boolean }): ProviderRecord {
+  create(input: { slug: string; label: string; baseUrl: string; keyOptional: boolean; concurrency?: number | null; retryMin?: number | null; local?: boolean }): ProviderRecord {
     const pos = (this.db.prepare(`SELECT COALESCE(MAX(position), 0) + 1 AS p FROM providers`).get() as { p: number }).p;
     this.db
-      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, flavor, concurrency, retry_min, local, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.flavor, input.concurrency ?? null, input.retryMin ?? null, input.local ? 1 : 0, pos);
+      .prepare(`INSERT INTO providers (slug, label, base_url, key_optional, concurrency, retry_min, local, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.slug, input.label, input.baseUrl, input.keyOptional ? 1 : 0, input.concurrency ?? null, input.retryMin ?? null, input.local ? 1 : 0, pos);
     this.sync();
     return this.get(input.slug)!;
   }
 
-  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; flavor: CompatFlavor; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>): boolean {
+  update(slug: string, patch: Partial<{ label: string; baseUrl: string; keyOptional: boolean; enabled: boolean; concurrency: number | null; retryMin: number | null; local: boolean }>): boolean {
     // "This URL is my own hardware" is a statement about one address: pointing the provider elsewhere withdraws it
     // unless the same edit confirms it again.
     const before = patch.baseUrl !== undefined ? this.get(slug) : undefined;
@@ -271,13 +256,12 @@ export class ModelCatalog {
       .prepare(`
         UPDATE providers SET
           label = COALESCE(?, label), base_url = COALESCE(?, base_url), key_optional = COALESCE(?, key_optional),
-          flavor = COALESCE(?, flavor), enabled = COALESCE(?, enabled)
+          enabled = COALESCE(?, enabled)
         WHERE slug = ?`)
       .run(
         patch.label ?? null,
         patch.baseUrl ?? null,
         patch.keyOptional === undefined ? null : patch.keyOptional ? 1 : 0,
-        patch.flavor ?? null,
         patch.enabled === undefined ? null : patch.enabled ? 1 : 0,
         slug,
       );
@@ -421,8 +405,8 @@ export class ModelCatalog {
         tags,
         description: ov.description ?? rep.description ?? '',
         supportsImages: ov.supportsImages ?? rep.supportsImages ?? false,
-        // Thinking models spend output tokens on reasoning before the answer: Gemini always does, others say so with the tag.
-        minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (provider.flavor === 'gemini' || tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
+        // Thinking models spend output tokens on reasoning before the answer: a model says so with the `reasoning` tag.
+        minOutputTokens: ov.minOutputTokens ?? rep.minOutputTokens ?? (tags.includes('reasoning') ? REASONING_OUTPUT_FLOOR : undefined),
         toolSchemaMode: ov.toolSchemaMode ?? rep.toolSchemaMode,
         contextLength: ov.contextLength ?? rep.contextLength,
         supportsEffort: ov.supportsEffort ?? rep.supportsEffort ?? false,

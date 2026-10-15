@@ -13,8 +13,8 @@ function sse(events: unknown[]): Response {
   return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
 }
 
-function client(fetchImpl: typeof fetch, flavor: 'deepseek' | 'gemini' | 'generic' = 'deepseek') {
-  return new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
+function client(fetchImpl: typeof fetch) {
+  return new OpenAiCompatClient({ baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
 }
 
 const params = { model: 'deepseek-chat', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Llm.MessageCreateParamsNonStreaming;
@@ -48,13 +48,29 @@ describe('OpenAI-compat streaming (N2b)', () => {
     assert.equal(msg.usage.input_tokens, 7);
   });
 
+  it('keeps the per-call state a provider streams along with a tool call (extra_content) so it can be sent back', async () => {
+    const store = new Map<string, Record<string, unknown>>();
+    const c = new OpenAiCompatClient({
+      baseUrl: 'https://x/v1', apiKey: 'k', modelInfo: id => getModelInfo(id), maxRetries: 0,
+      meta: { get: id => store.get(id) ?? null, set: (id, m) => void store.set(id, m) },
+      fetchImpl: (async () => sse([
+        { id: 'r', model: 'm', choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'srv__x', arguments: '{"a":' } }] } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '1}' }, extra_content: { google: { thought_signature: 'SIG' } } }] }, finish_reason: 'tool_calls' }] },
+        '[DONE]',
+      ])) as typeof fetch,
+    });
+    const msg = await c.messages.stream!(params).finalMessage();
+    assert.equal(msg.stop_reason, 'tool_use');
+    assert.deepEqual(store.get('call_1'), { extraContent: { google: { thought_signature: 'SIG' } } });
+  });
+
   it('streams reasoning separately from the answer and keeps it as a thinking block', async () => {
     const c = client((async () => sse([
       { id: 'r', model: 'm', choices: [{ delta: { reasoning_content: 'Hmm, ' } }] },
       { choices: [{ delta: { reasoning: 'let me see.' } }] },
       { choices: [{ delta: { content: 'Done.' }, finish_reason: 'stop' }] },
       '[DONE]',
-    ])) as typeof fetch, 'generic');
+    ])) as typeof fetch);
     const thoughts: string[] = [];
     const texts: string[] = [];
     const s = c.messages.stream!({ ...params, tools: undefined });
@@ -79,10 +95,5 @@ describe('OpenAI-compat streaming (N2b)', () => {
     const msg = await c.messages.stream!(params).finalMessage();
     assert.equal((msg.content[0] as Llm.TextBlock).text, 'plain');
     assert.deepEqual(bodies.map(b => b.stream), [true, false]);
-
-    const gBodies: any[] = [];
-    const g = client((async (_u: string, init: RequestInit) => { gBodies.push(JSON.parse(String(init.body))); return new Response(JSON.stringify(ok), { status: 200 }); }) as typeof fetch, 'gemini');
-    await g.messages.stream!({ ...params, model: 'gemini-3.8-flash' }).finalMessage();
-    assert.deepEqual(gBodies.map(b => b.stream), [false]);
   });
 });

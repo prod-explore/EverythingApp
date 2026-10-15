@@ -62,7 +62,7 @@ describe('request_human_input as an in-loop virtual tool', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
-    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
     router.catalog.addManual('t', 'm', { tags: ['reasoning'] });
     const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] } });
     const server = built.app.listen(0);
@@ -116,7 +116,7 @@ describe('Gazeta as one inbox (N6)', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
-    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
     router.catalog.addManual('t', 'm', { tags: ['reasoning'] });
     const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] } });
     const server = built.app.listen(0);

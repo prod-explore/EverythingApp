@@ -26,15 +26,15 @@ describe('recoverJsonToolCalls', () => {
 });
 
 const params = { model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [{ name: 'srv__x', description: 'x', input_schema: { type: 'object', properties: { a: { type: 'number' } } } }] } as unknown as Llm.MessageCreateParamsNonStreaming;
-const mk = (fetchImpl: typeof fetch, flavor: 'mindgate' | 'deepseek' = 'mindgate') =>
-  new OpenAiCompatClient({ flavor, baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
+const mk = (fetchImpl: typeof fetch) =>
+  new OpenAiCompatClient({ baseUrl: 'https://x/v1', apiKey: 'k', fetchImpl, modelInfo: id => getModelInfo(id), meta: { get: () => null, set: () => {} }, maxRetries: 0 });
 const json = (content: string) => new Response(JSON.stringify({ id: 'r', model: 'm', choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content } }] }), { status: 200, headers: { 'content-type': 'application/json' } });
 const sse = (parts: string[]) => {
   const body = parts.map(p => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`).join('') + 'data: [DONE]\n\n';
   return new Response(new TextEncoder().encode(body), { status: 200, headers: { 'content-type': 'text/event-stream' } });
 };
 
-describe('MindGate text tool calls', () => {
+describe('text tool calls', () => {
   it('turns a JSON-text reply into a tool_use (non-streaming)', async () => {
     const msg = await mk((async () => json('```json\n{"name":"srv__x","arguments":{"a":5}}\n```')) as typeof fetch).messages.create(params);
     assert.equal(msg.stop_reason, 'tool_use');
@@ -42,8 +42,8 @@ describe('MindGate text tool calls', () => {
     const tool = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.deepEqual(tool.input, { a: 5 });
   });
-  it('does not touch the same reply for other flavors', async () => {
-    const msg = await mk((async () => json('{"name":"srv__x","arguments":{}}')) as typeof fetch, 'deepseek').messages.create(params);
+  it('leaves a JSON reply alone when no tools were offered', async () => {
+    const msg = await mk((async () => json('{"name":"srv__x","arguments":{}}')) as typeof fetch).messages.create({ ...params, tools: [] });
     assert.equal(msg.stop_reason, 'end_turn');
   });
   it('streaming: a recovered call never leaks raw JSON into the chat', async () => {

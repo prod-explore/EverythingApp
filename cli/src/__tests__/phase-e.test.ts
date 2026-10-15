@@ -239,7 +239,7 @@ describe('server: the agent edits files without being asked', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const router = new ProviderRouter({ db, env: {}, llmOverride: client as any });
-    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
     router.catalog.addManual('t', 'm', { tags: [] });
     const built = await buildApp({ db, connections: [], router, authToken: TOKEN, config: { model: '', autoApproveTools: [] }, sandboxExec: ws.sandbox });
     const server = built.app.listen(0);

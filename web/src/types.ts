@@ -250,14 +250,12 @@ export type ProviderId = string;
 
 export type ModelKind = 'chat' | 'image' | 'tts' | 'stt' | 'embedding';
 export const MODEL_KINDS: ModelKind[] = ['chat', 'image', 'tts', 'stt', 'embedding'];
-export type CompatFlavor = 'gemini' | 'deepseek' | 'mindgate' | 'generic';
 export type ModelLocality = 'local' | 'cloud';
 
 export interface ProviderInfo {
   id: ProviderId;
   label: string;
   baseUrl: string;
-  flavor: CompatFlavor;
   enabled: boolean;
   keyOptional: boolean;
   concurrency: number | null;

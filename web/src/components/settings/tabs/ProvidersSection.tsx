@@ -15,19 +15,12 @@ import {
   updateProvider,
 } from '../../../api';
 import { MODEL_KINDS } from '../../../types';
-import type { CatalogModelRow, CompatFlavor, ModelKind, ModelLocality, ProviderInfo, ProvidersResponse } from '../../../types';
+import type { CatalogModelRow, ModelKind, ModelLocality, ProviderInfo, ProvidersResponse } from '../../../types';
 import { Button } from '../../shared/Button';
 
 const inputCls =
   'w-full rounded-button border border-border bg-bg-secondary px-3 py-2 text-sm text-fg outline-none placeholder:text-fg-tertiary';
 const smallInput = 'rounded-button border border-border bg-bg px-2 py-1 text-xs text-fg outline-none placeholder:text-fg-tertiary';
-
-const FLAVORS: Array<{ id: CompatFlavor; label: string }> = [
-  { id: 'generic', label: 'Generic OpenAI-compatible' },
-  { id: 'mindgate', label: 'MindGate' },
-  { id: 'gemini', label: 'Google Gemini' },
-  { id: 'deepseek', label: 'DeepSeek' },
-];
 
 type Note = { ok: boolean; text: string } | null;
 
@@ -180,6 +173,7 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
   const [open, setOpen] = useState(false);
   const [note, setNote] = useState<Note>(null);
   const [retry, setRetry] = useState(p.retryMin?.toString() ?? '');
+  const [conc, setConc] = useState(p.concurrency?.toString() ?? '');
 
   async function run(fn: () => Promise<void>) {
     setBusy(true);
@@ -187,12 +181,12 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
     try { await fn(); } catch (e) { setNote({ ok: false, text: (e as Error).message }); } finally { setBusy(false); }
   }
 
-  const saveRetry = (raw: string, lo: number, hi: number) =>
+  const saveNumber = (field: 'retryMin' | 'concurrency', raw: string, lo: number, hi: number) =>
     run(async () => {
       const n = raw.trim() === '' ? null : Number(raw);
       if (n !== null && !(Number.isInteger(n) && n >= lo && n <= hi)) throw new Error(`Enter a whole number from ${lo} to ${hi}, or leave empty for the default`);
-      if (n === p.retryMin) return;
-      await updateProvider(p.id, { retryMin: n });
+      if (n === p[field]) return;
+      await updateProvider(p.id, { [field]: n });
       onChanged();
     });
 
@@ -277,8 +271,12 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
         </label>
         <label className="flex items-center gap-2" title="Keep retrying overloaded / rate-limited answers for this long (peak hours). Empty = two quick retries.">
           Retry busy errors for
-          <input inputMode="numeric" value={retry} onChange={e => setRetry(e.target.value)} onBlur={() => void saveRetry(retry, 1, 1440)} placeholder="off" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Minutes to retry busy errors from ${p.label}`} />
+          <input inputMode="numeric" value={retry} onChange={e => setRetry(e.target.value)} onBlur={() => void saveNumber('retryMin', retry, 1, 1440)} placeholder="off" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Minutes to retry busy errors from ${p.label}`} />
           min
+        </label>
+        <label className="flex items-center gap-2" title="How many requests agent workers may send to this provider at once. Empty = 3. Use 1 for a server that handles one request at a time.">
+          Parallel requests
+          <input inputMode="numeric" value={conc} onChange={e => setConc(e.target.value)} onBlur={() => void saveNumber('concurrency', conc, 1, 32)} placeholder="3" className="w-16 rounded-button border border-border bg-bg-secondary px-2 py-1 text-xs text-fg outline-none" aria-label={`Parallel requests to ${p.label}`} />
         </label>
       </div>
 
@@ -311,8 +309,8 @@ function ProviderCard({ p, vaultEnabled, onChanged }: { p: ProviderInfo; vaultEn
 
 // ─── add provider ───────────────────────────────────────────────────────────
 
-interface Form { slug: string; label: string; baseUrl: string; flavor: CompatFlavor; apiKey: string; keyOptional: boolean; local: boolean }
-const EMPTY: Form = { slug: '', label: '', baseUrl: '', flavor: 'generic', apiKey: '', keyOptional: false, local: false };
+interface Form { slug: string; label: string; baseUrl: string; apiKey: string; keyOptional: boolean; local: boolean }
+const EMPTY: Form = { slug: '', label: '', baseUrl: '', apiKey: '', keyOptional: false, local: false };
 
 function AddProvider({ vaultEnabled, onAdded }: { vaultEnabled: boolean; onAdded: (note: string) => void }) {
   const [open, setOpen] = useState(false);
@@ -328,7 +326,6 @@ function AddProvider({ vaultEnabled, onAdded }: { vaultEnabled: boolean; onAdded
         slug: form.slug.trim(),
         label: form.label.trim() || undefined,
         baseUrl: form.baseUrl.trim(),
-        flavor: form.flavor,
         apiKey: form.apiKey.trim() || undefined,
         keyOptional: form.keyOptional,
         local: form.local || undefined,
@@ -355,16 +352,12 @@ function AddProvider({ vaultEnabled, onAdded }: { vaultEnabled: boolean; onAdded
   return (
     <div className="space-y-2 rounded-button border border-border p-3">
       <p className="text-xs text-fg-tertiary">
-        Every provider is the same thing: a base URL, a key and a dialect. The dialect only tells the app about the server’s quirks; pick Generic when unsure.
-      </p>
+        Every provider is the same thing: an OpenAI-compatible base URL and a key. Retry and concurrency are tuned per provider after it is added.</p>
       <div className="grid gap-2 sm:grid-cols-2">
         <input className={inputCls} placeholder="slug (e.g. my-hub)" value={form.slug} onChange={e => set('slug', e.target.value.toLowerCase())} aria-label="Slug" />
         <input className={inputCls} placeholder="Label" value={form.label} onChange={e => set('label', e.target.value)} aria-label="Label" />
       </div>
       <input className={inputCls} placeholder="Base URL, e.g. https://host.example/v1" value={form.baseUrl} onChange={e => set('baseUrl', e.target.value)} aria-label="Base URL" />
-      <select className={inputCls} value={form.flavor} onChange={e => set('flavor', e.target.value as CompatFlavor)} aria-label="Dialect">
-        {FLAVORS.map(f => <option key={f.id} value={f.id}>{f.label}</option>)}
-      </select>
       <input
         className={inputCls}
         type="password"
@@ -409,7 +402,7 @@ export function ProvidersSection({ onChanged }: { onChanged: () => void }) {
         </p>
       )}
       {data.providers.length === 0 && (
-        <p className="text-xs text-fg-tertiary">Nothing set up yet. Add a provider: a base URL, a key and a dialect.</p>
+        <p className="text-xs text-fg-tertiary">Nothing set up yet. Add a provider: an OpenAI-compatible base URL and a key.</p>
       )}
       {data.providers.map(p => (
         <ProviderCard key={`${p.id}:${p.enabled}:${p.last4}:${p.modelCount}`} p={p} vaultEnabled={data.vaultEnabled} onChanged={changed} />

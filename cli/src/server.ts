@@ -21,7 +21,7 @@ import { generateDailySummary } from './gazeta.js';
 import { UsageLedger, type UsageRange } from './usage-ledger.js';
 import { withModelIdentity } from './providers/identity.js';
 import { ProviderRouter } from './providers/router.js';
-import { SLUG_RE, flavorDefaults, isFlavor, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
+import { SLUG_RE, normalizeBaseUrl, sanitizeFields } from './providers/catalog.js';
 import { getModelInfo, isCatalogModel, isLocalModel, supportsTools } from './providers/registry.js';
 import { SSEManager } from './sse.js';
 import { classifyError } from './providers/errors.js';
@@ -1709,7 +1709,7 @@ ${formatHumanResponse(response)}`;
   });
 
   // ─── Providers, models & key vault ────────────────────────────────────────
-  // One flow for every provider: base URL + key → test (GET /models) → model list saved. MindGate, Gemini,
+  // One flow for every provider: base URL + key → test (GET /models) → model list saved. Hosted APIs,
   // OpenRouter and a LAN server go through exactly the same routes. Keys are write-only over this API: they go
   // in via POST/PUT and never come back out — only presence and the last four characters are ever returned.
   function providerOr404(raw: string, res: express.Response): NonNullable<ReturnType<typeof router.catalog.get>> | null {
@@ -1740,16 +1740,13 @@ ${formatHumanResponse(response)}`;
     if (apiKey && !validKey(apiKey)) { res.status(400).json({ error: 'the API key must be a single token with no whitespace' }); return; }
     if (apiKey && !router.vault.enabled) { res.status(503).json({ error: router.vault.disabledReason }); return; }
     const keyOptional = b['keyOptional'] === true;
-    const flavor = isFlavor(b['flavor']) ? b['flavor'] : 'generic';
-    const defaults = flavorDefaults(flavor);
     router.catalog.create({
       slug,
       label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : slug,
       baseUrl,
       keyOptional,
-      flavor,
-      concurrency: defaults.concurrency,
-      retryMin: patience(b['retryMin'], 1, 24 * 60) ?? defaults.retryMin,
+      concurrency: null,
+      retryMin: patience(b['retryMin'], 1, 24 * 60) ?? null,
       local: b['local'] === true,
     });
     if (apiKey) router.saveKey(slug, apiKey);
@@ -1764,7 +1761,6 @@ ${formatHumanResponse(response)}`;
     const b = (req.body ?? {}) as Record<string, unknown>;
     const baseUrl = b['baseUrl'] === undefined ? undefined : normalizeBaseUrl(b['baseUrl']);
     if (baseUrl === null) { res.status(400).json({ error: 'invalid baseUrl' }); return; }
-    if (b['flavor'] !== undefined && !isFlavor(b['flavor'])) { res.status(400).json({ error: 'invalid flavor' }); return; }
     const c = b['concurrency'];
     if (c !== undefined && c !== null && !(typeof c === 'number' && Number.isInteger(c) && c >= 1 && c <= 32)) { res.status(400).json({ error: 'concurrency: integer 1–32, or null for the default' }); return; }
     const rm = b['retryMin'];
@@ -1773,7 +1769,6 @@ ${formatHumanResponse(response)}`;
       label: typeof b['label'] === 'string' && b['label'].trim() ? b['label'].trim().slice(0, 60) : undefined,
       baseUrl,
       keyOptional: typeof b['keyOptional'] === 'boolean' ? b['keyOptional'] : undefined,
-      flavor: isFlavor(b['flavor']) ? b['flavor'] : undefined,
       enabled: typeof b['enabled'] === 'boolean' ? b['enabled'] : undefined,
       concurrency: c === undefined ? undefined : (c as number | null),
       retryMin: b['retryMin'] as number | null | undefined,

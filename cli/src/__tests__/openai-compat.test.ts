@@ -11,11 +11,9 @@ seedBuiltinCatalog();
 import {
   OpenAiCompatClient,
   ProviderHttpError,
-  effectiveStatus,
   flattenToolSchema,
   fromChatResponse,
   safeToolName,
-  sanitizeSchemaForGemini,
   toChatMessages,
   toChatTools,
   type MetaStore,
@@ -30,11 +28,10 @@ function memoryMeta(): MetaStore & { store: Map<string, Record<string, unknown>>
 }
 
 // NameMap isn't exported; toChatTools/toChatMessages only need something with safe()/original().
-function ctxFor(flavor: 'gemini' | 'deepseek' | 'mindgate', model: string, meta: MetaStore = memoryMeta()): TranslateContext {
+function ctxFor(provider: 'gemini' | 'deepseek' | 'mindgate', model: string, meta: MetaStore = memoryMeta()): TranslateContext {
   const map = new Map<string, string>();
   return {
-    flavor,
-    modelInfo: getModelInfo(`@${flavor}/${model}`),
+    modelInfo: getModelInfo(`@${provider}/${model}`),
     meta,
     names: {
       safe(original: string) {
@@ -128,9 +125,9 @@ describe('toChatMessages', () => {
     }
   });
 
-  it('gemini: replays stored thought signatures and adds Google\'s documented stand-in only when none exists', () => {
+  it('sends back, verbatim, the per-call state a provider returned (extra_content) and invents nothing for calls without any', () => {
     const meta = memoryMeta();
-    meta.set('fc_real', { thoughtSignature: 'REAL-SIG' });
+    meta.set('fc_real', { extraContent: { google: { thought_signature: 'REAL-SIG' } } });
     const history = (id: string): Llm.MessageParam[] => [
       { role: 'user', content: 'go' },
       { role: 'assistant', content: [{ type: 'tool_use', id, name: 'obsidian__get_path', input: { path: '' } }] },
@@ -138,16 +135,16 @@ describe('toChatMessages', () => {
     ];
 
     const real = toChatMessages(params(history('fc_real')), ctxFor('gemini', 'gemini-3.8-flash', meta));
-    const realCall = (real[1] as { tool_calls: Array<{ extra_content?: { google?: { thought_signature?: string } } }> }).tool_calls[0]!;
-    assert.equal(realCall.extra_content?.google?.thought_signature, 'REAL-SIG');
-    assert.equal((real[2] as { name?: string }).name, 'obsidian__get_path');
+    const realCall = (real[1] as { tool_calls: Array<{ extra_content?: unknown }> }).tool_calls[0]!;
+    assert.deepEqual(realCall.extra_content, { google: { thought_signature: 'REAL-SIG' } });
+    assert.equal('name' in (real[2] as object), false, 'a tool message carries only the id and the content');
 
     const foreign = toChatMessages(params(history('toolu_from_claude')), ctxFor('gemini', 'gemini-3.8-flash', meta));
-    const foreignCall = (foreign[1] as { tool_calls: Array<{ extra_content?: { google?: { thought_signature?: string } } }> }).tool_calls[0]!;
-    assert.equal(foreignCall.extra_content?.google?.thought_signature, 'skip_thought_signature_validator');
+    const foreignCall = (foreign[1] as { tool_calls: Array<{ extra_content?: unknown }> }).tool_calls[0]!;
+    assert.equal(foreignCall.extra_content, undefined);
   });
 
-  it('deepseek: echoes reasoning_content during the current tool loop only, never for earlier turns', () => {
+  it('echoes reasoning_content during the current tool loop only, never for earlier turns', () => {
     const meta = memoryMeta();
     meta.set('old', { reasoningContent: 'old reasoning' });
     meta.set('cur', { reasoningContent: 'current reasoning' });
@@ -170,17 +167,6 @@ describe('toChatMessages', () => {
 });
 
 describe('toChatTools / schema handling', () => {
-  it('gemini: strips $schema/additionalProperties and drops parameters for no-arg tools', () => {
-    const cleaned = sanitizeSchemaForGemini({
-      $schema: 'http://json-schema.org/draft-07/schema#',
-      type: 'object',
-      additionalProperties: false,
-      properties: { path: { type: 'string', additionalProperties: false } },
-    });
-    assert.deepEqual(cleaned, { type: 'object', properties: { path: { type: 'string' } } });
-    assert.equal(sanitizeSchemaForGemini({ type: 'object', properties: {} }), undefined);
-  });
-
   it('shortens over-long MCP tool names reversibly', () => {
     const long = 'my_server__' + 'x'.repeat(80);
     const safe = safeToolName(long);
@@ -218,7 +204,7 @@ describe('fromChatResponse', () => {
     assert.equal(msg.stop_reason, 'tool_use');
     const use = msg.content.find(b => b.type === 'tool_use') as Llm.ToolUseBlock;
     assert.deepEqual(use.input, { text: 'hi' });
-    assert.deepEqual(meta.store.get('function-call-abc'), { thoughtSignature: 'SIG' });
+    assert.deepEqual(meta.store.get('function-call-abc'), { extraContent: { google: { thought_signature: 'SIG' } } });
   });
 
   it('survives malformed tool arguments and missing ids instead of throwing', () => {
@@ -233,7 +219,7 @@ describe('fromChatResponse', () => {
     assert.deepEqual(use.input, { __invalid_arguments: '{"a": ' });
   });
 
-  it('maps finish reasons and stores deepseek reasoning against the first tool call', () => {
+  it('maps finish reasons and stores the reasoning against the first tool call', () => {
     const meta = memoryMeta();
     const truncated = fromChatResponse(
       { choices: [{ finish_reason: 'length', message: { content: 'cut of' } }] },
@@ -253,7 +239,7 @@ describe('fromChatResponse', () => {
     assert.equal(meta.store.has('b'), false);
   });
 
-  it('separates cached prompt tokens from fresh ones (deepseek and openai-style usage)', () => {
+  it('separates cached prompt tokens from fresh ones (prompt_cache_hit_tokens and prompt_tokens_details styles)', () => {
     const ds = fromChatResponse(
       { choices: [{ message: { content: 'x' } }], usage: { prompt_tokens: 1000, completion_tokens: 5, prompt_cache_hit_tokens: 800 } },
       'deepseek-chat',
@@ -290,11 +276,10 @@ function fakeFetch(handler: (url: string, init: RequestInit) => { status: number
 
 function newClient(f: typeof fetch, extra: Partial<ConstructorParameters<typeof OpenAiCompatClient>[0]> = {}) {
   return new OpenAiCompatClient({
-    flavor: 'deepseek',
     baseUrl: 'https://api.example.test',
     apiKey: 'sk-live-SECRET-KEY',
     meta: memoryMeta(),
-    modelInfo: id => getModelInfo(id.startsWith('@') ? id : `@${extra.flavor ?? 'deepseek'}/${id}`),
+    modelInfo: id => getModelInfo(id.startsWith('@') ? id : `@deepseek/${id}`),
     fetchImpl: f,
     sleep: async () => {},
     ...extra,
@@ -439,29 +424,17 @@ describe('toolSchemaMode', () => {
   });
 });
 
-describe('effectiveStatus (MindGate wraps upstream 4xx in 5xx)', () => {
-  const ollama = `{"error":{"message":"Value looks like object, but can't find closing '}' symbol"}}`;
-  it('recognises deterministic upstream errors, leaves real outages alone, ignores other providers', () => {
-    assert.equal(effectiveStatus('mindgate', 500, ollama), 400);
-    assert.equal(effectiveStatus('mindgate', 500, 'upstream error 400: bad request'), 400);
-    assert.equal(effectiveStatus('mindgate', 502, 'connect ECONNREFUSED'), 502);
-    assert.equal(effectiveStatus('mindgate', 503, 'model loading'), 503);
-    assert.equal(effectiveStatus('mindgate', 400, ollama), 400);
-    assert.equal(effectiveStatus('deepseek', 500, ollama), 500);
-  });
-});
-
-describe('OpenAiCompatClient — MindGate tool-call parse failures', () => {
-  const ollama500 = `{"error":"Value looks like object, but can't find closing '}' symbol"}`;
+describe('OpenAiCompatClient — tool-call parse failures', () => {
+  const ollama400 = `{"error":"Value looks like object, but can't find closing '}' symbol"}`;
   const okBody = { id: 'x', choices: [{ finish_reason: 'stop', message: { content: 'Hello without tools' } }] };
 
-  it('does not retry the 500-wrapped 400, then answers once WITHOUT tools and says so', async () => {
+  it('does not retry a 400 about an unparseable tool call, then answers once WITHOUT tools and says so', async () => {
     const bodies: Array<{ tools?: unknown }> = [];
     const f = (async (_url: string, init: RequestInit) => {
       bodies.push(JSON.parse(String(init.body)));
-      return bodies.length === 1 ? new Response(ollama500, { status: 500 }) : new Response(JSON.stringify(okBody), { status: 200 });
+      return bodies.length === 1 ? new Response(ollama400, { status: 400 }) : new Response(JSON.stringify(okBody), { status: 200 });
     }) as unknown as typeof fetch;
-    const client = newClient(f, { flavor: 'mindgate', modelInfo: m => ({ ...getModelInfo(`@mindgate/${m}`), toolSchemaMode: 'full' }) });
+    const client = newClient(f, { modelInfo: m => ({ ...getModelInfo(`@mindgate/${m}`), toolSchemaMode: 'full' }) });
     const res = await client.messages.create({ model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [nestedTool] });
 
     assert.equal(bodies.length, 2, 'one failed attempt (no transient retries) + one tools-less retry');
@@ -474,7 +447,7 @@ describe('OpenAiCompatClient — MindGate tool-call parse failures', () => {
 
   it('still surfaces genuine outages (no silent tools-less fallback)', async () => {
     const f = (async () => new Response('connect ECONNREFUSED', { status: 502 })) as unknown as typeof fetch;
-    const client = newClient(f, { flavor: 'mindgate', maxRetries: 0 });
+    const client = newClient(f, { maxRetries: 0 });
     await assert.rejects(client.messages.create({ model: 'flash', max_tokens: 100, messages: [{ role: 'user', content: 'hi' }], tools: [nestedTool] }), (e: unknown) => e instanceof ProviderHttpError && e.status === 502);
   });
 });

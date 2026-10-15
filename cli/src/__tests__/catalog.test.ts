@@ -87,7 +87,7 @@ describe('model ids', () => {
 describe('ModelCatalog', () => {
   it('a new provider has no models; discovery adds them and layers reported < override', () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'gemini', label: 'Gemini', baseUrl: 'https://g.example', keyOptional: false, flavor: 'gemini' });
+    catalog.create({ slug: 'gemini', label: 'Gemini', baseUrl: 'https://g.example', keyOptional: false });
     assert.deepEqual(catalog.providerModels('gemini'), []);
     const r = catalog.applyDiscovered('gemini', [{ id: 'gemini-3.5-flash-lite' }, { id: 'brand-new', tags: ['coder'] }]);
     assert.deepEqual([r.count, r.added, r.removed], [2, 2, 0]);
@@ -95,7 +95,9 @@ describe('ModelCatalog', () => {
     // nothing is known about a model beyond what the provider reported
     assert.deepEqual(getModelInfo('@gemini/gemini-3.5-flash-lite').tags, []);
     assert.deepEqual(getModelInfo('@gemini/brand-new').tags, ['coder']);
-    // thinking models of the gemini dialect get a bigger output floor without any per-model list
+    // a model that says it thinks (tag `reasoning`) gets a bigger output floor, any provider
+    assert.equal(getModelInfo('@gemini/brand-new').minOutputTokens, undefined);
+    catalog.updateModel('@gemini/brand-new', { fields: { tags: ['reasoning'] } });
     assert.equal(getModelInfo('@gemini/brand-new').minOutputTokens, 16000);
 
     // user override wins, null clears it again
@@ -107,7 +109,7 @@ describe('ModelCatalog', () => {
 
   it('refresh keeps hand-added and user-customised models and drops vanished plain ones', () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true });
     catalog.applyDiscovered('p', [{ id: 'a' }, { id: 'b' }, { id: 'c' }]);
     assert.equal(catalog.addManual('p', 'hand'), true);
     assert.equal(catalog.addManual('p', 'hand'), false, 'duplicates are refused');
@@ -120,7 +122,7 @@ describe('ModelCatalog', () => {
 
   it('a switched-off model stays switched off across refreshes', () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true });
     catalog.applyDiscovered('p', [{ id: 'a' }, { id: 'b' }]);
     catalog.updateModel('@p/a', { enabled: false });
     catalog.applyDiscovered('p', [{ id: 'a' }, { id: 'b' }]);
@@ -129,7 +131,7 @@ describe('ModelCatalog', () => {
 
   it(`providers with more than ${AUTO_ENABLE_LIMIT} models get new ones switched off`, () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'big', label: 'Big', baseUrl: 'https://big.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'big', label: 'Big', baseUrl: 'https://big.example', keyOptional: true });
     catalog.applyDiscovered('big', Array.from({ length: AUTO_ENABLE_LIMIT + 1 }, (_, i) => ({ id: `m${i}` })));
     assert.equal(catalog.providerModels('big').length, AUTO_ENABLE_LIMIT + 1);
     assert.equal(catalog.enabledModels().length, 0);
@@ -139,7 +141,7 @@ describe('ModelCatalog', () => {
 
   it('disabling a provider hides its models; removing it deletes them', () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true });
     catalog.addManual('p', 'a');
     catalog.update('p', { enabled: false });
     assert.equal(catalog.enabledModels().length, 0);
@@ -151,7 +153,7 @@ describe('ModelCatalog', () => {
 
   it('removeModel deletes a single model', () => {
     const { catalog } = fresh();
-    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true });
     catalog.addManual('p', 'a');
     assert.equal(catalog.removeModel('@p/a'), true);
     assert.equal(catalog.removeModel('@p/a'), false);
@@ -159,7 +161,7 @@ describe('ModelCatalog', () => {
 
   it('survives a restart: a new ModelCatalog on the same db sees the same data', () => {
     const { db, catalog } = fresh();
-    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true, flavor: 'generic' });
+    catalog.create({ slug: 'p', label: 'P', baseUrl: 'https://p.example', keyOptional: true });
     catalog.addManual('p', 'a', { tags: ['free'] });
     const again = new ModelCatalog(db, {});
     assert.deepEqual(again.enabledModels().map(m => [m.id, m.tags]), [['@p/a', ['free']]]);

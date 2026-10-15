@@ -10,19 +10,19 @@ export function seedBuiltinCatalog(): ModelCatalog {
   const db = openDb(':memory:');
   runMigrations(db);
   const catalog = new ModelCatalog(db, {});
-  const add = (slug: string, label: string, flavor: 'gemini' | 'deepseek' | 'mindgate', models: Record<string, ModelFields>) => {
-    catalog.create({ slug, label, baseUrl: `https://${slug}.example/v1`, keyOptional: false, flavor });
+  const add = (slug: string, label: string, models: Record<string, ModelFields>) => {
+    catalog.create({ slug, label, baseUrl: `https://${slug}.example/v1`, keyOptional: false });
     for (const [id, fields] of Object.entries(models)) catalog.addManual(slug, id, fields);
   };
-  add('gemini', 'Google Gemini', 'gemini', {
+  add('gemini', 'Google Gemini', {
     'gemini-3.5-flash-lite': { tags: ['free'], supportsImages: true },
     'gemini-3.8-flash': { supportsImages: true },
   });
-  add('deepseek', 'DeepSeek', 'deepseek', {
+  add('deepseek', 'DeepSeek', {
     'deepseek-chat': {},
     'deepseek-reasoner': { tags: ['reasoning'] },
   });
-  add('mindgate', 'MindGate', 'mindgate', {
+  add('mindgate', 'MindGate', {
     flash: { tags: ['free'], toolSchemaMode: 'flat' },
   });
   return catalog;

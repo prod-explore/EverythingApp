@@ -335,7 +335,7 @@ describe('web_fetch through the real server (buildApp)', () => {
     const db = openDb(':memory:');
     runMigrations(db);
     const router = new ProviderRouter({ db, env: {}, llmOverride: client as never });
-    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+    router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
     router.catalog.addManual('t', 'm', { tags: ['reasoning'] });
     const built = await buildApp({
       db, connections: [], router, authToken: 't', config: { model: '', autoApproveTools: [] },

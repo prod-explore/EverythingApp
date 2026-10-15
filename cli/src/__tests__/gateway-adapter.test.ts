@@ -11,7 +11,7 @@ function client(handler: (url: string, n: number) => Response) {
     return handler(String(url), calls.length);
   }) as typeof fetch;
   const c = new OpenAiCompatClient({
-    flavor: 'mindgate', baseUrl: 'https://gw.example/v1', apiKey: 'mg-SECRET-KEY', fetchImpl: impl, sleep: async () => {},
+    baseUrl: 'https://gw.example/v1', apiKey: 'mg-SECRET-KEY', fetchImpl: impl, sleep: async () => {},
     meta: { get: () => null, set: () => {} }, modelInfo: getModelInfo,
   });
   return { c, calls };

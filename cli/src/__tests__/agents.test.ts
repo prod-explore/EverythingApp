@@ -59,7 +59,7 @@ async function setup(script: Script, opts: { limits?: Partial<AgentLimits>; auto
   };
   // A real router serving every model from the scripted client; the catalog holds one free and one paid model.
   const router = new ProviderRouter({ db, env: {}, llmOverride: client as never });
-  router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true, flavor: 'generic' });
+  router.catalog.create({ slug: 't', label: 'Test', baseUrl: 'https://t.example/v1', keyOptional: true });
   router.catalog.addManual('t', 'free-1', { tags: ['free'] });
   router.catalog.addManual('t', 'free-2', { tags: ['free', 'coder'] });
   router.catalog.addManual('t', 'strong', { tags: ['reasoning'] });
