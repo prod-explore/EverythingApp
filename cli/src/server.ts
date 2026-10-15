@@ -550,6 +550,11 @@ ${formatHumanResponse(response)}` };
     return turnStates.get(convId) ?? { id: 0, status: 'idle' };
   }
 
+  /** Conversations whose history a manual /compact is rewriting right now. */
+  const compacting = new Set<string>();
+  /** A turn or a manual compaction is running: anything that would change the history has to wait. */
+  const isBusy = (convId: string): boolean => getTurnState(convId).status === 'running' || compacting.has(convId);
+
   // ─── Express setup ────────────────────────────────────────────────────────
   const app = express();
   app.set('trust proxy', 1);
@@ -913,7 +918,7 @@ ${formatHumanResponse(response)}` };
   app.delete('/api/conversations/:id/messages', (req, res) => {
     const conv = getConversation(db, req.params.id);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(req.params.id).status === 'running') {
+    if (isBusy(req.params.id)) {
       res.status(409).json({ error: 'turn is running — kill it first' });
       return;
     }
@@ -958,10 +963,12 @@ ${formatHumanResponse(response)}` };
     const convId = req.params.id;
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') { res.status(409).json({ error: 'a turn is running in this conversation' }); return; }
+    if (isBusy(convId)) { res.status(409).json({ error: 'a turn or a compaction is running in this conversation' }); return; }
     if (refuseGhostTurn(conv, res)) return;
     const modelId = modelOf(conv);
     if (!modelId) { res.status(400).json({ error: 'No model is set up yet — add a provider in Settings → Models.' }); return; }
+    // Held while the model writes the summary, so a message sent meanwhile cannot start a turn on the history being rewritten.
+    compacting.add(convId);
     try {
       const bg = backgroundModel(db, router, { localOnly: conv.ghost });
       const chat = bg ? null : router.clientFor(modelId);
@@ -975,6 +982,8 @@ ${formatHumanResponse(response)}` };
       res.json({ ok: true, ...r, state: publicState(convId) });
     } catch (err) {
       res.status(502).json({ error: classifyError(err, s => router.redact(s)).message });
+    } finally {
+      compacting.delete(convId);
     }
   });
 
@@ -1003,74 +1012,81 @@ ${formatHumanResponse(response)}` };
     sse.emit(convId, 'turn:start', { turnId });
 
     const turnDone = (async () => {
-      const effectiveModel = modelOf(conv);
-      const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
-      const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
-      const unregisterRoot = agents.registerRoot(rootRun.id, controller);
-      activeRootRun.set(convId, rootRun.id);
-      if (conv.projectId) lastConvForProject.set(conv.projectId, convId);
-      if (conv.sandboxEnabled) {
-        // Checkpoint the workspace before the turn (rollback point), and refresh sandbox git wiring.
-        // Best-effort and bounded: a supervisor hiccup must not block the chat.
-        const owner = conv.projectId ?? convId;
-        await Promise.race([
-          Promise.allSettled([
-            supervisor.checkpoint(owner, `before: ${goalText.slice(0, 60)}`),
-            conv.projectId ? github.ensureSandboxGit(conv.projectId) : Promise.resolve(),
-          ]),
-          new Promise(r => setTimeout(r, 15_000)),
-        ]);
-      }
-      // `||` not `??`: an empty-string setting (e.g. global_system_prompt
-      // saved as "" from the Settings UI) must fall through to the default
-      // too — `??` only catches null/undefined.
-      let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
-
-      // Settings → "custom instructions" (how the user wants answers), the working-style note, plan mode, and the
-      // project's own instruction file.
-      const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
-      if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
-      effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
-      if (getConversationState(db, convId).mode === 'plan') effectiveSystem += '\n\n' + PLAN_MODE_PROMPT;
-      if (conv.sandboxEnabled) {
-        // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
-        const agentsFile = await Promise.race([
-          supervisor.readFile(conv.projectId ?? convId, `/workspace/${AGENTS_FILE}`).then(b => b.toString('utf8')).catch(() => ''),
-          new Promise<string>(r => setTimeout(() => r(''), 4_000)),
-        ]);
-        if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
-        effectiveSystem += '\n\n' + FILE_TOOLS_PROMPT;
-      }
-      effectiveSystem += '\n\n' + (conv.ghost ? GHOST_PROMPT : WEB_TOOLS_PROMPT);
-
-      // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
-      // In a ghost chat that is only the local ones.
-      const agentModels = router.chatCandidates().filter(m => m.available && (!conv.ghost || isLocalModel(m)));
-      if (agentModels.length > 0) {
-        const block = modelsPrompt(agentModels, {
-          subagent: resolveSlot(db, 'subagent', agentModels, id => router.isAvailable(id)),
-          escalation: resolveSlot(db, 'escalation', agentModels, id => router.isAvailable(id)),
-        }, { parentIsFree: isFreeModel(getModelInfo(effectiveModel)), allowPaid: allowPaidAgents(db) });
-        if (block) effectiveSystem += '\n\n' + block;
-      }
-
-      // Inject prompts from Skills attached to this conversation (Phase 2).
-      // Each non-empty skill prompt is appended after a separator so the model
-      // can distinguish skill instructions from the base system prompt.
-      const attachedSkills = getConversationSkills(db, convId);
-      const skillPrompts = attachedSkills.map(s => s.prompt).filter(Boolean);
-      if (skillPrompts.length > 0) {
-        effectiveSystem += '\n\n---\n\n' + skillPrompts.join('\n\n---\n\n');
-      }
-
-      // Auto-approve tools declared by attached skills for this chat
-      attachedSkills.forEach(skill => {
-        skill.allowedTools.forEach(tool => {
-          approvalGate.grantChatScope(convId, tool);
-        });
-      });
-
+      // Everything from here on is inside the try: an exception while preparing the turn (database, skills, model list)
+      // must end it like any other failure, not leave the conversation marked as running until a restart.
+      let startedRun: ReturnType<typeof createRun> | undefined;
+      let releaseRoot: () => void = () => {};
       try {
+        const effectiveModel = modelOf(conv);
+        const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
+        const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
+        startedRun = rootRun;
+        const unregisterRoot = agents.registerRoot(rootRun.id, controller);
+        releaseRoot = unregisterRoot;
+        activeRootRun.set(convId, rootRun.id);
+        if (conv.projectId) lastConvForProject.set(conv.projectId, convId);
+        if (conv.sandboxEnabled) {
+          // Checkpoint the workspace before the turn (rollback point), and refresh sandbox git wiring.
+          // Best-effort and bounded: a supervisor hiccup must not block the chat.
+          const owner = conv.projectId ?? convId;
+          await Promise.race([
+            Promise.allSettled([
+              supervisor.checkpoint(owner, `before: ${goalText.slice(0, 60)}`),
+              conv.projectId ? github.ensureSandboxGit(conv.projectId) : Promise.resolve(),
+            ]),
+            new Promise(r => setTimeout(r, 15_000)),
+          ]);
+        }
+        // `||` not `??`: an empty-string setting (e.g. global_system_prompt
+        // saved as "" from the Settings UI) must fall through to the default
+        // too — `??` only catches null/undefined.
+        let effectiveSystem = withModelIdentity(conv.systemPrompt || getSetting(db, 'global_system_prompt') || DEFAULT_SYSTEM_PROMPT, effectiveModel);
+
+        // Settings → "custom instructions" (how the user wants answers), the working-style note, plan mode, and the
+        // project's own instruction file.
+        const customInstructions = (getSetting(db, 'custom_instructions') ?? '').trim();
+        if (customInstructions) effectiveSystem += `\n\nThe user's custom instructions:\n${customInstructions}`;
+        effectiveSystem += '\n\n' + WORKING_STYLE_PROMPT;
+        if (getConversationState(db, convId).mode === 'plan') effectiveSystem += '\n\n' + PLAN_MODE_PROMPT;
+        if (conv.sandboxEnabled) {
+          // Best-effort and bounded, like the checkpoint above: a missing file or a slow supervisor just means no instructions.
+          const agentsFile = await Promise.race([
+            supervisor.readFile(conv.projectId ?? convId, `/workspace/${AGENTS_FILE}`).then(b => b.toString('utf8')).catch(() => ''),
+            new Promise<string>(r => setTimeout(() => r(''), 4_000)),
+          ]);
+          if (agentsFile.trim()) effectiveSystem += '\n\n' + projectInstructionsPrompt(agentsFile);
+          effectiveSystem += '\n\n' + FILE_TOOLS_PROMPT;
+        }
+        effectiveSystem += '\n\n' + (conv.ghost ? GHOST_PROMPT : WEB_TOOLS_PROMPT);
+
+        // The orchestrator needs to know which models it may hand work to — generated from the catalog, so it can't drift.
+        // In a ghost chat that is only the local ones.
+        const agentModels = router.chatCandidates().filter(m => m.available && (!conv.ghost || isLocalModel(m)));
+        if (agentModels.length > 0) {
+          const block = modelsPrompt(agentModels, {
+            subagent: resolveSlot(db, 'subagent', agentModels, id => router.isAvailable(id)),
+            escalation: resolveSlot(db, 'escalation', agentModels, id => router.isAvailable(id)),
+          }, { parentIsFree: isFreeModel(getModelInfo(effectiveModel)), allowPaid: allowPaidAgents(db) });
+          if (block) effectiveSystem += '\n\n' + block;
+        }
+
+        // Inject prompts from Skills attached to this conversation (Phase 2).
+        // Each non-empty skill prompt is appended after a separator so the model
+        // can distinguish skill instructions from the base system prompt.
+        const attachedSkills = getConversationSkills(db, convId);
+        const skillPrompts = attachedSkills.map(s => s.prompt).filter(Boolean);
+        if (skillPrompts.length > 0) {
+          effectiveSystem += '\n\n---\n\n' + skillPrompts.join('\n\n---\n\n');
+        }
+
+        // Auto-approve tools declared by the skills attached right now, for this turn only
+        approvalGate.clearChatScope(convId);
+        attachedSkills.forEach(skill => {
+          skill.allowedTools.forEach(tool => {
+            approvalGate.grantChatScope(convId, tool);
+          });
+        });
+
         // Inside the try on purpose: a missing/undecryptable key must surface as an
         // ordinary turn:error the UI already knows how to show, not a crash.
         // Checked again here, at the last moment before any content leaves: the routes already refuse, but a model can
@@ -1224,15 +1240,17 @@ ${m.body}`),
         // assistant reply. The turn:error/aborted event below is what
         // tells the UI this turn didn't complete. (See retry, below, for
         // how this state gets resolved.)
-        setRunStatus(db, rootRun.id, aborted ? 'aborted' : 'error', { error: detail ?? error });
+        if (startedRun) setRunStatus(db, startedRun.id, aborted ? 'aborted' : 'error', { error: detail ?? error });
         turnStates.set(convId, { id: turnId, status: aborted ? 'aborted' : 'error', error, kind: incident.kind });
         sse.emit(convId, aborted ? 'turn:aborted' : 'turn:error', { turnId, error, kind: incident.kind, transient: incident.transient, ...(detail ? { detail } : {}) });
       } finally {
         abortControllers.delete(convId);
         // Workers belong to the turn that started them: when it ends, whatever is still running stops.
-        agents.stopTree(rootRun.id, 'the chat turn that started this agent ended', { includeRoot: false });
-        unregisterRoot();
-        if (activeRootRun.get(convId) === rootRun.id) activeRootRun.delete(convId);
+        if (startedRun) agents.stopTree(startedRun.id, 'the chat turn that started this agent ended', { includeRoot: false });
+        releaseRoot();
+        if (startedRun && activeRootRun.get(convId) === startedRun.id) activeRootRun.delete(convId);
+        // Skill grants last for one turn (see grantChatScope)
+        approvalGate.clearChatScope(convId);
       }
     })();
     turnsInFlight.add(turnDone);
@@ -1275,7 +1293,7 @@ ${m.body}`),
     }
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
+    if (isBusy(convId)) {
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
@@ -1300,7 +1318,7 @@ ${m.body}`),
     const convId = req.params.id;
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
+    if (isBusy(convId)) {
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
@@ -1332,7 +1350,7 @@ ${m.body}`),
     const convId = req.params.id;
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
+    if (isBusy(convId)) {
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
@@ -1352,7 +1370,7 @@ ${m.body}`),
     const convId = req.params.id;
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
+    if (isBusy(convId)) {
       res.status(409).json({ error: 'a turn is already running in this conversation' });
       return;
     }
@@ -1371,7 +1389,7 @@ ${m.body}`),
     const convId = req.params.id;
     const conv = getConversation(db, convId);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
-    if (getTurnState(convId).status === 'running') {
+    if (isBusy(convId)) {
       res.status(409).json({ error: 'turn is running — kill it first' });
       return;
     }

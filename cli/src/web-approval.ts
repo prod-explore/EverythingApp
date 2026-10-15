@@ -198,8 +198,14 @@ export class WebApprovalGate {
   }
 
   grantChatScope(conversationId: string, toolLabel: string): void {
-    // In-memory only — skill per-turn grants aren't persisted (they expire after the turn)
+    // In-memory only — skill per-turn grants aren't persisted. They end with the turn: the server calls
+    // clearChatScope before granting afresh from the skills attached at that moment, and again when the turn ends.
     this.grantChatScopeInMemory(conversationId, toolLabel);
+  }
+
+  /** Drops every per-turn skill grant of this conversation. */
+  clearChatScope(conversationId: string): void {
+    this.chatAllowed.delete(conversationId);
   }
 
   listPending(): PendingApproval[] {
