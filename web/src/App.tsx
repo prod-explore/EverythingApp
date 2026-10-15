@@ -162,25 +162,9 @@ function MainApp() {
   async function handleProjectDeleted(id: string) {
     setEditProjectId(null);
     setSelectedProjectId(prev => (prev === id ? null : prev));
-    const list = await refreshConversations();
-    if (list.length === 0) {
-      await createConversation();
-    } else if (selectedId && !list.some(c => c.id === selectedId)) {
-      setSelectedId(list[0]?.id ?? null);
-    }
+    await refreshConversations();
     void refreshProjects();
   }
-
-  // Guard against empty state: if all conversations were deleted or selectedId is unset,
-  // automatically spawn a new one so the user never gets stuck on an infinite "Loading…" screen.
-  useEffect(() => {
-    if (loading) return;
-    if (conversations.length === 0) {
-      void createConversation();
-    } else if (!selectedId || !conversations.some(c => c.id === selectedId)) {
-      setSelectedId(conversations[0].id);
-    }
-  }, [loading, conversations, selectedId, createConversation, setSelectedId]);
 
   const selected = conversations.find(c => c.id === selectedId) ?? null;
   const projectOfChat = selected?.projectId ?? null;

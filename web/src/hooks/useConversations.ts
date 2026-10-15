@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   createConversation as apiCreateConversation,
   deleteConversation as apiDeleteConversation,
@@ -23,19 +23,7 @@ export function useConversations() {
     setLoading(true);
     refresh()
       .then(list => {
-        if (cancelled) return;
-        // Land on the most recently active conversation, or make a fresh
-        // one if this is a first run with none yet — never show a picker
-        // with no conversation open.
-        if (list.length > 0) {
-          setSelectedId(list[0].id);
-        } else {
-          apiCreateConversation({ title: 'New conversation' }).then(({ id }) => {
-            if (cancelled) return;
-            setSelectedId(id);
-            refresh();
-          });
-        }
+        if (!cancelled && list.length > 0) setSelectedId(list[0].id);
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
@@ -43,10 +31,31 @@ export function useConversations() {
     return () => {
       cancelled = true;
     };
-    // Intentionally runs once — refresh() is stable (no deps) and re-running
-    // this on every refresh() identity change would fight the create-if-empty logic above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Runs once; refresh() is stable.
   }, []);
+
+  // The one place that guarantees a conversation is open. Deleting the last
+  // chat, a first run and a deleted project all just leave the list empty;
+  // this effect reacts, and the in-flight ref makes sure it spawns exactly one.
+  const spawning = useRef(false);
+  useEffect(() => {
+    if (loading) return;
+    if (conversations.length === 0) {
+      if (spawning.current) return;
+      spawning.current = true;
+      apiCreateConversation({ title: 'New conversation' })
+        .then(async ({ id }) => {
+          await refresh();
+          setSelectedId(id);
+        })
+        .catch(() => {})
+        .finally(() => {
+          spawning.current = false;
+        });
+    } else if (!selectedId || !conversations.some(c => c.id === selectedId)) {
+      setSelectedId(conversations[0].id);
+    }
+  }, [loading, conversations, selectedId, refresh]);
 
   const createConversation = useCallback(async (title?: string, projectId?: string, ghost?: boolean) => {
     const { id } = await apiCreateConversation({ title, projectId, ghost });
@@ -66,16 +75,9 @@ export function useConversations() {
   const deleteConversation = useCallback(
     async (id: string) => {
       await apiDeleteConversation(id);
-      const list = await refresh();
-      if (list.length === 0) {
-        const { id: newId } = await apiCreateConversation({ title: 'New conversation' });
-        await refresh();
-        setSelectedId(newId);
-      } else if (selectedId === id || !list.some(c => c.id === selectedId)) {
-        setSelectedId(list[0].id);
-      }
+      await refresh();
     },
-    [refresh, selectedId],
+    [refresh],
   );
 
   return {
