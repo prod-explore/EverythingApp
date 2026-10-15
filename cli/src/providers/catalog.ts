@@ -192,9 +192,12 @@ export function migrateCatalogSchema(db: Database.Database): void {
       PRIMARY KEY (provider, model_id)
     );
   `);
-  // Added with Ghost mode; guarded ALTER because this table is created lazily by the catalog itself.
-  const cols = db.prepare(`PRAGMA table_info(providers)`).all() as Array<{ name: string }>;
-  if (!cols.some(c => c.name === 'local')) db.exec(`ALTER TABLE providers ADD COLUMN local INTEGER NOT NULL DEFAULT 0`);
+  // Columns added after the table first existed. Guarded ALTERs, because this table is created lazily by the catalog
+  // itself and a database made by an older version still has the old shape (CREATE TABLE IF NOT EXISTS keeps it).
+  const cols = new Set((db.prepare(`PRAGMA table_info(providers)`).all() as Array<{ name: string }>).map(c => c.name));
+  if (!cols.has('concurrency')) db.exec(`ALTER TABLE providers ADD COLUMN concurrency INTEGER`);
+  if (!cols.has('retry_min')) db.exec(`ALTER TABLE providers ADD COLUMN retry_min INTEGER`);
+  if (!cols.has('local')) db.exec(`ALTER TABLE providers ADD COLUMN local INTEGER NOT NULL DEFAULT 0`);
 }
 
 interface ProviderRow { slug: string; label: string; base_url: string; key_optional: number; enabled: number; concurrency: number | null; retry_min: number | null; local: number }

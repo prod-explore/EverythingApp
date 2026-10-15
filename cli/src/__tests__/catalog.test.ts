@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import Database from 'better-sqlite3';
 import { openDb, runMigrations } from '../db.js';
 import {
-  AUTO_ENABLE_LIMIT, ModelCatalog, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
+  AUTO_ENABLE_LIMIT, ModelCatalog, migrateCatalogSchema, normalizeBaseUrl, parseDiscoveredModel, sanitizeFields, sanitizeTags,
 } from '../providers/catalog.js';
 import { getModelInfo, isCatalogModel, parseModelId, supportsTools } from '../providers/registry.js';
 
@@ -81,6 +82,22 @@ describe('model ids', () => {
   it('parse canonical ids', () => {
     assert.deepEqual(parseModelId('@or/meta/llama'), { slug: 'or', upstream: 'meta/llama' });
     assert.equal(parseModelId('gpt-4o'), null);
+  });
+});
+
+describe('provider table from an older version', () => {
+  it('gets the columns it lacks, keeps its rows, and accepts a new provider', () => {
+    const db = new Database(':memory:');
+    db.exec(`CREATE TABLE providers (slug TEXT PRIMARY KEY, label TEXT NOT NULL, base_url TEXT NOT NULL, key_optional INTEGER NOT NULL DEFAULT 0,
+      flavor TEXT NOT NULL DEFAULT 'generic', enabled INTEGER NOT NULL DEFAULT 1, timeout_sec INTEGER, position INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+    db.prepare(`INSERT INTO providers (slug, label, base_url) VALUES ('old', 'Old', 'https://old.example/v1')`).run();
+    migrateCatalogSchema(db);
+    migrateCatalogSchema(db); // idempotent
+    const catalog = new ModelCatalog(db, {});
+    assert.equal(catalog.get('old')?.retryMin, null);
+    catalog.create({ slug: 'new', label: 'New', baseUrl: 'https://new.example/v1', keyOptional: false, retryMin: 30, concurrency: 1 });
+    assert.deepEqual([catalog.get('new')?.retryMin, catalog.get('new')?.concurrency], [30, 1]);
   });
 });
 
