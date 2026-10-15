@@ -40,7 +40,7 @@ function blockChars(b: Llm.ContentBlockParam): number {
 export function estimateTokens(messages: Llm.MessageParam[], system = '', tools: Llm.Tool[] = []): number {
   let chars = system.length;
   for (const t of tools) chars += t.name.length + (t.description?.length ?? 0) + JSON.stringify(t.input_schema).length;
-  for (const m of messages) chars += typeof m.content === 'string' ? m.content.length : m.content.reduce((n, b) => n + blockChars(b), 0) + 8;
+  for (const m of messages) chars += (typeof m.content === 'string' ? m.content.length : m.content.reduce((n, b) => n + blockChars(b), 0)) + 8;
   return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 
@@ -91,12 +91,19 @@ export function trimForContext(
 
 // ─── 2. compaction ───────────────────────────────────────────────────────────
 
-/** A message the user typed (not a tool_result carrier). */
+/**
+ * A message the user typed. A message that carries any `tool_result` is never a turn start, even when text was
+ * appended to it (messages from other agents are added to the tool-result message mid-turn): cutting there
+ * would leave a `tool_result` in the kept tail whose `tool_use` was summarised away.
+ */
 export function isUserTurn(m: { role: string; content: unknown }): boolean {
   if (m.role !== 'user') return false;
   if (typeof m.content === 'string') return true;
-  return Array.isArray(m.content) && m.content.some((b: { type?: string }) => b?.type !== 'tool_result');
+  return Array.isArray(m.content) && m.content.length > 0 && !m.content.some((b: { type?: string }) => b?.type === 'tool_result');
 }
+
+const hasToolResult = (m: { content: unknown }): boolean =>
+  Array.isArray(m.content) && m.content.some((b: { type?: string }) => b?.type === 'tool_result');
 
 /**
  * Where to cut: index of the first message that stays verbatim. Everything before it gets summarised.
@@ -111,6 +118,7 @@ export function planCompaction(
   for (let keep = Math.min(opts.keepTurns ?? 3, turns.length - 1); keep >= 1; keep--) {
     const cut = turns[turns.length - keep]!;
     if (cut < 2) continue;
+    if (hasToolResult(rows[cut]!)) continue; // belt and braces: never start the kept tail with an orphan result
     const tail = rows.slice(cut) as Llm.MessageParam[];
     if (opts.maxTailTokens === undefined || estimateTokens(tail) <= opts.maxTailTokens || keep === 1) return cut;
   }

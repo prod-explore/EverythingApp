@@ -96,7 +96,7 @@ export interface GazetaField {
  */
 export function handleRequestHumanInput(
   db: Database.Database,
-  conversationId: string,
+  conversationId: string | undefined,
   args: { title: string; description: string; choices?: string[]; fields?: GazetaField[]; timeout_seconds?: number; urgent?: boolean },
   origin: GazetaOrigin = {},
 ): { itemId: string; message: string } {

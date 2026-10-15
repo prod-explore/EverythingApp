@@ -6,7 +6,7 @@
 
 **Decision.**
 - **Three layers of context management**, cheapest first.
-  1. *Trim:* before each request, if the estimate exceeds 60 % of the window, old tool outputs are replaced by a stub, oldest first, never the newest. This only changes the copy sent to the model — the stored history keeps the full outputs.
+  1. *Trim:* before each request, if the estimate exceeds 60 % of the window, old tool outputs are replaced by a stub, oldest first, never the newest. This only changes the copy sent to the model — the stored history is not touched (each tool result is already truncated to head and tail when it is produced).
   2. *Compact:* before a turn, if the last measured prompt size (the provider's `usage`) plus the new message exceeds 75 % of the window, the older part of the conversation is summarised by the **helper** model (else the chat model) and the summary is stored as a `summary` message row `{ text, upTo }`. For the model, everything with `id <= upTo` is replaced by the text (merged into the first kept user message); the last user turns stay verbatim. The UI still lists every original message and shows a notice where the summary starts. Long histories are folded into the summary chunk by chunk. Retiring or deleting "from here" keeps a summary that only covers earlier messages.
   3. *React:* if a provider still answers "context too long" (recognised by wording and status; the limit it names is shown), the turn compacts once more, tighter, and repeats the request — only when no tool has run yet in that turn, since repeating could redo effects. Otherwise the person gets the plain-language error and a *Compact & retry* button.
   Without a known window nothing is done proactively. Compaction failing never blocks the turn.

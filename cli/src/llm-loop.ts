@@ -67,8 +67,9 @@ export interface ConversationDeps {
   systemPrompt: string;
   /** Orchestrator-executed tools, run inside the loop (see VirtualTool). */
   virtualTools?: VirtualTool[];
-  /** Ask a human yes/no before a side-effecting tool call runs. */
-  /** `{ approved:false, reason }` = refused by policy rather than by a human; the reason is shown to the model. */
+  /**
+   * Ask a human yes/no before a side-effecting tool call runs.
+   * `{ approved:false, reason }` = refused by policy rather than by a human; the reason is shown to the model. */
   confirm: (
     toolLabel: string,
     args: Record<string, unknown>,
@@ -88,13 +89,13 @@ export interface ConversationDeps {
   onToolStart?: (toolLabel: string) => void;
   /** Called once per API response with that response's usage. */
   onUsage?: (usage: Llm.Usage) => void;
-  /** Called after each tool call with the full (un-truncated) output — for UI display. */
+  /** Called after each tool call with the full (un-truncated) output and the truncated text the model gets. */
   onToolResult?: (toolName: string, fullOutput: string, truncatedOutput: string, isError: boolean) => void;
   /** Hard cap on model round-trips in this turn (runaway-loop guard, used for subagents). Unlimited when unset. */
   maxSteps?: number;
   /** AbortSignal — set by the kill switch (POST /api/conversations/:id/kill). */
   signal?: AbortSignal;
-  /** Max tool output length in characters before truncating for the model context. Default 30 000. */
+  /** Max tool output length in characters before truncating for the model context. Default 12 000 (see output-truncator.ts). */
   maxToolOutputLength?: number;
   /**
    * Current conversation ID — injected into sandbox tool args as `_conversation_id`
@@ -156,20 +157,11 @@ const DENIED_MESSAGE = 'Rejected by user (approval gate) — not executed.';
  * real tool name portion (after the `__` separator ToolRegistry uses for
  * namespacing).
  */
-const STATEFUL_TOOL_NAMES = new Set([
-  'run_bash',
-  'git_op',
-  'read_log',
-  'terminal_list',
-  'terminal_close',
-  'browser_open',
-  'browser_observe',
-  'browser_act',
-  'browser_close',
-]);
-
-/** Browser tools: get the orchestrator's `_policy`; model-supplied hidden args are stripped. */
+/** Browser tools: per chat; they get the orchestrator's `_policy`, model-supplied hidden args are stripped. */
 const BROWSER_TOOL_NAMES = new Set(['browser_open', 'browser_observe', 'browser_act', 'browser_close']);
+/** The subset that lives in the project-scoped sandbox. */
+const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log', 'terminal_list', 'terminal_close']);
+const STATEFUL_TOOL_NAMES = new Set([...SANDBOX_TOOL_NAMES, ...BROWSER_TOOL_NAMES]);
 /** Read-only tools that stay unprompted even after a page looked like a prompt injection. */
 const READ_ONLY_AFTER_INJECTION = new Set(['browser_observe', 'browser_close', 'read_log', 'terminal_list', 'read_file']);
 /** Tools that are auto-approved in normal mode but still have an effect, so plan mode refuses them. */
@@ -191,9 +183,6 @@ export function browserInjectionSignal(text: string): { suspected: boolean; reas
   }
 }
 
-/** The subset of the above that lives in the project-scoped sandbox (the browser tools are per chat). */
-const SANDBOX_TOOL_NAMES = new Set(['run_bash', 'git_op', 'read_log', 'terminal_list', 'terminal_close']);
-
 function realToolName(exposedName: string): string {
   const parts = exposedName.split('__');
   return parts[parts.length - 1] ?? '';
@@ -204,9 +193,7 @@ function needsProjectId(exposedName: string): boolean {
 }
 
 function needsConversationId(exposedName: string): boolean {
-  const parts = exposedName.split('__');
-  const realName = parts[parts.length - 1];
-  return STATEFUL_TOOL_NAMES.has(realName ?? '');
+  return STATEFUL_TOOL_NAMES.has(realToolName(exposedName));
 }
 
 /**
@@ -279,7 +266,7 @@ export async function runTurn(
       messages[messages.length - 1] = { role: 'user', content: blocks };
     }
 
-    // What is sent may be a trimmed copy; `messages` itself (and so what gets stored) always keeps the full outputs.
+    // What is sent may be a trimmed copy (old tool outputs stubbed); `messages` itself is never trimmed. Tool outputs in it are already truncated per result.
     const view = deps.contextWindow
       ? trimForContext(messages, Math.floor(deps.contextWindow * TRIM_AT), estimateTokens([], deps.systemPrompt, toolDefs)).messages
       : messages;
@@ -469,14 +456,14 @@ export async function runTurn(
       }
       const isError = result.isError === true;
 
-      // Truncate long tool outputs for the model; keep full output for UI
-      const { truncated, wasTruncated } = truncateToolOutput(result.text, deps.maxToolOutputLength);
+      // Long outputs are truncated (head + tail) for the model and for storage
+      const { truncated } = truncateToolOutput(result.text, deps.maxToolOutputLength);
       deps.onToolResult?.(use.name, result.text, truncated, isError);
 
       toolResults.push({
         type: 'tool_result',
         tool_use_id: use.id,
-        content: wasTruncated ? truncated : result.text,
+        content: truncated,
         is_error: isError,
       });
     }

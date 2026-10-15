@@ -1,6 +1,6 @@
 import express from 'express';
 import helmet from 'helmet';
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -33,11 +33,9 @@ import { parseCommandPolicy } from './command-policy.js';
 import { PolicyStore, policyFilePath } from './policy-file.js';
 import { AgentManager } from './agents.js';
 import { ACTIVE_STATUSES, addRunUsage, createRun, drainRunMessages, getRun, heartbeatRun, interruptOrphanedRuns, listRuns, postRunMessage, setRunStatus } from './runs.js';
-import { OrchestratorSupervisorClient, guessMime } from './supervisor-client.js';
-import { createHash } from 'node:crypto';
+import { OrchestratorSupervisorClient, SupervisorExec, guessMime, type SandboxExec } from './supervisor-client.js';
 import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestProjectConversation } from './github-routes.js';
-import { SupervisorExec, type SandboxExec } from './supervisor-client.js';
 import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
 import { createWebRoutes } from './web-routes.js';
 import { buildWebTools, PageCache, WEB_TOOLS_PROMPT } from './web/tools.js';
@@ -306,7 +304,6 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   if (opts.policyFile) { policyStore.get(); console.log(`[policy] always-allow/block lists and domains: ${opts.policyFile}${policyStore.lastError ? ` (INVALID: ${policyStore.lastError})` : ''}`); }
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
-  // A provider is busy (e.g. Gemini free tier at peak hours): we keep retrying quietly — log it and tell the UI.
   /**
    * Model for chats that have none of their own: the `chat` slot — the user's explicit default, else a usable `free`
    * model, else any usable chat model — and finally the configured DEFAULT_MODEL (may be empty: then the turn says
@@ -433,7 +430,7 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           ? input.timeout_seconds
           : undefined;
         const blocking = input.wait !== false;
-        const { itemId } = handleRequestHumanInput(db, origin.convId || (undefined as unknown as string), {
+        const { itemId } = handleRequestHumanInput(db, origin.convId || undefined, {
           title,
           description,
           choices: Array.isArray(input.choices) ? input.choices.filter(isString) : undefined,
@@ -550,10 +547,10 @@ ${formatHumanResponse(response)}` };
       directives: {
         defaultSrc: ["'self'"],
         scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"], // Tailwind needs this
+        styleSrc: ["'self'", "'unsafe-inline'"], // React `style={…}` attributes need inline styles
         imgSrc: ["'self'", 'data:', 'blob:'],
         connectSrc: ["'self'"],
-        fontSrc: ["'self'", 'https://fonts.gstatic.com'],
+        fontSrc: ["'self'"],
       },
     },
   }));
@@ -765,7 +762,7 @@ ${formatHumanResponse(response)}` };
 
   // ─── Approval Grants ──────────────────────────────────────────────────────
   app.get('/api/approval/grants', (req, res) => {
-    const { conversationId, projectId, scope, toolLabel } = req.query as Record<string, string | undefined>;
+    const { conversationId, projectId, scope } = req.query as Record<string, string | undefined>;
     const grants = approvalGate.listGrants({ conversationId, projectId, scope });
     res.json({ grants });
   });
@@ -884,14 +881,14 @@ ${formatHumanResponse(response)}` };
     const conv = getConversation(db, req.params.id);
     if (!conv) { res.status(404).json({ error: 'conversation not found' }); return; }
     const messages = getMessages(db, req.params.id);
-    const safe = conv.title.replace(/[^\p{L}\p{N}._ -]+/gu, '_').trim().slice(0, 60) || 'conversation';
+    const safe = sanitizeFilename(conv.title.trim() || 'conversation').slice(0, 60).trim() || 'conversation';
     if (req.query['format'] === 'json') {
-      res.setHeader('Content-Disposition', `attachment; filename="${safe}.json"`);
+      res.setHeader('Content-Disposition', contentDisposition('attachment', `${safe}.json`));
       res.json({ title: conv.title, exportedAt: new Date().toISOString(), messages });
       return;
     }
     res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${safe}.md"`);
+    res.setHeader('Content-Disposition', contentDisposition('attachment', `${safe}.md`));
     res.send(exportMarkdown(conv.title, messages));
   });
 
