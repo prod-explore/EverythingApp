@@ -52,6 +52,16 @@ export class SSEManager {
     }
   }
 
+  /** Ends every open stream (shutdown): a server cannot finish closing while event streams are held open. */
+  closeAll(): void {
+    for (const bucket of this.clients.values()) {
+      for (const res of bucket) {
+        try { res.end(); } catch { /* already gone */ }
+      }
+    }
+    this.clients.clear();
+  }
+
   emit(conversationId: string, event: SSEEventName, data: unknown): void {
     const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
     const bucket = this.clients.get(conversationId);

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { migrateRuns } from './runs.js';
 import { migrateSearch } from './search.js';
+import { isUserTurn } from './context.js';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -685,15 +686,20 @@ export function findRegenerationAnchor(
   conversationId: string,
   fromId: number | null,
 ): { id: number; content: unknown; parentId: number | null } | null {
-  const row = db
+  // Rows with role 'user' also carry tool results, and a turn that was killed leaves such a row at its end:
+  // the anchor must be a message the person typed.
+  const rows = db
     .prepare(
       `SELECT id, content, parent_id as parentId FROM messages
        WHERE conversation_id = ? AND is_active = 1 AND role = 'user' AND (? IS NULL OR id <= ?)
-       ORDER BY id DESC LIMIT 1`,
+       ORDER BY id DESC`,
     )
-    .get(conversationId, fromId, fromId) as { id: number; content: string; parentId: number | null } | undefined;
-  if (!row) return null;
-  return { id: row.id, content: JSON.parse(row.content), parentId: row.parentId };
+    .iterate(conversationId, fromId, fromId) as Iterable<{ id: number; content: string; parentId: number | null }>;
+  for (const row of rows) {
+    const content = JSON.parse(row.content) as unknown;
+    if (isUserTurn({ role: 'user', content })) return { id: row.id, content, parentId: row.parentId };
+  }
+  return null;
 }
 
 // ─── Settings ────────────────────────────────────────────────────────────────

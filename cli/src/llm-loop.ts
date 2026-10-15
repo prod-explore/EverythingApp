@@ -130,6 +130,13 @@ export interface ConversationDeps {
   userUrlsTrusted?: boolean;
   /** Called at the start of every step (model round-trip) — run heartbeat. */
   onStep?: (step: number) => void;
+  /**
+   * Called with the messages the turn has produced since the last call (assistant replies and tool results, in order),
+   * before every model request, when the turn ends and when it fails. A tool call that was cut short is closed with an
+   * error result first, so every `tool_use` handed over has its `tool_result`. Lets the caller store a turn as it
+   * happens instead of only when it completes. The user message that started the turn is not included.
+   */
+  onMessages?: (messages: Llm.MessageParam[]) => void;
   /** The model's context window in tokens, when known: old tool outputs are dropped from the request as it fills up. */
   contextWindow?: number;
   /** Called with the provider-measured prompt size after every response. */
@@ -228,18 +235,79 @@ function sanitizeBlock(block: Llm.ContentBlockParam): Llm.ContentBlockParam {
   }
 }
 
+/** What a tool call that never finished reports to the model on the next turn. */
+export const INTERRUPTED_TOOL_RESULT = 'Interrupted: the turn ended before this tool call finished, so it may or may not have taken effect.';
+
+/** Bookkeeping that lets `runTurn` hand over (and, on failure, repair) the messages produced so far. */
+interface TurnTrace {
+  messages: Llm.MessageParam[];
+  /** How many of `messages` have already been passed to `onMessages` (the history and the user message count as passed). */
+  persisted: number;
+  /** Results collected for the tool calls of the step in progress. */
+  pending: Llm.ToolResultBlockParam[];
+}
+
+function flushNew(deps: ConversationDeps, trace: TurnTrace): void {
+  if (trace.messages.length <= trace.persisted) return;
+  deps.onMessages?.(trace.messages.slice(trace.persisted));
+  trace.persisted = trace.messages.length;
+}
+
+/** If the turn stopped between a `tool_use` and its results, finish the pair with error results. */
+function closeOpenToolCalls(trace: TurnTrace): void {
+  const last = trace.messages[trace.messages.length - 1];
+  if (!last || last.role !== 'assistant' || typeof last.content === 'string') return;
+  const uses = last.content.filter((b): b is Llm.ToolUseBlock => b.type === 'tool_use');
+  if (uses.length === 0) return;
+  const have = new Set(trace.pending.map(r => r.tool_use_id));
+  const missing = uses.filter(u => !have.has(u.id)).map((u): Llm.ToolResultBlockParam => ({
+    type: 'tool_result',
+    tool_use_id: u.id,
+    content: INTERRUPTED_TOOL_RESULT,
+    is_error: true,
+  }));
+  trace.messages.push({ role: 'user', content: [...trace.pending, ...missing] });
+  trace.pending = [];
+}
+
 /**
  * Runs one user turn to completion: sends the message, and if the model asks to
  * use tools, executes them (through the Approval Gate where required) and
  * feeds the results back — repeating until the model replies with plain text
  * instead of another tool_use. Returns the updated history.
+ *
+ * Whatever the turn produced is also handed to `deps.onMessages` as it goes, including when the turn is
+ * killed or fails: the tools may already have changed things, and the conversation has to know.
  */
 export async function runTurn(
   deps: ConversationDeps,
   history: Llm.MessageParam[],
   userContent: Llm.MessageParam['content'],
 ): Promise<Llm.MessageParam[]> {
+  const trace: TurnTrace = { messages: [], persisted: 0, pending: [] };
+  try {
+    return await runLoop(deps, history, userContent, trace);
+  } catch (err) {
+    try {
+      closeOpenToolCalls(trace);
+      flushNew(deps, trace);
+    } catch (storeErr) {
+      // The original failure is the one worth reporting.
+      console.warn(`[turn] could not store the messages of a failed turn: ${(storeErr as Error).message}`);
+    }
+    throw err;
+  }
+}
+
+async function runLoop(
+  deps: ConversationDeps,
+  history: Llm.MessageParam[],
+  userContent: Llm.MessageParam['content'],
+  trace: TurnTrace,
+): Promise<Llm.MessageParam[]> {
   const messages: Llm.MessageParam[] = [...sanitizeHistory(history), { role: 'user', content: userContent }];
+  trace.messages = messages;
+  trace.persisted = messages.length;
   const virtualByName = new Map((deps.virtualTools ?? []).map(v => [v.definition.name, v]));
   const toolDefs: Llm.Tool[] = [
     ...(deps.tools.toLlmTools() as Llm.Tool[]),
@@ -265,6 +333,7 @@ export async function runTurn(
       for (const text of inbox) blocks.push({ type: 'text', text });
       messages[messages.length - 1] = { role: 'user', content: blocks };
     }
+    flushNew(deps, trace); // the previous step (reply + tool results, inbox text included) is complete
 
     // What is sent may be a trimmed copy (old tool outputs stubbed); `messages` itself is never trimmed. Tool outputs in it are already truncated per result.
     const view = deps.contextWindow
@@ -310,10 +379,12 @@ export async function runTurn(
     );
 
     if (response.stop_reason !== 'tool_use' || toolUses.length === 0) {
+      flushNew(deps, trace);
       return messages;
     }
 
     const toolResults: Llm.ToolResultBlockParam[] = [];
+    trace.pending = toolResults;
     for (const use of toolUses) {
       // Kill switch check before each tool execution
       if (deps.signal?.aborted) throw new Error('Turn aborted by user (kill switch)');
@@ -469,5 +540,6 @@ export async function runTurn(
     }
 
     messages.push({ role: 'user', content: toolResults });
+    trace.pending = [];
   }
 }

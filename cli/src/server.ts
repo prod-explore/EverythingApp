@@ -197,7 +197,7 @@ async function main(): Promise<void> {
     console.warn(`[vault] ${router.vault.disabledReason} — saving API keys from the UI is disabled until it is set.`);
   }
 
-  const { app, stop, auth } = await buildApp({ db, connections, router, authToken, password: process.env['SERVER_PASSWORD'] || undefined, config, policyFile: policyFilePath() });
+  const { app, shutdown, auth } = await buildApp({ db, connections, router, authToken, password: process.env['SERVER_PASSWORD'] || undefined, config, policyFile: policyFilePath() });
 
   // ─── Start server ─────────────────────────────────────────────────────────
   const port = Number(process.env['PORT'] ?? 3000);
@@ -215,19 +215,26 @@ async function main(): Promise<void> {
   });
 
   // ─── Graceful shutdown ────────────────────────────────────────────────────
+  // Docker gives a container 10 s by default; the forced exit has to come before its SIGKILL.
+  let shuttingDown = false;
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.on(signal, () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       console.log(`[server] received ${signal}, shutting down...`);
-      stop();
-      server.close(async () => {
-        await Promise.all(connections.map(c => c.close()));
-        db.close();
-        process.exit(0);
-      });
       setTimeout(() => {
         console.error('[server] shutdown timeout, forcing exit');
         process.exit(1);
-      }, 10_000).unref();
+      }, 8_000).unref();
+      void (async () => {
+        await shutdown();
+        server.close(async () => {
+          await Promise.all(connections.map(c => c.close()));
+          db.close();
+          process.exit(0);
+        });
+        server.closeIdleConnections();
+      })();
     });
   }
 }
@@ -270,6 +277,8 @@ export interface BuiltApp {
   sse: SSEManager;
   /** Clears the background digest and SSE-keepalive intervals. Does not close the db or MCP connections — the caller owns those. */
   stop: () => void;
+  /** Process shutdown: `stop`, plus abort running turns, wait for them to store their work, end the event streams. */
+  shutdown: (graceMs?: number) => Promise<void>;
   auth: Auth;
 }
 
@@ -534,6 +543,8 @@ ${formatHumanResponse(response)}` };
   const turnCounters = new Map<string, number>();
   const turnStates = new Map<string, TurnState>();
   const abortControllers = new Map<string, AbortController>();
+  /** Turns that are still running; shutdown waits for them so that what they did is stored. */
+  const turnsInFlight = new Set<Promise<void>>();
 
   function getTurnState(convId: string): TurnState {
     return turnStates.get(convId) ?? { id: 0, status: 'idle' };
@@ -991,7 +1002,7 @@ ${formatHumanResponse(response)}` };
     turnStates.set(convId, { id: turnId, status: 'running' });
     sse.emit(convId, 'turn:start', { turnId });
 
-    void (async () => {
+    const turnDone = (async () => {
       const effectiveModel = modelOf(conv);
       const goalText = typeof content === 'string' ? content : (content as Array<{ type: string; text?: string }>).filter(b => b.type === 'text').map(b => b.text).join(' ') || '(attachment)';
       const rootRun = createRun(db, { projectId: conv.projectId, conversationId: convId, label: 'assistant', model: effectiveModel, goal: goalText });
@@ -1103,6 +1114,10 @@ ${formatHumanResponse(response)}` };
         }
 
         let toolRan = false;
+        // The turn is stored as it happens (see ConversationDeps.onMessages): each new row chains off the previous one,
+        // so the whole turn, tool-loop plumbing included, hangs off the user message as one branch.
+        let previousId = userMessageId;
+        let storedAny = false;
         const runDeps: ConversationDeps = {
             llm: client,
             model: effectiveModel,
@@ -1120,6 +1135,12 @@ ${formatHumanResponse(response)}` };
             drainInbox: () => drainRunMessages(db, rootRun.id).map(m => `[message from ${m.fromLabel}]
 ${m.body}`),
             onStep: () => heartbeatRun(db, rootRun.id),
+            onMessages: batch => {
+              db.transaction(() => {
+                for (const msg of batch) previousId = appendMessage(db, convId, msg.role, msg.content, previousId);
+              })();
+              storedAny = true;
+            },
             signal: controller.signal,
             conversationId: convId,
             projectId: conv.projectId ?? undefined,
@@ -1152,22 +1173,13 @@ ${m.body}`),
         } catch (err) {
           // "Context too long" on a request that ran no tool yet is safe to repeat once on a compacted history;
           // after tools ran, repeating could redo their effects, so that case is reported instead.
-          if (classifyError(err).kind === 'context_too_long' && !toolRan && !controller.signal.aborted && (await compactNow(true))) {
+          // Nothing of this attempt may be stored yet, or the repeat would store the same steps twice.
+          if (classifyError(err).kind === 'context_too_long' && !toolRan && !storedAny && !controller.signal.aborted && (await compactNow(true))) {
             history = llmHistory(db, convId, userMessageId);
             updatedHistory = await runTurn(runDeps, history, content);
           } else {
             throw err;
           }
-        }
-
-        // Persist everything the turn produced AFTER the user message the
-        // caller already stored, chaining each new row's parent_id off the
-        // previous one so the whole turn (including tool-loop plumbing)
-        // hangs off userMessageId as one branch.
-        const newMessages = updatedHistory.slice(history.length + 1);
-        let previousId = userMessageId;
-        for (const msg of newMessages) {
-          previousId = appendMessage(db, convId, msg.role, msg.content, previousId);
         }
 
         // Auto-title after first exchange
@@ -1198,12 +1210,14 @@ ${m.body}`),
         sse.emit(convId, 'turn:done', { turnId, usage: ledger.headline() });
       } catch (err) {
         const incident = classifyError(err, s => router.redact(s));
-        const aborted = incident.kind === 'aborted';
+        // A request cancelled in flight fails with the HTTP client's own wording, not ours: the signal tells.
+        const aborted = incident.kind === 'aborted' || controller.signal.aborted;
         // The person reads the plain sentence; the provider's own words stay available as `detail`.
-        const error = aborted ? router.redact((err as Error).message) : incident.message;
+        const error = aborted ? (incident.kind === 'aborted' ? router.redact((err as Error).message) : 'Stopped.') : incident.message;
         const detail = aborted || incident.message === router.redact((err as Error).message) ? undefined : router.redact((err as Error).message).slice(0, 600);
         // Deliberately NOT rolling back the user's message here (it was
-        // already persisted before this async block even started) —
+        // already persisted before this async block even started), nor what the turn had stored so far
+        // (see onMessages): tools may already have changed things —
         // whatever failed, the user did type it, and silently discarding
         // it on any error (a transient network blip, a tool failure,
         // anything) is a worse outcome than leaving it visible with no
@@ -1221,6 +1235,9 @@ ${m.body}`),
         if (activeRootRun.get(convId) === rootRun.id) activeRootRun.delete(convId);
       }
     })();
+    turnsInFlight.add(turnDone);
+    const forget = () => { turnsInFlight.delete(turnDone); };
+    turnDone.then(forget, forget);
 
     return turnId;
   }
@@ -1890,7 +1907,24 @@ ${formatHumanResponse(response)}`;
     clearInterval(keepaliveInterval);
   }
 
-  return { app, sse, stop, auth };
+  /**
+   * Orderly shutdown of what this app started: stops the timers, aborts running turns and waits (up to `graceMs`) until
+   * they have stored what they did, then ends the event streams. The caller still closes the HTTP server, the MCP
+   * connections and the database.
+   */
+  async function shutdown(graceMs = 4_000): Promise<void> {
+    stop();
+    for (const controller of abortControllers.values()) controller.abort();
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.allSettled([...turnsInFlight]),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, graceMs); }),
+    ]);
+    clearTimeout(timer);
+    sse.closeAll();
+  }
+
+  return { app, sse, stop, shutdown, auth };
 }
 
 // Only actually boot the server (and install process-level handlers) when
