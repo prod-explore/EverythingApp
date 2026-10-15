@@ -8,6 +8,13 @@
 #   3. For GitHub: set GITHUB_PAT in .env
 #   4. For Playwright: set PLAYWRIGHT_MCP_API_KEY in .env
 
+# Docker keeps container logs forever by default; on a Raspberry Pi that is the SD card.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   sandbox-supervisor:
     container_name: everythingapp-sandbox-supervisor
@@ -47,6 +54,13 @@ services:
     ports:
       - "127.0.0.1:3001:3001"
     restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.SUPERVISOR_PORT||3001)+'/health',{}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - sandbox-internal
     # Limits for the services themselves (sandboxes have their own, set by the supervisor). Raise one if its
@@ -71,6 +85,13 @@ services:
     depends_on:
       - sandbox-supervisor
     restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:'+(process.env.MCP_PORT||3002)+'/mcp/health',{headers:{authorization:'Bearer '+process.env.MCP_API_KEY}}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - sandbox-internal
     mem_limit: 256m
@@ -117,6 +138,13 @@ services:
     ports:
       - "127.0.0.1:3003:3003"
     restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3003/mcp/health',{headers:{authorization:'Bearer '+process.env.MCP_API_KEY}}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     # Playwright gets outbound internet access (it's a browser, it needs it) on a dedicated
     # bridge, so a page (or a prompt-injected URL) cannot reach the other services by name.
     networks:
@@ -150,6 +178,13 @@ services:
     ports:
       - "${GIT_PROXY_BIND:-127.0.0.1}:8080:8080"
     restart: unless-stopped
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/health',{}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
       - sandbox-internal
     mem_limit: 256m
@@ -210,6 +245,7 @@ services:
       - git-proxy
     container_name: everythingapp-web
     restart: unless-stopped
+    logging: *default-logging
     mem_limit: 768m
     cpus: 2
     pids_limit: 512
