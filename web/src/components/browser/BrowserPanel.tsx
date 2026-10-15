@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Monitor, Hand, X, Loader, Globe } from 'lucide-react';
+import { Monitor, Hand, X, Loader, Globe, Power } from 'lucide-react';
 
 /**
  * §6b Chunk B: Live-view panel for an active browser session.
@@ -251,10 +251,21 @@ export function BrowserPanel({
             {takeover ? 'In control' : 'Take control'}
           </button>
         )}
+        {connected && status.session && (
+          <button
+            onClick={() => { setTakeover(false); sendEvent({ type: 'close' }); }}
+            title="End the browser session (closes the tab and forgets everything in it)"
+            className="flex items-center gap-1 rounded-button border border-border px-2 py-0.5 text-xs font-medium text-fg-tertiary transition-colors hover:border-danger/50 hover:text-danger"
+          >
+            <Power size={11} />
+            Close browser
+          </button>
+        )}
         <button
           onClick={onClose}
           className="text-fg-tertiary hover:text-fg-secondary"
-          aria-label="Close browser panel"
+          aria-label="Hide browser panel"
+          title="Hide the panel (the session keeps running)"
         >
           <X size={14} />
         </button>
