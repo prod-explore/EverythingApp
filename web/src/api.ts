@@ -4,6 +4,7 @@ import type {
   ConnectorInfo,
   ConnectorTestResult,
   WebSearchSettings,
+  NotificationSettings,
   WebSearchTestResult,
   Conversation,
   ConversationStateInfo,
@@ -265,6 +266,22 @@ export const webSearchApi = {
   /** Tries a search with the unsaved form values. */
   test: (input: { backend: WebSearchSettings['backend']; searxngUrl?: string; braveKey?: string }): Promise<WebSearchTestResult> =>
     request('/api/web-search/test', { method: 'POST', body: JSON.stringify(input) }),
+};
+
+// ─── Notifications (Settings → Notifications) ────────────────────────────
+
+export type NotificationInput = Partial<Pick<NotificationSettings, 'format' | 'appUrl' | 'details' | 'delaySeconds'>> & {
+  /** A string saves the URL, null removes it, undefined keeps it. */
+  webhookUrl?: string | null;
+  events?: Partial<NotificationSettings['events']>;
+};
+
+export const notificationsApi = {
+  get: (): Promise<NotificationSettings> => request('/api/notifications'),
+  save: (input: NotificationInput): Promise<NotificationSettings> => request('/api/notifications', { method: 'PUT', body: JSON.stringify(input) }),
+  /** Sends a test message to the typed URL, or to the saved one. */
+  test: (input: { webhookUrl?: string; format?: NotificationSettings['format'] }): Promise<{ ok: boolean }> =>
+    request('/api/notifications/test', { method: 'POST', body: JSON.stringify(input) }),
 };
 
 // ─── Skills ───────────────────────────────────────────────────────────────

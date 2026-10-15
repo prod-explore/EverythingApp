@@ -38,6 +38,7 @@ import { GitHubCredentials } from './github.js';
 import { createGithubRoutes, latestOwnerConversation } from './github-routes.js';
 import { createConnectorRoutes, migrateConnectors } from './connector-routes.js';
 import { createWebRoutes } from './web-routes.js';
+import { Notifier, NotifyConfigError, NOTIFY_VAULT_KEY, normalizeWebhookUrl, saveNotifyConfig } from './notifier.js';
 import { buildWebTools, PageCache, WEB_TOOLS_PROMPT } from './web/tools.js';
 import type { FetchOptions } from './web/http.js';
 import type { McpConnectionLike } from './mcp-client.js';
@@ -268,6 +269,8 @@ export interface BuildAppOptions {
   policyFile?: string | null;
   /** Test seams for web_fetch / web_search (fake DNS, a fetch that reaches a local server). */
   web?: { fetchOptions?: FetchOptions; fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv };
+  /** Test seams for the webhook notifier (a fetch that records, a timer that fires at once). */
+  notify?: { fetchImpl?: typeof fetch; env?: NodeJS.ProcessEnv; setTimer?: (fn: () => void, ms: number) => void };
 }
 
 export interface BuiltApp {
@@ -308,6 +311,17 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
   // ─── Shared services ──────────────────────────────────────────────────────
   const policyStore = new PolicyStore(opts.policyFile ?? null);
   const approvalGate = new WebApprovalGate(db, policyStore);
+  // "Something is waiting for you" as a webhook (ntfy, Discord, Slack, …). Deterministic: no model in the path.
+  const notifier = new Notifier({ db, vault: router.vault, fetchImpl: opts.notify?.fetchImpl, env: opts.notify?.env, setTimer: opts.notify?.setTimer });
+  /** Title of a chat for the opt-in details; a ghost chat contributes nothing. */
+  const notifyChat = (conversationId: string | null | undefined) => {
+    const conv = conversationId ? getConversation(db, conversationId) : null;
+    return { ghost: conv?.ghost === true, chatTitle: conv?.title ?? undefined, conversationId: conversationId ?? undefined };
+  };
+  approvalGate.onPending = entry => notifier.notify({
+    kind: 'approval', ...notifyChat(entry.conversationId), detail: entry.toolLabel,
+    stillWaiting: () => approvalGate.isPending(entry.id),
+  });
   if (opts.policyFile) { policyStore.get(); console.log(`[policy] always-allow/block lists and domains: ${opts.policyFile}${policyStore.lastError ? ` (INVALID: ${policyStore.lastError})` : ''}`); }
   const ledger = new UsageLedger(db);
   const sse = new SSEManager();
@@ -446,6 +460,10 @@ export async function buildApp(opts: BuildAppOptions): Promise<BuiltApp> {
           urgent: input.urgent === true,
         }, { projectId: origin.projectId, runId: origin.runId, agent: origin.agent });
         sse.emitAll('gazeta:new', { type: 'agent_question', itemId, item: getGazetaItem(db, itemId) });
+        notifier.notify({
+          kind: input.urgent === true ? 'urgent' : 'question', ...notifyChat(origin.convId), detail: title,
+          stillWaiting: () => getGazetaItem(db, itemId)?.status === 'pending',
+        });
         if (!blocking) {
           return { text: `Question queued (id ${itemId}). Continue with your work; the answer will arrive later as a message.` };
         }
@@ -484,6 +502,7 @@ ${formatHumanResponse(response)}` };
           projectId: origin.projectId, runId: origin.runId, agent: origin.agent, urgent: input.urgent === true, attachments,
         });
         sse.emitAll('gazeta:new', { type: 'report', itemId, item: getGazetaItem(db, itemId) });
+        if (input.urgent === true) notifier.notify({ kind: 'urgent', ...notifyChat(origin.convId), detail: title });
         const failed = attachments.filter(a => a.error);
         return { text: `Report posted (id ${itemId}).${failed.length ? ` Could not pin: ${failed.map(f => `${f.path} (${f.error})`).join(', ')}` : ''}` };
       },
@@ -610,6 +629,52 @@ ${formatHumanResponse(response)}` };
   app.use('/api', github.api);
   app.use('/api', connectorRoutes.api);
   app.use('/api', webRoutes.api);
+
+  // ─── Settings → Notifications (webhook) ────────────────────────────────────
+  // The URL is a secret (topic / token in the path): it goes to the key vault and is never sent back, only its host.
+  app.get('/api/notifications', (_req, res) => { res.json(notifier.describe()); });
+
+  app.put('/api/notifications', (req, res) => {
+    const b = (req.body ?? {}) as { webhookUrl?: unknown; format?: unknown; appUrl?: unknown; events?: unknown; details?: unknown; delaySeconds?: unknown };
+    try {
+      // webhookUrl: a string saves it, null removes it, absent leaves it alone.
+      if (typeof b.webhookUrl === 'string' && b.webhookUrl.trim()) {
+        if (!router.vault.enabled) { res.status(503).json({ error: router.vault.disabledReason }); return; }
+        router.vault.set(NOTIFY_VAULT_KEY, normalizeWebhookUrl(b.webhookUrl));
+      } else if (b.webhookUrl === null) {
+        router.vault.delete(NOTIFY_VAULT_KEY);
+      }
+      const ev = (b.events && typeof b.events === 'object' ? b.events : {}) as Record<string, unknown>;
+      saveNotifyConfig(db, {
+        ...(typeof b.format === 'string' ? { format: b.format as never } : {}),
+        ...(typeof b.appUrl === 'string' ? { appUrl: b.appUrl } : {}),
+        ...(typeof b.details === 'boolean' ? { details: b.details } : {}),
+        ...(typeof b.delaySeconds === 'number' ? { delaySeconds: b.delaySeconds } : {}),
+        events: {
+          ...(typeof ev['approval'] === 'boolean' ? { approval: ev['approval'] } : {}),
+          ...(typeof ev['question'] === 'boolean' ? { question: ev['question'] } : {}),
+          ...(typeof ev['urgent'] === 'boolean' ? { urgent: ev['urgent'] } : {}),
+        } as never,
+      });
+    } catch (err) {
+      if (err instanceof NotifyConfigError) { res.status(400).json({ error: err.message }); return; }
+      throw err;
+    }
+    res.json(notifier.describe());
+  });
+
+  // Sends a test message to the saved URL, or to the one typed in the form (unsaved).
+  app.post('/api/notifications/test', async (req, res) => {
+    const b = (req.body ?? {}) as { webhookUrl?: unknown; format?: unknown };
+    try {
+      const url = typeof b.webhookUrl === 'string' && b.webhookUrl.trim() ? normalizeWebhookUrl(b.webhookUrl) : undefined;
+      const format = typeof b.format === 'string' ? (b.format as never) : undefined;
+      await notifier.send({ title: 'EverythingApp', message: 'Test notification — this is how an alert will look.', priority: 3 }, url, format);
+      res.json({ ok: true });
+    } catch (err) {
+      res.status(400).json({ ok: false, error: (err as Error).message });
+    }
+  });
 
   // ─── Workspace Explorer + checkpoints (N3) ────────────────────────────────
   // `owner` = a project id, or a chat id for chats without a project (same rule as the sandbox tools).

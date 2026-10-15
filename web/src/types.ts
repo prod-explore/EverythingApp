@@ -174,6 +174,19 @@ export interface WebSearchSettings {
   active: boolean;
 }
 
+export interface NotificationSettings {
+  format: 'auto' | 'text' | 'json' | 'discord' | 'slack';
+  appUrl: string;
+  events: { approval: boolean; question: boolean; urgent: boolean };
+  details: boolean;
+  delaySeconds: number;
+  /** The URL itself is never sent to the browser — only whether one is set and where it points. */
+  webhook: { present: boolean; fromEnv: boolean; host: string | null };
+  vaultEnabled: boolean;
+  vaultDisabledReason: string | null;
+  lastError: string | null;
+}
+
 export interface WebSearchTestResult {
   ok: boolean;
   results?: number;

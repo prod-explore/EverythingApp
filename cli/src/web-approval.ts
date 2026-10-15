@@ -101,8 +101,15 @@ export class WebApprovalGate {
   private readonly chatAllowed = new Map<string, Set<string>>();
   private readonly pending = new Map<string, { entry: PendingApproval; resolve: (approved: boolean) => void; timer?: ReturnType<typeof setTimeout> }>();
 
+  /** Called when a call starts waiting for a human (not for grants/policy decisions). Must not throw. */
+  onPending?: (entry: PendingApproval) => void;
+
   constructor(db: Database.Database, private readonly policyFile?: PolicyStore) {
     this.db = db;
+  }
+
+  isPending(id: string): boolean {
+    return this.pending.has(id);
   }
 
   async confirm(
@@ -185,6 +192,7 @@ export class WebApprovalGate {
       }
       this.pending.set(id, { entry, resolve: settle, timer });
       signal?.addEventListener('abort', onAbort, { once: true });
+      try { this.onPending?.(entry); } catch { /* a notification problem never blocks the approval */ }
     });
   }
 

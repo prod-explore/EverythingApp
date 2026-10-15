@@ -195,6 +195,7 @@ services:
       # web_search defaults for a fresh install (Settings → Web overrides them): a SearXNG URL and/or a Brave key.
       SEARXNG_URL: ${SEARXNG_URL:-}
       BRAVE_API_KEY: ${BRAVE_API_KEY:-}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
       # Ghost chats: which connectors they may use (comma-separated; empty = none). Web, browser, GitHub and connectors added by hand are never in the list.
       GHOST_CONNECTORS: ${GHOST_CONNECTORS-sandbox,obsidian}
       # Usage / audit / replay rows older than this many months are deleted daily (0 = keep everything). Chats are never deleted.
