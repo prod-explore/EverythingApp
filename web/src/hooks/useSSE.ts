@@ -43,9 +43,9 @@ export interface LiveTurnState {
   finishedCount: number;
 }
 
-const INITIAL_STATE: LiveTurnState = { running: false, parts: [], finishedCount: 0, compactedCount: 0 };
+export const INITIAL_STATE: LiveTurnState = { running: false, parts: [], finishedCount: 0, compactedCount: 0 };
 
-type Action =
+export type LiveTurnAction =
   | { type: 'clear' }
   | { type: 'start' }
   | { type: 'text_delta'; block: number; text: string }
@@ -58,7 +58,7 @@ type Action =
   | { type: 'conv_state'; state: ConversationStateInfo }
   | { type: 'compacted' };
 
-function reducer(state: LiveTurnState, action: Action): LiveTurnState {
+export function liveTurnReducer(state: LiveTurnState, action: LiveTurnAction): LiveTurnState {
   switch (action.type) {
     case 'clear':
       return { running: false, parts: [], finishedCount: state.finishedCount, compactedCount: state.compactedCount };
@@ -156,7 +156,7 @@ export type SideEvent = (typeof SIDE_EVENTS)[number];
  * instead of relying only on its 30s poll fallback.
  */
 export function useSSE(conversationId: string | null, onSideEvent?: (event: SideEvent, data: unknown) => void): LiveTurnState {
-  const [state, dispatch] = useReducer(reducer, INITIAL_STATE);
+  const [state, dispatch] = useReducer(liveTurnReducer, INITIAL_STATE);
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
   const onSideEventRef = useRef(onSideEvent);

@@ -37,7 +37,7 @@ jobs:
       - run: npm test
 
   web:
-    name: web (typecheck + build)
+    name: web (typecheck, lint, test, build)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -51,6 +51,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - run: npm ci
       - run: npx tsc -b
+      - run: npm run lint
+      - run: npm test
       - run: npx vite build
 
   compose:
