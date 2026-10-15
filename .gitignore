@@ -28,3 +28,6 @@ anthropic.txt
 .e2e/
 .playwright-mcp/
 /*.png
+
+# local Compose overrides (see deploy/docker-compose.override.example.yml)
+docker-compose.override.yml

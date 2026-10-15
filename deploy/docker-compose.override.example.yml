@@ -1,0 +1,11 @@
+# Optional: join the web container to a network you already have (for example the one your reverse proxy
+# container lives on). Copy to the repo root as docker-compose.override.yml; Compose loads it automatically.
+# The network must exist first:  docker network create <name>
+services:
+  everythingapp-web:
+    networks:
+      - proxy-network
+
+networks:
+  proxy-network:
+    external: true

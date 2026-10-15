@@ -86,7 +86,7 @@ services:
   # Network: public internet allowed; private networks are NOT (see deploy/egress-guard.sh
   # for the network layer and playwright-mcp/src/urlSafety.ts for the application layer).
   # No docker.sock. Lives on its own `browser-egress` bridge — it shares NO network with the
-  # supervisor, sandbox-mcp, github-mcp (holds the PAT) or n8n; only the web server is attached
+  # supervisor, sandbox-mcp or github-mcp (holds the PAT); only the web server is attached
   # to both sides so it can call the MCP endpoint.
   playwright-mcp:
     container_name: everythingapp-playwright-mcp
@@ -218,10 +218,9 @@ services:
     networks:
       - sandbox-internal
       - browser-egress  # only to call playwright-mcp; the browser's own requests are guarded (urlSafety.ts)
-      - futumore-network
 
 networks:
-  # Sandbox stack — zero overlap with Skarpa Bytom or any other Compose stack.
+  # Sandbox stack — zero overlap with any other Compose stack on the host.
   sandbox-internal:
     driver: bridge
 
@@ -231,9 +230,6 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-ea-browser
-
-  futumore-network:
-    external: true
 
 volumes:
   everythingapp_web_data:

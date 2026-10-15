@@ -18,7 +18,7 @@ export interface Config {
 
 /**
  * Connectors are entirely config-driven — adding one (GitHub's official remote
- * MCP server, n8n once it's deployed, a calendar MCP, whatever) never needs a
+ * MCP server, a workflow engine, a calendar MCP, whatever) never needs a
  * code change here, only a new name in MCP_CONNECTORS plus its URL/key pair.
  *
  * MCP_CONNECTORS=sandbox,obsidian,github

@@ -3,7 +3,7 @@
 # EverythingApp — network-layer egress guard (the backstop behind playwright-mcp/src/urlSafety.ts).
 #
 # Internet-facing containers (the browser agent today, code sandboxes in N3) may reach the PUBLIC
-# internet freely but must not reach the operator's own networks: LAN (router, NAS, Skarpa, n8n),
+# internet freely but must not reach the operator's own networks: LAN (router, NAS, other services),
 # the Docker host and its other bridges, link-local / cloud-metadata addresses. This installs the
 # standard Docker-recommended pattern: a dedicated chain hooked into DOCKER-USER (forwarded
 # traffic) plus an INPUT rule (traffic aimed at the host itself).
