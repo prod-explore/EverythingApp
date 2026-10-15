@@ -64,10 +64,33 @@ export const EDIT_FILE_TOOL: Llm.Tool = {
   },
 };
 
-/** Appended to the system prompt of chats that have a sandbox. */
+/** Appended to the system prompt of every chat (every chat has a workspace). */
 export const FILE_TOOLS_PROMPT =
   'To look at or change text files use read_file, edit_file and write_file (no approval needed) rather than cat/sed/echo redirections in the shell. ' +
-  'Read a file before editing it, prefer edit_file over rewriting a whole file, and keep run_bash for running programs.';
+  'Read a file before editing it, prefer edit_file over rewriting a whole file, and keep run_bash for running programs. ' +
+  'When you produce a file the user is meant to open (a report, a document, an image), pin it with pin_file.';
+
+export const PIN_FILE_TOOL: Llm.Tool = {
+  name: 'pin_file',
+  description:
+    'Pin a file of the workspace so the user finds it at the top of the Files panel — use it for what the user is meant to open: ' +
+    'a report, a result, a generated document or image. A pin only points at the file; the user always sees its current version. ' +
+    'Do not pin working files. The user is not asked to approve this.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      path: { type: 'string', description: 'File path, e.g. "out/report.md".' },
+      note: { type: 'string', description: 'Optional one-line description shown next to the pin.' },
+    },
+    required: ['path'],
+  },
+};
+
+export const UNPIN_FILE_TOOL: Llm.Tool = {
+  name: 'unpin_file',
+  description: 'Remove the pin of a file (the file itself stays in the workspace).',
+  input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+};
 
 export interface FileToolsDeps {
   owner: string;
@@ -76,6 +99,8 @@ export interface FileToolsDeps {
   readFile: (owner: string, path: string) => Promise<Buffer>;
   /** Called after every successful change, for the audit log. */
   onWrite?: (info: { action: 'write_file' | 'edit_file'; path: string; bytes: number }) => void;
+  /** Where pins are kept; without it the pin tools are not offered. */
+  pins?: { add: (path: string, note?: string) => void; remove: (path: string) => boolean };
 }
 
 const err = (text: string) => ({ text, isError: true as const });
@@ -192,5 +217,25 @@ export function fileTools(deps: FileToolsDeps): VirtualTool[] {
     },
   };
 
-  return [readTool, editTool, writeTool];
+  const pins = deps.pins;
+  const pinTool: VirtualTool | null = pins ? {
+    definition: PIN_FILE_TOOL,
+    handler: async input => {
+      const path = resolve(input['path']);
+      if (typeof path !== 'string') return err(path.error);
+      try { await deps.readFile(deps.owner, path); } catch { return err(`${path} does not exist — write the file first, then pin it.`); }
+      pins.add(path, str(input['note']));
+      return { text: `Pinned ${path}. The user sees it at the top of the Files panel.` };
+    },
+  } : null;
+  const unpinTool: VirtualTool | null = pins ? {
+    definition: UNPIN_FILE_TOOL,
+    handler: async input => {
+      const path = resolve(input['path']);
+      if (typeof path !== 'string') return err(path.error);
+      return pins.remove(path) ? { text: `Unpinned ${path}.` } : err(`${path} is not pinned.`);
+    },
+  } : null;
+
+  return [readTool, editTool, writeTool, ...(pinTool && unpinTool ? [pinTool, unpinTool] : [])];
 }

@@ -1,5 +1,5 @@
 /**
- * §6b Chunk B — Tests: artifacts store, subagent run tracking, browser-session endpoint.
+ * §6b Chunk B — Tests: report snapshots, subagent run tracking, browser-session endpoint.
  *
  * Tests use the same `buildApp()` + in-memory DB pattern as the other integration tests.
  * No real filesystem writes — EVERYTHINGAPP_ARTIFACTS_DIR is set to a temp dir that's
@@ -116,104 +116,6 @@ after(() => {
   delete process.env['EVERYTHINGAPP_ARTIFACTS_DIR'];
 });
 
-// ─── 1. Artifact CRUD ────────────────────────────────────────────────────────
-
-test('POST /api/artifacts creates an artifact row and writes the file to disk', async () => {
-  const payload = Buffer.from('hello world');
-  const res = await request(
-    server,
-    'POST',
-    `/api/artifacts?conversationId=${convId}&filename=hello.txt&source=test`,
-    payload,
-    'text/plain',
-  );
-  assert.equal(res.status, 201);
-  const artifact = res.body as { id: string; filename: string; mimeType: string; sizeBytes: number; source: string };
-  assert.ok(artifact.id, 'should have an id');
-  assert.equal(artifact.filename, 'hello.txt');
-  assert.equal(artifact.mimeType, 'text/plain');
-  assert.equal(artifact.sizeBytes, payload.length);
-  assert.equal(artifact.source, 'test');
-  // File should be on disk
-  const files = fs.readdirSync(tmpDir);
-  assert.ok(files.some(f => f.includes('hello.txt')), `Expected a file matching hello.txt in ${files.join(', ')}`);
-});
-
-test('GET /api/conversations/:id/artifacts lists artifacts for that conversation', async () => {
-  const res = await request(server, 'GET', `/api/conversations/${convId}/artifacts`);
-  assert.equal(res.status, 200);
-  const { artifacts } = res.body as { artifacts: unknown[] };
-  assert.ok(Array.isArray(artifacts));
-  assert.ok(artifacts.length >= 1, 'should have at least the one we just created');
-});
-
-test('GET /api/artifacts lists all artifacts (no filter)', async () => {
-  const res = await request(server, 'GET', '/api/artifacts');
-  assert.equal(res.status, 200);
-  const { artifacts } = res.body as { artifacts: unknown[] };
-  assert.ok(Array.isArray(artifacts) && artifacts.length >= 1);
-});
-
-test('GET /api/artifacts/:id returns a single artifact', async () => {
-  // Upload one to get a known id
-  const uploadRes = await request(
-    server,
-    'POST',
-    `/api/artifacts?conversationId=${convId}&filename=single.txt&source=test`,
-    Buffer.from('data'),
-    'text/plain',
-  );
-  const { id } = uploadRes.body as { id: string };
-
-  const res = await request(server, 'GET', `/api/artifacts/${id}`);
-  assert.equal(res.status, 200);
-  assert.equal((res.body as { id: string }).id, id);
-});
-
-test('GET /api/artifacts/:id returns 404 for unknown ids', async () => {
-  const res = await request(server, 'GET', '/api/artifacts/nonexistent-id-xyz');
-  assert.equal(res.status, 404);
-});
-
-test('GET /api/artifacts/:id/file serves the file with correct Content-Type', async () => {
-  const uploadRes = await request(
-    server,
-    'POST',
-    `/api/artifacts?conversationId=${convId}&filename=img.jpg&source=test`,
-    Buffer.from(new Uint8Array([0xff, 0xd8, 0xff])), // minimal JPEG header
-    'image/jpeg',
-  );
-  const { id } = uploadRes.body as { id: string };
-
-  const res = await request(server, 'GET', `/api/artifacts/${id}/file`);
-  assert.equal(res.status, 200);
-  assert.ok(res.headers['content-type']?.startsWith('image/jpeg'));
-});
-
-test('DELETE /api/artifacts/:id removes the row and the file from disk', async () => {
-  const uploadRes = await request(
-    server,
-    'POST',
-    `/api/artifacts?conversationId=${convId}&filename=todelete.txt&source=test`,
-    Buffer.from('bye'),
-    'text/plain',
-  );
-  const { id } = uploadRes.body as { id: string };
-
-  const delRes = await request(server, 'DELETE', `/api/artifacts/${id}`);
-  assert.equal(delRes.status, 200);
-  assert.equal((delRes.body as { ok: boolean }).ok, true);
-
-  // Should be gone from the DB
-  const getRes = await request(server, 'GET', `/api/artifacts/${id}`);
-  assert.equal(getRes.status, 404);
-});
-
-test('DELETE /api/artifacts/:id on a nonexistent id returns 404', async () => {
-  const res = await request(server, 'DELETE', '/api/artifacts/does-not-exist');
-  assert.equal(res.status, 404);
-});
-
 // ─── 2. Subagent run endpoints ────────────────────────────────────────────────
 
 test('GET /api/conversations/:id/subagent-runs returns empty array initially', async () => {
@@ -234,33 +136,16 @@ test('GET /api/subagent-runs/:id returns 404 for unknown run id', async () => {
 
 // ─── 3. DB-level artifact helpers ─────────────────────────────────────────────
 
-test('createArtifact + listArtifacts + getArtifact + deleteArtifact round-trip', async () => {
-  const { openDb, runMigrations, createArtifact, listArtifacts, getArtifact, deleteArtifact } = await import('../db.js');
+test('createArtifact + getArtifact round-trip (report snapshots)', async () => {
+  const { openDb, runMigrations, createArtifact, getArtifact } = await import('../db.js');
   const db2 = openDb(':memory:');
   runMigrations(db2);
 
-  const row = createArtifact(db2, {
-    conversationId: null,
-    filename: 'test.png',
-    mimeType: 'image/png',
-    sizeBytes: 42,
-    source: 'unit-test',
-  });
+  const row = createArtifact(db2, { conversationId: null, filename: 'test.png', mimeType: 'image/png', sizeBytes: 42, source: 'report-pin' });
   assert.ok(row.id);
   assert.equal(row.filename, 'test.png');
-
-  const list = listArtifacts(db2);
-  assert.equal(list.length, 1);
-
-  const fetched = getArtifact(db2, row.id);
-  assert.ok(fetched);
-  assert.equal(fetched.id, row.id);
-
-  const deleted = deleteArtifact(db2, row.id);
-  assert.equal(deleted, true);
-
-  const gone = getArtifact(db2, row.id);
-  assert.equal(gone, null);
+  assert.equal(getArtifact(db2, row.id)!.id, row.id);
+  assert.equal(getArtifact(db2, 'nope'), null);
 });
 
 // ─── 4. DB-level subagent-run helpers ─────────────────────────────────────────

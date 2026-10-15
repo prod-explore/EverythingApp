@@ -52,16 +52,6 @@ describe('HTTP surface (audit N3, N4, N5, N7, N10)', () => {
     assert.ok(!('vault_marker' in got));
   });
 
-  it('N4: a JSON file uploaded to /api/artifacts keeps its bytes', async () => {
-    const payload = JSON.stringify({ hello: 'world', n: [1, 2, 3] });
-    const r = await raw(port, 'POST', '/api/artifacts?filename=data.json', payload, { 'content-type': 'application/json' });
-    assert.equal(r.status, 201);
-    const art = JSON.parse(r.body);
-    assert.equal(art.sizeBytes, Buffer.byteLength(payload));
-    const file = await raw(port, 'GET', `/api/artifacts/${art.id}/file`);
-    assert.equal(file.body, payload);
-  });
-
   it('N5: login accepts the password and refuses others, including ones of the same or a different length', async () => {
     const login = (password: string) => raw(port, 'POST', '/api/login', JSON.stringify({ password }), { 'content-type': 'application/json', authorization: '' });
     assert.equal((await login('correct horse')).status, 200);

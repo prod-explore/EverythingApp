@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Bot, Download, FolderOpen, FolderTree, GitBranch, Ghost, Globe, LogOut, Menu, MoreHorizontal } from 'lucide-react';
+import { Bot, Download, FolderTree, GitBranch, Ghost, Globe, LogOut, Menu, MoreHorizontal } from 'lucide-react';
 import { logout as apiLogout } from '../../api';
 import type { DockTool } from '../../App';
 import { ModelOptions } from '../shared/ModelOptions';
@@ -23,9 +23,7 @@ export function Header({
   onModelChange,
   onToggleSidebar,
   onOpenBrowser,
-  onOpenArtifacts,
   browserPanelOpen,
-  artifactsPanelOpen,
   dockTool,
   onToggleTool,
   conversationId,
@@ -43,9 +41,7 @@ export function Header({
   onModelChange: (model: string) => void;
   onToggleSidebar: () => void;
   onOpenBrowser: () => void;
-  onOpenArtifacts: () => void;
   browserPanelOpen: boolean;
-  artifactsPanelOpen: boolean;
   dockTool: DockTool | null;
   onToggleTool: (tool: DockTool) => void;
 }) {
@@ -133,9 +129,6 @@ export function Header({
             <div className="px-3 py-1 text-xs text-fg-tertiary">{usage}</div>
             <button role="menuitem" className={itemClass(browserPanelOpen)} onClick={pick(onOpenBrowser)}>
               <Globe size={15} /> {browserPanelOpen ? 'Hide browser' : 'Browser'}
-            </button>
-            <button role="menuitem" className={itemClass(artifactsPanelOpen)} onClick={pick(onOpenArtifacts)}>
-              <FolderOpen size={15} /> {artifactsPanelOpen ? 'Hide artifacts' : 'Artifacts'}
             </button>
             {TOOLS.map(t => (
               <button key={t.id} role="menuitem" className={itemClass(dockTool === t.id)} onClick={pick(() => onToggleTool(t.id))}>

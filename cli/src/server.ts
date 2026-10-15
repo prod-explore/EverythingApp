@@ -11,7 +11,7 @@ import { McpConnection } from './mcp-client.js';
 import { ToolRegistry } from './tool-registry.js';
 import { WebApprovalGate, type ApprovalScope } from './web-approval.js';
 import { runTurn, type ConversationDeps, type LlmClient, type VirtualTool } from './llm-loop.js';
-import { writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
+import { resolveWorkspacePath, writeWorkspaceFile, WorkspaceWriteError } from './workspace-write.js';
 import { fileTools, FILE_TOOLS_PROMPT } from './file-tools.js';
 import { assertStrongSecret } from './secret-check.js';
 import { searchMessages, exportMarkdown } from './search.js';
@@ -90,10 +90,9 @@ import {
   getConversationSkills,
   attachSkill,
   detachSkill,
-  createArtifact, getArtifactsTotalBytes,
-  listArtifacts,
+  createArtifact,
   getArtifact,
-  deleteArtifact,
+  listPins, addPin, removePin,
   listSubagentRuns,
   getSubagentRun,
   createProject,
@@ -516,6 +515,10 @@ ${formatHumanResponse(response)}` };
       sandbox: sandboxExec,
       readFile: (o, p) => supervisor.readFile(o, p),
       onWrite: w => logApprovalAudit(db, { action: 'agent_file_edit', toolLabel: `${w.action} ${w.path}`, toolArgs: JSON.stringify({ bytes: w.bytes }), conversationId: convId, runId }),
+      pins: {
+        add: (path, note) => { addPin(db, conv.projectId ?? convId, path, note); sse.emit(convId, 'pins:changed', { owner: conv.projectId ?? convId }); },
+        remove: path => { const gone = removePin(db, conv.projectId ?? convId, path); if (gone) sse.emit(convId, 'pins:changed', { owner: conv.projectId ?? convId }); return gone; },
+      },
     });
   }
 
@@ -1562,26 +1565,12 @@ ${formatHumanResponse(response)}`;
     res.json({ ok: true });
   });
 
-  // ─── §6b Chunk B: Artifacts ───────────────────────────────────────────────
-  // Files are stored under EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/).
-  // The DB row holds only metadata; the file content is served directly from disk.
-  // Artifact file writes happen via POST /api/artifacts (browser agent, subagent, etc.).
-  // Artifact file reads  happen via GET  /api/artifacts/:id/file  (inline display in the UI).
+  // ─── Report snapshots ─────────────────────────────────────────────────────
+  // The copy of a workspace file a Gazeta report was posted with (see snapshotFiles). The DB row holds only metadata; the
+  // bytes are served from EVERYTHINGAPP_ARTIFACTS_DIR (default ~/.everythingapp/artifacts/). Files the user wants at hand
+  // are pins of the workspace (below), not copies.
   const artifactsDir = process.env['EVERYTHINGAPP_ARTIFACTS_DIR']
     ?? path.join(os.homedir(), '.everythingapp', 'artifacts');
-
-  app.get('/api/artifacts', (req, res) => {
-    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : undefined;
-    res.json({ artifacts: listArtifacts(db, convId) });
-  });
-
-  app.get('/api/conversations/:id/artifacts', (req, res) => {
-    res.json({ artifacts: listArtifacts(db, req.params.id) });
-  });
-
-  // Pi-sized limits: one upload is buffered in RAM, and the whole store is capped.
-  const artifactMaxBytes = Number(process.env['ARTIFACT_MAX_BYTES'] ?? 25 * 1024 * 1024);
-  const artifactQuotaBytes = Number(process.env['ARTIFACT_QUOTA_BYTES'] ?? 2 * 1024 * 1024 * 1024);
 
   // On-disk name: id + an ASCII-safe filename (portable across filesystems); legacy files used the raw name.
   const artifactPath = (a: { id: string; filename: string }) => {
@@ -1590,51 +1579,11 @@ ${formatHumanResponse(response)}`;
     return !fs.existsSync(safe) && fs.existsSync(legacy) ? legacy : safe;
   };
 
-  app.post('/api/artifacts', express.raw({ limit: artifactMaxBytes, type: '*/*' }), async (req, res) => {
-    const convId = typeof req.query['conversationId'] === 'string' ? req.query['conversationId'] : null;
-    const filename = sanitizeFilename(typeof req.query['filename'] === 'string' ? req.query['filename'] : 'artifact');
-    const mimeType = req.headers['content-type'] ?? 'application/octet-stream';
-    const source = typeof req.query['source'] === 'string' ? req.query['source'] : 'upload';
-    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-
-    if (getArtifactsTotalBytes(db) + body.length > artifactQuotaBytes) {
-      res.status(413).json({ error: 'artifact storage quota exceeded — delete some artifacts first' });
-      return;
-    }
-    fs.mkdirSync(artifactsDir, { recursive: true });
-
-    const artifact = createArtifact(db, {
-      conversationId: convId,
-      filename,
-      mimeType,
-      sizeBytes: body.length,
-      source,
-    });
-
-    try {
-      await fs.promises.writeFile(artifactPath(artifact), body);
-    } catch (err) {
-      deleteArtifact(db, artifact.id); // no row without its file
-      console.error(`[artifacts] could not write ${artifact.id}: ${(err as Error).message}`);
-      res.status(500).json({ error: 'could not store the file' });
-      return;
-    }
-
-    if (convId) sse.emit(convId, 'artifact:new', artifact);
-    res.status(201).json(artifact);
-  });
-
-  app.get('/api/artifacts/:id', (req, res) => {
-    const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    res.json(artifact);
-  });
-
   app.get('/api/artifacts/:id/file', (req, res) => {
     const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
+    if (!artifact) { res.status(404).json({ error: 'snapshot not found' }); return; }
     const filePath = artifactPath(artifact);
-    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'artifact file not found on disk' }); return; }
+    if (!fs.existsSync(filePath)) { res.status(404).json({ error: 'snapshot file not found on disk' }); return; }
     // Never serve a client-chosen MIME type from the app's origin (see artifact-http.ts).
     const policy = servePolicy(artifact.mimeType);
     res.setHeader('Content-Type', policy.contentType);
@@ -1644,13 +1593,26 @@ ${formatHumanResponse(response)}`;
     res.sendFile(filePath);
   });
 
-  app.delete('/api/artifacts/:id', (req, res) => {
-    const artifact = getArtifact(db, req.params.id);
-    if (!artifact) { res.status(404).json({ error: 'artifact not found' }); return; }
-    const filePath = artifactPath(artifact);
-    try { fs.unlinkSync(filePath); } catch { /* file already gone — don't fail */ }
-    const ok = deleteArtifact(db, req.params.id);
-    res.json({ ok });
+  // ─── Pins: files of a workspace kept at hand (the top of the Files panel) ─────
+  app.get('/api/workspace/:owner/pins', (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    res.json({ pins: listPins(db, owner) });
+  });
+
+  app.post('/api/workspace/:owner/pins', async (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner) { res.status(404).json({ error: 'unknown project or chat' }); return; }
+    let filePath: string;
+    try { filePath = resolveWorkspacePath(String(req.body?.path ?? '')); } catch (err) { res.status(400).json({ error: (err as Error).message }); return; }
+    try { await supervisor.readFile(owner, filePath); } catch { res.status(404).json({ error: 'no such file in the workspace' }); return; }
+    res.status(201).json(addPin(db, owner, filePath, typeof req.body?.note === 'string' ? req.body.note : null));
+  });
+
+  app.delete('/api/workspace/:owner/pins', (req, res) => {
+    const owner = workspaceOwner(req.params.owner);
+    if (!owner || typeof req.query['path'] !== 'string') { res.status(400).json({ error: 'owner and path required' }); return; }
+    res.json({ ok: removePin(db, owner, req.query['path']) });
   });
 
   // ─── §6b Chunk B: Subagent runs ──────────────────────────────────────────

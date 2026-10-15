@@ -150,14 +150,12 @@ export function runMigrations(db: Database.Database): void {
       created_at   TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    -- §6b Chunk B: Artifacts store.
-    -- Generated files (screenshots, recordings, non-repo downloads) from browser
-    -- agent sessions. NOT the Obsidian vault — the vault is tuned for markdown/
-    -- LiveSync sync, not binaries. Repo changes still go through git (sandbox).
+    -- Report snapshots: the copy of a workspace file a Gazeta report was posted with, so the report never changes when the
+    -- file is edited later. (Files the user wants at hand are pins of the workspace, see workspace_pins.)
     -- filename: basename only (no directory), used to construct the file URL.
-    -- mime_type: e.g. 'image/jpeg', 'image/png', 'text/plain', 'application/zip'.
+    -- mime_type: e.g. 'text/markdown', 'image/png'.
     -- size_bytes: file size at save time — used for display, not a security boundary.
-    -- source: which tool/flow created this ('browser_screenshot', 'browser_recording', etc.)
+    -- source: 'report-pin'.
     CREATE TABLE IF NOT EXISTS artifacts (
       id              TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(8)))),
       conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL,
@@ -168,6 +166,16 @@ export function runMigrations(db: Database.Database): void {
       created_at      TEXT NOT NULL DEFAULT (datetime('now'))
     );
     CREATE INDEX IF NOT EXISTS idx_artifacts_conv ON artifacts(conversation_id, created_at);
+
+    -- Pins: files of a workspace the user (or the agent) keeps at hand. A pin is only a pointer: the file stays in the
+    -- workspace, so it is always the current version. owner = a project id, or a chat id for a chat without a project.
+    CREATE TABLE IF NOT EXISTS workspace_pins (
+      owner      TEXT NOT NULL,
+      path       TEXT NOT NULL,
+      note       TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      PRIMARY KEY (owner, path)
+    );
 
     -- §6b Chunk B: Subagent-with-a-goal tracking.
     -- One row per subagent invocation. The parent agent spawns a subagent
@@ -475,6 +483,7 @@ export function updateConversation(
 
 export function deleteConversation(db: Database.Database, id: string): boolean {
   const result = db.prepare(`DELETE FROM conversations WHERE id = ?`).run(id);
+  if (result.changes > 0) db.prepare(`DELETE FROM workspace_pins WHERE owner = ?`).run(id);
   return result.changes > 0;
 }
 
@@ -1016,7 +1025,9 @@ export function deleteProject(db: Database.Database, id: string, opts: { convers
     if ((opts.conversations ?? 'delete') === 'delete') {
       db.prepare(`DELETE FROM conversations WHERE project_id = ?`).run(id);
     }
-    return db.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+    const removed = db.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+    if (removed) db.prepare(`DELETE FROM workspace_pins WHERE owner = ?`).run(id);
+    return removed;
   });
   return run();
 }
@@ -1245,7 +1256,7 @@ export function getToolCallMeta(db: Database.Database, toolCallId: string, provi
   }
 }
 
-// ─── §6b Chunk B: Artifacts ──────────────────────────────────────────────────
+// ─── Report snapshots (the `artifacts` table) ─────────────────────────────────
 
 export interface ArtifactRow {
   id: string;
@@ -1272,32 +1283,6 @@ export function createArtifact(
   return result;
 }
 
-export function getArtifactsTotalBytes(db: Database.Database): number {
-  return (db.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS total FROM artifacts`).get() as { total: number }).total;
-}
-
-export function listArtifacts(
-  db: Database.Database,
-  conversationId?: string,
-): ArtifactRow[] {
-  if (conversationId) {
-    return db
-      .prepare(
-        `SELECT id, conversation_id AS conversationId, filename, mime_type AS mimeType,
-                size_bytes AS sizeBytes, source, created_at AS createdAt
-         FROM artifacts WHERE conversation_id = ? ORDER BY created_at DESC`,
-      )
-      .all(conversationId) as ArtifactRow[];
-  }
-  return db
-    .prepare(
-      `SELECT id, conversation_id AS conversationId, filename, mime_type AS mimeType,
-              size_bytes AS sizeBytes, source, created_at AS createdAt
-       FROM artifacts ORDER BY created_at DESC LIMIT 200`,
-    )
-    .all() as ArtifactRow[];
-}
-
 export function getArtifact(db: Database.Database, id: string): ArtifactRow | null {
   return (
     db
@@ -1310,8 +1295,25 @@ export function getArtifact(db: Database.Database, id: string): ArtifactRow | nu
   ) ?? null;
 }
 
-export function deleteArtifact(db: Database.Database, id: string): boolean {
-  return db.prepare(`DELETE FROM artifacts WHERE id = ?`).run(id).changes > 0;
+// ─── Workspace pins ──────────────────────────────────────────────────────────
+
+export interface WorkspacePin { path: string; note: string | null; createdAt: string }
+
+export function listPins(db: Database.Database, owner: string): WorkspacePin[] {
+  return db.prepare(`SELECT path, note, created_at AS createdAt FROM workspace_pins WHERE owner = ? ORDER BY created_at DESC, path`).all(owner) as WorkspacePin[];
+}
+
+/** Pins a path (already normalised by resolveWorkspacePath); pinning twice only updates the note. */
+export function addPin(db: Database.Database, owner: string, path: string, note?: string | null): WorkspacePin {
+  return db.prepare(
+    `INSERT INTO workspace_pins (owner, path, note) VALUES (?, ?, ?)
+     ON CONFLICT(owner, path) DO UPDATE SET note = COALESCE(excluded.note, workspace_pins.note)
+     RETURNING path, note, created_at AS createdAt`,
+  ).get(owner, path, note ? note.slice(0, 300) : null) as WorkspacePin;
+}
+
+export function removePin(db: Database.Database, owner: string, path: string): boolean {
+  return db.prepare(`DELETE FROM workspace_pins WHERE owner = ? AND path = ?`).run(owner, path).changes > 0;
 }
 
 // ─── §6b Chunk B: Subagent runs ──────────────────────────────────────────────

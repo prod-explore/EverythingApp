@@ -22,7 +22,7 @@ export type SSEEventName =
   | 'agent:spawned'
   | 'agent:finished'
   | 'agent:budget_warning'
-  | 'artifact:new'
+  | 'pins:changed'
   | 'provider:retry'
   | 'keepalive';
 

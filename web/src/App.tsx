@@ -14,7 +14,6 @@ import { Login } from './components/Login';
 import type { SettingsTab } from './components/settings/SettingsModal';
 const SettingsModal = lazy(() => import('./components/settings/SettingsModal').then(m => ({ default: m.SettingsModal })));
 const BrowserPanel = lazy(() => import('./components/browser/BrowserPanel').then(m => ({ default: m.BrowserPanel })));
-const ArtifactsPanel = lazy(() => import('./components/browser/ArtifactsPanel').then(m => ({ default: m.ArtifactsPanel })));
 import { useConversations } from './hooks/useConversations';
 import { GazetaContext, useGazetaStore } from './hooks/useGazeta';
 const AgentsPanel = lazy(() => import('./components/agents/AgentsPanel').then(m => ({ default: m.AgentsPanel })));
@@ -99,8 +98,7 @@ function MainApp() {
   const persistDock = useCallback((w: number) => { try { localStorage.setItem('dockWidth', String(w)); } catch { /* not persisted */ } }, []);
   const dockDrag = useRef<{ x: number; w: number } | null>(null);
   const [browserPanelOpen, setBrowserPanelOpen] = useState(false);
-  const [artifactsPanelOpen, setArtifactsPanelOpen] = useState(false);
-  const [artifactRefresh, setArtifactRefresh] = useState(0);
+  const [pinsRefresh, setPinsRefresh] = useState(0);
   const { models } = useModels();
   const approvals = useApprovals(selectedId);
   const [providerRetry, setProviderRetry] = useState<ProviderRetry | null>(null);
@@ -246,7 +244,7 @@ function MainApp() {
     if (event === 'agent:budget_warning') setBudgetWarning(data as BudgetWarning);
     if (event === 'provider:retry') setProviderRetry(data as ProviderRetry);
     if (event === 'turn:done') setProviderRetry(null);
-    if (event === 'artifact:new') setArtifactRefresh(r => r + 1);
+    if (event === 'pins:changed') setPinsRefresh(r => r + 1);
   });
 
   useEffect(() => {
@@ -296,7 +294,6 @@ function MainApp() {
         else if (settingsOpen) setSettingsOpen(false);
         else if (gazetaOpen) setGazetaOpen(false);
         else if (browserPanelOpen) setBrowserPanelOpen(false);
-        else if (artifactsPanelOpen) setArtifactsPanelOpen(false);
         else if (sidebarOpen) setSidebarOpen(false);
         return;
       }
@@ -309,7 +306,7 @@ function MainApp() {
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen, browserPanelOpen, artifactsPanelOpen]);
+  }, [createConversation, searchOpen, settingsOpen, gazetaOpen, sidebarOpen, browserPanelOpen]);
 
   function openProjectsView() {
     setSidebarView('projects');
@@ -373,9 +370,7 @@ function MainApp() {
         onModelChange={handleModelChange}
         onToggleSidebar={() => (window.matchMedia('(min-width: 768px)').matches ? toggleSidebarCollapsed() : setSidebarOpen(o => !o))}
         onOpenBrowser={() => setBrowserPanelOpen(o => !o)}
-        onOpenArtifacts={() => setArtifactsPanelOpen(o => !o)}
         browserPanelOpen={browserPanelOpen}
-        artifactsPanelOpen={artifactsPanelOpen}
         dockTool={dockTool}
         onToggleTool={t => setDockTool(cur => (cur === t ? null : t))}
       />
@@ -394,12 +389,12 @@ function MainApp() {
         </div>
 
         {/* Right dock: browser on top, artifacts below. Side column on desktop, full-screen sheet on mobile. */}
-        {(browserPanelOpen || artifactsPanelOpen || dockTool) && (
+        {(browserPanelOpen || dockTool) && (
           <>
           <div
             className="fixed inset-0 z-40 bg-black/60 md:hidden"
             aria-hidden="true"
-            onClick={() => { setBrowserPanelOpen(false); setArtifactsPanelOpen(false); setDockTool(null); }}
+            onClick={() => { setBrowserPanelOpen(false); setDockTool(null); }}
           />
           <aside
             style={{ '--dock-w': `${clampDock(dockWidth)}px` } as CSSProperties}
@@ -429,23 +424,16 @@ function MainApp() {
             <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
               <Suspense fallback={<p className="px-3 py-4 text-center text-xs text-fg-tertiary">Loading…</p>}>
               {browserPanelOpen && (
-                <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} fill={!dockTool && !artifactsPanelOpen} />
+                <BrowserPanel conversationId={selectedId} onClose={() => setBrowserPanelOpen(false)} fill={!dockTool} />
               )}
               {dockTool === 'agents' && selectedId && (
                 <AgentsPanel conversationId={selectedId} refreshKey={agentsRefresh} budgetWarning={budgetWarning} onClose={() => setDockTool(null)} />
               )}
               {dockTool === 'files' && selectedId && (
-                <ExplorerPanel key={workspaceOwner ?? ''} owner={workspaceOwner ?? selectedId} onClose={() => setDockTool(null)} />
+                <ExplorerPanel key={workspaceOwner ?? ''} owner={workspaceOwner ?? selectedId} pinsRefresh={pinsRefresh} onClose={() => setDockTool(null)} />
               )}
               {dockTool === 'git' && workspaceOwner && (
                 <GitPanel key={workspaceOwner} projectId={workspaceOwner} onConnect={() => openSettings('github')} onClose={() => setDockTool(null)} />
-              )}
-              {artifactsPanelOpen && (
-                <ArtifactsPanel
-                  conversationId={selectedId}
-                  onClose={() => setArtifactsPanelOpen(false)}
-                  refreshTrigger={artifactRefresh}
-                />
               )}
               </Suspense>
             </div>
@@ -454,9 +442,7 @@ function MainApp() {
         )}
         <RightRail
           browserOpen={browserPanelOpen}
-          artifactsOpen={artifactsPanelOpen}
           onToggleBrowser={() => setBrowserPanelOpen(o => !o)}
-          onToggleArtifacts={() => setArtifactsPanelOpen(o => !o)}
           tool={dockTool}
           onToggleTool={t => setDockTool(cur => (cur === t ? null : t))}
         />

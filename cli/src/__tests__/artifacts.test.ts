@@ -4,7 +4,10 @@ import * as http from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { servePolicy, contentDisposition, sanitizeFilename } from '../artifact-http.js';
 import { buildApp } from '../server.js';
-import { openDb, runMigrations } from '../db.js';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createArtifact, openDb, runMigrations } from '../db.js';
 
 describe('servePolicy — only inert content is shown inline', () => {
   const cases: Array<[string, boolean, string]> = [
@@ -50,24 +53,24 @@ describe('contentDisposition / sanitizeFilename', () => {
 });
 
 const TOKEN = 't';
-function call(port: number, method: string, path: string, body?: Buffer, type = 'application/octet-stream'): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+function call(port: number, method: string, path: string, body?: unknown): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
   return new Promise((resolve, reject) => {
-    const r = http.request({ host: '127.0.0.1', port, method, path, headers: { authorization: `Bearer ${TOKEN}`, ...(body ? { 'content-type': type, 'content-length': body.length } : {}) } }, res => {
+    const payload = body === undefined ? undefined : Buffer.from(JSON.stringify(body));
+    const r = http.request({ host: '127.0.0.1', port, method, path, headers: { authorization: `Bearer ${TOKEN}`, ...(payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {}) } }, res => {
       const c: Buffer[] = [];
       res.on('data', d => c.push(d));
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(c) }));
     });
     r.on('error', reject);
-    if (body) r.write(body);
+    if (payload) r.write(payload);
     r.end();
   });
 }
 
-describe('artifact endpoints', () => {
-  it('serves uploaded HTML/SVG as a download, text as text/plain, images inline; enforces size and quota', async () => {
-    process.env['EVERYTHINGAPP_ARTIFACTS_DIR'] = (await import('node:fs')).mkdtempSync((await import('node:path')).join((await import('node:os')).tmpdir(), 'ea-art-'));
-    process.env['ARTIFACT_MAX_BYTES'] = '1000';
-    process.env['ARTIFACT_QUOTA_BYTES'] = '1500';
+describe('report snapshot endpoint', () => {
+  it('serves HTML/SVG as a download, text as text/plain, images inline', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ea-art-'));
+    process.env['EVERYTHINGAPP_ARTIFACTS_DIR'] = dir;
     const db = openDb(':memory:');
     runMigrations(db);
     const built = await buildApp({ db, connections: [], llm: {} as any, authToken: TOKEN, config: { model: 'm', autoApproveTools: [] } });
@@ -75,39 +78,37 @@ describe('artifact endpoints', () => {
     await new Promise<void>(r => server.once('listening', () => r()));
     const port = (server.address() as AddressInfo).port;
     try {
-      const up = async (name: string, mime: string, data: string) =>
-        JSON.parse((await call(port, 'POST', `/api/artifacts?filename=${encodeURIComponent(name)}`, Buffer.from(data), mime)).body.toString()) as { id: string };
+      const snap = (name: string, mime: string, data: string) => {
+        const row = createArtifact(db, { conversationId: null, filename: name, mimeType: mime, sizeBytes: data.length, source: 'report-pin' });
+        writeFileSync(join(dir, `${row.id}_${name.replace(/[^A-Za-z0-9._-]/g, '_')}`), data);
+        return row;
+      };
 
-      const html = await up('evil".html', 'text/html', '<script>steal()</script>');
+      const html = snap('evil".html', 'text/html', '<script>steal()</script>');
       const r1 = await call(port, 'GET', `/api/artifacts/${html.id}/file`);
       assert.equal(r1.headers['content-type'], 'application/octet-stream');
       assert.match(String(r1.headers['content-disposition']), /^attachment;/);
       assert.equal(r1.headers['x-content-type-options'], 'nosniff');
 
-      const svg = await up('x.svg', 'image/svg+xml', '<svg onload="x()"/>');
+      const svg = snap('x.svg', 'image/svg+xml', '<svg onload="x()"/>');
       assert.match(String((await call(port, 'GET', `/api/artifacts/${svg.id}/file`)).headers['content-disposition']), /^attachment;/);
 
-      const txt = await up('n.txt', 'text/html', 'hi'); // lies about being html
-      const txtRes = await call(port, 'GET', `/api/artifacts/${txt.id}/file`);
-      assert.match(String(txtRes.headers['content-type']), /octet-stream/, 'a declared text/html is still a download');
-
-      const md = await up('n.md', 'text/markdown', '# hi');
+      const md = snap('n.md', 'text/markdown', '# hi');
       const mdRes = await call(port, 'GET', `/api/artifacts/${md.id}/file`);
       assert.equal(mdRes.headers['content-type'], 'text/plain; charset=utf-8');
       assert.match(String(mdRes.headers['content-disposition']), /^inline;/);
       assert.match(String(mdRes.headers['content-security-policy']), /sandbox/);
 
-      // size limit (per upload)
-      assert.equal((await call(port, 'POST', '/api/artifacts?filename=big.bin', Buffer.alloc(2000), 'application/octet-stream')).status, 413);
-      // quota (total): 3 small files were stored above (~55 bytes); one near-limit upload pushes past 1500
-      await call(port, 'POST', '/api/artifacts?filename=a.bin', Buffer.alloc(900), 'application/octet-stream');
-      assert.equal((await call(port, 'POST', '/api/artifacts?filename=b.bin', Buffer.alloc(900), 'application/octet-stream')).status, 413);
+      assert.equal((await call(port, 'GET', '/api/artifacts/nope/file')).status, 404);
+      // nothing uploads or lists generic artifacts any more: files the user wants at hand are pins of the workspace
+      assert.equal((await call(port, 'POST', '/api/artifacts?filename=x.bin', {})).status, 404);
+      assert.equal((await call(port, 'GET', '/api/artifacts')).status, 404);
     } finally {
       built.stop();
       server.close();
       db.close();
-      delete process.env['ARTIFACT_MAX_BYTES'];
-      delete process.env['ARTIFACT_QUOTA_BYTES'];
+      rmSync(dir, { recursive: true, force: true });
+      delete process.env['EVERYTHINGAPP_ARTIFACTS_DIR'];
     }
   });
 });
