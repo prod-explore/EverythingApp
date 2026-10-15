@@ -1874,16 +1874,22 @@ ${formatHumanResponse(response)}`;
   });
 
   // ─── Static frontend ─────────────────────────────────────────────────────
-  const webDistPath = path.join(__dirname, '..', '..', 'web', 'dist');
+  // The built web app sits next to dist/ in the image (/app/web/dist) and two levels up in a checkout (cli/dist -> web/dist).
+  const webDistCandidates = [
+    process.env.WEB_DIST,
+    path.join(__dirname, '..', 'web', 'dist'),
+    path.join(__dirname, '..', '..', 'web', 'dist'),
+  ].filter((p): p is string => !!p);
+  const webDistPath = webDistCandidates.find((p) => fs.existsSync(path.join(p, 'index.html'))) ?? webDistCandidates[webDistCandidates.length - 1]!;
   // An unknown API path is a 404 in JSON, not the web app's index.html with status 200.
   app.use('/api', (_req, res) => { res.status(404).json({ error: 'not found' }); });
   app.use(express.static(webDistPath));
   // Express 5 (path-to-regexp v7+) rejects a bare '*' — it's ambiguous
   // now. This app is a single-page app, so the SPA fallback needs a
   // pattern that matches literally everything not already handled above
-  // (every /api/* route, static assets from webDistPath); '/*splat' is
+  // (every /api/* route, static assets from webDistPath); '/{*splat}' is
   // the current syntax for that.
-  app.get('/*splat', (req, res) => {
+  app.get('/{*splat}', (req, res) => {
     // A path with a file extension that static did not find is a missing file, not a page of the app.
     if (path.extname(req.path)) { res.status(404).type('text/plain').send('not found'); return; }
     res.sendFile(path.join(webDistPath, 'index.html'));

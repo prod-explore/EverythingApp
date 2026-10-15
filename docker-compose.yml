@@ -10,6 +10,7 @@
 
 services:
   sandbox-supervisor:
+    container_name: everythingapp-sandbox-supervisor
     build:
       context: ./sandbox-supervisor
       dockerfile: Dockerfile
@@ -52,6 +53,7 @@ services:
     pids_limit: 256
 
   sandbox-mcp:
+    container_name: everythingapp-sandbox-mcp
     build:
       context: ./sandbox-mcp
       dockerfile: Dockerfile
@@ -85,6 +87,7 @@ services:
   # supervisor, sandbox-mcp, github-mcp (holds the PAT) or n8n; only the web server is attached
   # to both sides so it can call the MCP endpoint.
   playwright-mcp:
+    container_name: everythingapp-playwright-mcp
     build:
       context: ./playwright-mcp
       dockerfile: Dockerfile
@@ -129,6 +132,7 @@ services:
   # publish the port on the sandbox bridge gateway via GIT_PROXY_BIND and allow it in deploy/egress-guard.sh
   # (EGRESS_ALLOW="<gateway-ip>:8080"); the default only binds loopback.
   git-proxy:
+    container_name: everythingapp-git-proxy
     build:
       context: ./git-proxy
       dockerfile: Dockerfile
