@@ -40,14 +40,16 @@ export function SettingsModal({
       onClose={onClose}
       wide
       tabs={
-        <div className="flex gap-1 overflow-x-auto border-b border-border">
+        <div className="flex flex-wrap gap-0.5 border-b border-border pb-2" role="tablist" aria-label="Settings sections">
           {TABS.map(t => (
             <button
               key={t.id}
+              role="tab"
+              aria-selected={activeTab === t.id}
               onClick={() => setActiveTab(t.id)}
-              className={`shrink-0 px-3 py-2 text-sm font-medium transition-colors ${
+              className={`rounded-button px-2.5 py-1.5 text-sm font-medium transition-colors ${
                 activeTab === t.id
-                  ? 'border-b-2 border-fg text-fg'
+                  ? 'bg-bg-tertiary text-fg'
                   : 'text-fg-tertiary hover:text-fg-secondary'
               }`}
             >

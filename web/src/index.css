@@ -110,3 +110,18 @@ body {
 .prose :where(h3) { font-size: 1.05em; }
 .prose :where(h1, h2, h3):first-child { margin-top: 0; }
 input[type="radio"], input[type="checkbox"] { accent-color: var(--color-fg); }
+
+/* A fenced block without a language has no highlight class, so it gets the inline-code chip; inside <pre> that must not apply. */
+.prose pre > code {
+  background: none;
+  padding: 0;
+  border-radius: 0;
+  font-size: inherit;
+}
+/* On a phone, long lines wrap instead of hiding behind a sideways scroll nobody discovers. */
+@media (max-width: 640px) {
+  .prose pre {
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+}
